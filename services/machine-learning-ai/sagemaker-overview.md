@@ -369,31 +369,96 @@ but it's worth placing them clearly relative to everything above:
 
 ## Use Cases — When to Use It
 
-- You need to train a custom model (fraud scoring, demand forecasting, image classification)
-  on your own labeled data and don't want to manage training infrastructure.
-- You have an ML team that needs reproducible experiments, versioned models, and an approval
-  gate before production (regulated industries: finance, healthcare).
-- You need to serve predictions at scale with autoscaling, canary deployments, and multi-model
-  hosting to save cost.
-- You need to label large unlabeled datasets (Ground Truth) before you can train anything.
-- You want to compile a model to run on a resource-constrained edge device (Neo).
-- You're building a full MLOps pipeline that retrains automatically when new data or drift
-  appears (Pipelines + Model Monitor + EventBridge).
-- You need to explain *why* a model made a specific prediction (loan denial, medical risk score)
-  to satisfy a regulatory or customer-facing explainability requirement — Clarify.
-- You're training at a scale where a single hardware failure shouldn't cost you a multi-day
-  training run — HyperPod's resilient training infrastructure.
-- You need business analysts, not engineers, to be able to build a working model from a
-  spreadsheet-like interface — Canvas.
-- You need to label large volumes of unstructured data (images, audio, text) with a mix of
-  automated pre-labeling and human review, rather than either fully manual labeling or no
-  labeling pipeline at all — Ground Truth's automated data labeling mode.
-- You're migrating an existing, successful notebook-based workflow to something reproducible and
-  team-shareable without a ground-up rewrite — SageMaker Studio adopts standard Jupyter notebook
-  files directly.
-- You need a single system of record for "which data, code, and parameters produced this exact
-  model" across dozens of experiments run by different team members — Experiments + Pipelines'
-  lineage tracking together.
+Each scenario below names the concrete business problem, why this platform's specific feature
+fits it, and the tradeoff against the nearest alternative — the three questions a real design
+decision (and a well-written exam scenario) actually turns on.
+
+- **Fraud detection (financial services/payments):** Problem — score every card transaction for
+  fraud risk in near-real-time, using proprietary transaction patterns no off-the-shelf model has
+  seen. Why SageMaker fits — train a custom XGBoost/script-mode model on your own labeled
+  fraud/not-fraud history, deploy to an auto-scaling real-time endpoint. Tradeoff vs. a pre-built
+  option — there is no general-purpose "detect fraud" AI service that knows your specific
+  customer base's normal behavior; a managed alternative like Fraud Detector trades some model
+  flexibility for less setup, while SageMaker trades setup time for full control over features
+  and architecture.
+- **Customer churn prediction (telecom/SaaS):** Problem — predict which subscribers will cancel
+  next month from internal usage, billing, and support-ticket history. Why SageMaker fits — a
+  Training Job (XGBoost baseline) plus Feature Store centralizes the engineered usage features so
+  marketing, retention, and billing teams all score against the identical definition. Tradeoff vs.
+  a simple rules-based heuristic ("flag anyone inactive 30+ days") — ML catches nonlinear,
+  multi-signal churn patterns a single rule misses, at the cost of needing labeled historical
+  outcomes and ongoing drift monitoring a static rule never needed.
+- **Medical imaging diagnosis support (healthcare):** Problem — flag X-ray/MRI scans showing signs
+  of a specific condition, using a hospital's own labeled image archive and strict data-residency
+  requirements. Why SageMaker fits — script mode with a custom CNN/PyTorch architecture, trained
+  inside a VPC with no internet egress, keeps PHI inside the network boundary end to end.
+  Tradeoff vs. Rekognition Custom Labels — Rekognition is faster to stand up and needs less
+  labeled data, but SageMaker gives full control over model architecture, explainability (Clarify
+  SHAP values for a radiologist to review), and the network-isolation posture HIPAA workloads
+  often require.
+- **Demand forecasting (retail/CPG):** Problem — forecast next quarter's SKU-level demand across
+  hundreds of stores from years of point-of-sale history. Why SageMaker fits — the built-in DeepAR
+  algorithm learns shared seasonal/promotional patterns across many related time series at once,
+  rather than fitting 500 independent single-series models. Tradeoff vs. Amazon Forecast (the
+  purpose-built, fully managed forecasting service covered in `ai-services-overview.md`) — Forecast
+  needs zero SageMaker instance/endpoint management, so SageMaker is only the better call when the
+  forecasting step must be tightly wired into a larger custom feature-engineering/training
+  pipeline you already run here.
+- **Document/invoice automation (insurance, accounting back-office):** Problem — extract and
+  classify data from thousands of scanned claims or invoices whose layout varies too much for a
+  simple parser. Why SageMaker fits — only once Textract's layout-aware extraction genuinely isn't
+  accurate enough for your specific document types, training a custom vision/NLP model on
+  Ground-Truth-labeled examples is justified. Tradeoff vs. calling Textract directly — Textract is
+  dramatically cheaper and faster to ship for the common case; reserve custom training for the
+  genuinely unusual document shapes Textract's general model can't handle.
+- **Recommendation engine (e-commerce):** Problem — personalize product recommendations at
+  checkout from millions of users' click/purchase history. Why SageMaker fits — the
+  Factorization Machines built-in algorithm is purpose-built for the sparse, high-dimensional
+  feature space recommendation data creates. Tradeoff vs. Amazon Personalize — Personalize ships
+  pre-built recipe templates and a managed real-time API with far less engineering; build on
+  SageMaker directly only when you need custom feature engineering or an architecture Personalize's
+  recipes don't support.
+- **Content moderation at scale (social/UGC platforms):** Problem — catch policy-violating images
+  beyond what Rekognition's general moderation categories flag (brand-specific or jurisdiction-
+  specific violations). Why SageMaker fits — train a custom classifier (or Rekognition Custom
+  Labels) on your own labeled violation examples. Tradeoff — a custom SageMaker model demands you
+  source and label thousands of violation examples yourself, against Rekognition's built-in
+  categories which need zero labeled data but only cover general, not brand-specific, content
+  policy.
+- **Internal RAG chatbot / support bot (any industry):** Problem — answer employee or customer
+  questions grounded in a company's own documents. Why SageMaker fits — rarely the primary tool
+  here; the right fit is deploying a self-hosted open model via JumpStart only when data-
+  residency rules forbid a fully external managed API. Tradeoff vs. Bedrock Knowledge Bases — a
+  JumpStart-hosted RAG stack means building and operating your own retrieval pipeline and
+  instance fleet, trading Bedrock's zero-ops simplicity for full infrastructure control.
+- **Credit risk / loan approval scoring (banking):** Problem — score loan applications combining
+  internal account history with external bureau data, under regulatory requirements to explain
+  every denial. Why SageMaker fits — Clarify's per-prediction SHAP values generate the defensible,
+  feature-level explanation a compliance team or regulator can inspect for any single decision.
+  Tradeoff vs. a simple logistic-regression scorecard — the simpler model is inherently more
+  explainable with no extra tooling, but a well-tuned XGBoost model plus Clarify typically
+  outperforms it in accuracy while still producing an auditable explanation.
+- **Predictive maintenance (manufacturing/industrial IoT):** Problem — predict equipment failure
+  from sensor telemetry before an unplanned outage. Why SageMaker fits — Random Cut Forest
+  anomaly detection or a custom time-series model trained on historical sensor-plus-failure data,
+  compiled via Neo and deployed to a factory-floor edge gateway with no reliable connectivity.
+  Tradeoff vs. a fixed-threshold alarm on raw sensor values — a learned model catches
+  multi-sensor failure patterns a single threshold misses, at the cost of needing labeled
+  historical failure events to train against, which a threshold rule never required.
+- **HR resume/talent matching (staffing and recruiting):** Problem — rank candidate resumes
+  against job requirements at a volume no recruiter can manually screen. Why SageMaker fits — a
+  custom ranking model trained on historical screening decisions, with Clarify's pre- and
+  post-training bias checks run before launch given the serious legal exposure of a biased hiring
+  tool. Tradeoff vs. a keyword-matching applicant tracking system filter — the simpler filter is
+  cheaper and easier to audit but misses genuine-fit signals a learned model captures, while
+  introducing its own, differently-shaped bias risk that still needs active monitoring either way.
+- **Energy load forecasting (utilities):** Problem — forecast electricity demand hours to days
+  ahead to balance grid supply against generation capacity. Why SageMaker fits — DeepAR or a
+  custom script-mode model incorporating weather data as an exogenous feature, trained and
+  retrained inside a pipeline already feeding a broader grid-dispatch optimization system. Tradeoff
+  vs. Amazon Forecast — same shape as the retail demand-forecasting comparison above: Forecast
+  needs less infrastructure management, SageMaker wins when the forecast must plug directly into
+  custom downstream optimization logic you also host here.
 
 ## When NOT to Use It / Alternatives
 

@@ -142,13 +142,74 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- A mobile or web app needs user sign-up/login with email/password plus "Sign in with Google."
-- An app needs users to upload files directly to their own S3 prefix from a mobile client,
-  without routing every upload through a backend server (Identity Pool + scoped IAM role).
-- An API Gateway-fronted API needs to authenticate end users and authorize per-scope access
-  without building a custom JWT issuer.
-- Enterprise customers of your SaaS product want to log in with their own company's SSO
-  (SAML/OIDC) instead of creating yet another password.
+- **Consumer app sign-up/login with social federation.** Situation: a mobile/web app needs
+  email/password plus "Sign in with Google" without building either flow from scratch. Why this
+  fits: a User Pool normalizes both into the same JWT format, so the rest of the app never needs
+  to know which path the user took. Tradeoff: each social IdP (Google, Facebook, Apple) requires
+  its own developer-console app registration and periodic credential rotation on the IdP's side —
+  Cognito removes the token-handling work but not the ongoing IdP relationship maintenance.
+- **Mobile uploads directly to a per-user S3 prefix.** Situation: users should upload photos
+  straight from a mobile client without routing every byte through a backend server. Why this
+  fits: an Identity Pool exchanges the User Pool token for temporary AWS credentials scoped to
+  only that user's folder, cutting out a backend relay entirely. Tradeoff: the mobile client now
+  holds real (if scoped) AWS credentials in memory — a compromised device can act within that
+  user's own prefix for the credential's lifetime, which is why session duration should stay
+  short for this pattern.
+- **API Gateway authorizing end users without a custom JWT issuer.** Situation: a REST/HTTP API
+  needs to authenticate end users and authorize per-scope access. Why this fits: API Gateway's
+  built-in Cognito authorizer validates the JWT locally against Cognito's public keys with no
+  custom token-issuing code to build or maintain. Tradeoff: the authorizer only answers "is this
+  a valid token for a real user" — any richer, resource-level authorization logic still has to be
+  written in the backend itself, Cognito doesn't replace that layer.
+- **B2B SaaS tenant SSO with enterprise IdPs.** Situation: enterprise customers want to log in
+  with their own company's SAML/OIDC IdP instead of creating another password. Why this fits: a
+  shared User Pool can federate many different enterprise IdPs, normalizing every tenant's login
+  into the same token shape your app already handles. Tradeoff: onboarding each new enterprise
+  customer's IdP (SAML metadata exchange, attribute mapping) is real, recurring integration work
+  per tenant — it doesn't scale as "zero-touch" the way social login does.
+- **Zero-trust API access — short-lived tokens, not long-lived sessions.** Situation: a security
+  team wants every API call to carry a fresh, verifiable, short-lived credential rather than a
+  long-lived session cookie. Why this fits: Cognito's default 1-hour access tokens with a
+  refresh-token renewal flow enforce exactly this pattern without custom session-management
+  code. Tradeoff: tuning the refresh token's validity down (from the default 30 days toward the
+  stricter end) improves security but increases how often users must fully re-authenticate —
+  this is a real UX/security tradeoff a team must explicitly choose, not a free win.
+- **Compliance — demonstrating controlled customer authentication (SOC 2/PCI-DSS-adjacent).**
+  Situation: an auditor wants evidence that customer authentication follows reasonable security
+  practices (password policy, MFA availability, breach monitoring). Why this fits: Cognito's
+  Advanced Security Mode (compromised-credential detection, adaptive auth) and configurable
+  password policies give concrete, inspectable settings to show rather than custom in-house auth
+  code nobody has formally reviewed. Tradeoff: Advanced Security Mode is a separate, additional
+  per-MAU charge — teams sometimes assume it's included by default and are surprised by the cost
+  when enabling it to satisfy an audit finding.
+- **Guest/unauthenticated access for public content.** Situation: an app should let visitors
+  browse public content before requiring sign-in. Why this fits: Identity Pools support
+  unauthenticated "guest" identities with their own scoped IAM role, distinct from the
+  authenticated role, so public content doesn't need its own separate access mechanism.
+  Tradeoff: guest role permissions must be kept genuinely minimal — a guest role that's
+  accidentally too broad is reachable by literally anyone on the internet with no login at all,
+  a much larger exposure surface than a misconfigured authenticated role.
+- **Incident response — revoking a compromised user's active sessions.** Situation: a user's
+  account is suspected compromised and their existing tokens must stop working immediately. Why
+  this fits: `AdminUserGlobalSignOut` or `RevokeToken` explicitly invalidates refresh tokens,
+  which plain account disable/delete does not do retroactively. Tradeoff: this requires knowing
+  to call this specific action — disabling or deleting the user account alone leaves
+  already-issued tokens working until their natural expiry, a frequently-missed step in a rushed
+  incident response.
+- **Multi-tenant SaaS isolation via tenant claims in the token.** Situation: a single
+  application serves many tenants and must keep each tenant's data isolated at the
+  authorization layer. Why this fits: a pre-token-generation Lambda trigger can inject a tenant
+  claim into the issued JWT, which backend authorization logic (or an Identity Pool role-mapping
+  rule) then keys off of. Tradeoff: the isolation guarantee now depends on the Lambda trigger's
+  correctness and on every downstream consumer actually checking the claim — a backend endpoint
+  that forgets to validate the tenant claim creates a cross-tenant leak that Cognito itself has
+  no way to catch.
+- **Blocking disposable-email sign-ups at the source.** Situation: a product wants to prevent
+  throwaway-email accounts from signing up for abuse-prevention reasons. Why this fits: a
+  pre-sign-up Lambda trigger can reject the sign-up outright before a user record is ever
+  created, without forking or replacing Cognito's own sign-up flow. Tradeoff: maintaining an
+  accurate disposable-domain blocklist is an ongoing data-maintenance task — a stale list lets
+  new disposable-email providers through, and an overly broad one can reject legitimate domains.
 
 ## When NOT to Use It / Alternatives
 

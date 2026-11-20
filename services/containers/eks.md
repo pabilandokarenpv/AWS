@@ -313,16 +313,66 @@ must upgrade sequentially through each minor version."
 
 ## Use Cases — When to Use It
 
-- Organizations with existing Kubernetes expertise, manifests, Helm charts, or multi-cloud/hybrid
-  Kubernetes clusters who want a consistent operating model when moving workloads to AWS.
-- Workloads that need Kubernetes-specific features or ecosystem tools not available on ECS:
-  custom controllers/operators, service meshes, complex scheduling policies, GitOps workflows.
-- Multi-cloud or cloud-exit strategies — Kubernetes manifests are portable; ECS Task Definitions
-  are not.
-- Large, complex microservice estates where the flexibility of the Kubernetes API (CRDs, admission
-  controllers, fine-grained RBAC) pays for its added complexity.
-- ML/data engineering teams standardizing on Kubernetes-native frameworks (Kubeflow, Spark on
-  Kubernetes, Ray) that assume a real Kubernetes API underneath.
+Each scenario names the situation, why EKS specifically fits, and the tradeoff accepted versus an
+alternative (usually ECS).
+
+1. **Lifting an on-premises Kubernetes cluster to AWS.** Situation: a company already runs
+   workloads on self-managed/on-prem Kubernetes (or OpenShift) and wants to move to AWS. Why EKS
+   fits: existing Helm charts, operators, and manifests work unmodified — there's no rewrite onto
+   an AWS-proprietary API. Tradeoff: you still must learn AWS-specific networking (VPC CNI, IRSA)
+   layered on top of standard Kubernetes knowledge.
+2. **Multi-cloud or cloud-exit portability strategy.** Situation: an organization wants to avoid
+   single-cloud lock-in or run the same workloads across AWS and another cloud/on-prem. Why EKS
+   fits: the Kubernetes API is identical everywhere EKS is conformance-tested against upstream. 
+   Tradeoff: you forgo some of the deep, zero-config AWS-native integration a fully ECS-native
+   stack gets "for free."
+3. **Complex scheduling and admission policy requirements.** Situation: a workload needs custom
+   schedulers, pod affinity/anti-affinity rules, or OPA/Gatekeeper admission policies. Why EKS
+   fits: it exposes the full Kubernetes API surface, including CRDs and admission webhooks, that
+   ECS has no equivalent for. Tradeoff: meaningfully more YAML and operational surface area than
+   ECS for an equivalent workload.
+4. **GitOps continuous deployment with Argo CD/Flux.** Situation: the team wants cluster state
+   continuously reconciled from a Git repository rather than CI pushing changes directly. Why EKS
+   fits: Argo CD/Flux run unmodified against any conformant Kubernetes API. Tradeoff: adds an
+   in-cluster controller that itself needs securing/operating, with no direct ECS equivalent or
+   simpler built-in alternative.
+5. **Multi-tenant SaaS isolation via namespaces and NetworkPolicy.** Situation: a SaaS platform
+   must isolate tenants' workloads within shared cluster compute. Why EKS fits: namespaces plus
+   `NetworkPolicy` plus IRSA scope both network reachability and IAM access per tenant. Tradeoff:
+   namespace isolation is weaker than per-tenant VPCs/accounts — a compromised node still risks
+   cross-tenant exposure without careful RBAC and admission control.
+6. **ML/data platforms standardizing on Kubernetes-native frameworks.** Situation: a data
+   engineering team is building on Kubeflow, Spark-on-Kubernetes, or Ray. Why EKS fits: these
+   frameworks assume a real Kubernetes API underneath, which only EKS (not ECS) provides.
+   Tradeoff: meaningfully higher operational complexity than a managed SageMaker training/inference
+   pipeline for teams without dedicated platform engineers.
+7. **Progressive delivery via Argo Rollouts or a service mesh.** Situation: a Kubernetes-native app
+   needs canary or blue/green rollouts with fine-grained traffic splitting. Why EKS fits: the
+   Kubernetes ecosystem (Argo Rollouts, Flagger, Istio traffic management) offers richer progressive
+   delivery than ECS alone. Tradeoff: there's no built-in CodeDeploy integration for EKS — you must
+   adopt and operate a third-party controller yourself.
+8. **Monorepo CI/CD with per-namespace environment promotion.** Situation: multiple microservices
+   in one repo are promoted through dev/staging/prod namespaces of the same cluster. Why EKS fits:
+   namespace-scoped manifests with Kustomize overlays cleanly separate per-environment config
+   without separate clusters. Tradeoff: a shared cluster means a shared blast radius if RBAC or
+   NetworkPolicy isn't airtight between namespaces.
+9. **Hotfix emergency deploys via `kubectl rollout`.** Situation: a critical production bug needs
+   an immediate patch. Why EKS fits: `kubectl set image` plus `kubectl rollout undo` give instant,
+   scriptable deploy-and-revert without waiting on a full pipeline run. Tradeoff: bypassing the
+   normal CI/CD approval path for speed sacrifices some review/audit trail in a genuine emergency.
+10. **Batch workloads via native Kubernetes Jobs/CronJobs.** Situation: scheduled or one-off batch
+    processing needs built-in retry semantics. Why EKS fits: native `Job`/`CronJob` objects give
+    retry/backoff behavior ECS's simpler Scheduled Tasks model lacks. Tradeoff: more moving parts
+    (node or Fargate profile capacity must be scheduled correctly) than ECS's simpler `RunTask`.
+11. **Zero-trust microservices with a service mesh.** Situation: every service-to-service hop must
+    be mutually authenticated (mTLS) with fine-grained traffic policy. Why EKS fits: Istio/App Mesh
+    run natively on EKS with no AWS-proprietary equivalent. Tradeoff: meaningful added latency and
+    operational complexity versus ECS Service Connect's simpler, non-mTLS service discovery.
+12. **Cost-sensitive steady-state fleets needing fine bin-packing control.** Situation: a large,
+    stable workload wants scheduler-level control over how containers pack onto nodes, beyond what
+    ECS's scheduler exposes. Why EKS fits: custom schedulers and node affinity rules allow precise
+    placement decisions. Tradeoff: tuning this well requires genuine Kubernetes operations
+    expertise that most ECS-only shops don't carry in-house.
 
 ## When NOT to Use It / Alternatives
 

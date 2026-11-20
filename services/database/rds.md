@@ -144,6 +144,70 @@ flowchart TB
     EBS -.->|storage autoscaling trigger| Grow[Volume grows automatically<br/>when free space < threshold]
 ```
 
+### Connecting to RDS from Application Code: psycopg2 and RDS Proxy
+
+The CLI commands in the Hands-on Lab section show how to provision an instance; this section
+shows how application code actually talks to it, including the two most common real-world
+mistakes (opening one connection per request, and not using RDS Proxy from Lambda).
+
+```python
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# In production, pull these from Secrets Manager (with rotation), never hardcode them —
+# and point host at the RDS Proxy endpoint, not the raw instance endpoint, when calling
+# from Lambda, so this process doesn't open its own fresh connection on every cold start.
+conn = psycopg2.connect(
+    host=os.environ["DB_HOST"],       # e.g. my-proxy.proxy-xxxx.us-east-1.rds.amazonaws.com
+    port=5432,
+    dbname="orders",
+    user=os.environ["DB_USER"],
+    password=os.environ["DB_PASSWORD"],  # fetched from Secrets Manager at cold start, cached
+    sslmode="require",                    # enforce encryption in transit, don't leave it optional
+    connect_timeout=5,
+)
+
+with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    # A normalized schema: orders references customers by foreign key, not duplicated data.
+    cur.execute("""
+        SELECT o.order_id, o.order_total, o.status, c.email
+        FROM orders o
+        JOIN customers c ON c.customer_id = o.customer_id
+        WHERE o.status = %s
+          AND o.created_at >= NOW() - INTERVAL '7 days'
+        ORDER BY o.created_at DESC
+        LIMIT 50
+    """, ("PENDING",))
+    pending_orders = cur.fetchall()
+
+    # A multi-table transaction: debit inventory and insert the order atomically — if either
+    # statement fails, both roll back, which is exactly the guarantee DynamoDB can't give you
+    # across tables without the explicit, scoped TransactWriteItems API.
+    try:
+        cur.execute(
+            "UPDATE inventory SET quantity = quantity - %s WHERE sku = %s AND quantity >= %s",
+            (2, "WIDGET-1", 2),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Insufficient inventory — aborting order")
+        cur.execute(
+            "INSERT INTO orders (customer_id, order_total, status) VALUES (%s, %s, %s)",
+            ("cust-001", 89.99, "PENDING"),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+conn.close()  # in a pooled/Proxy setup, this returns the connection to the pool, not a TCP close
+```
+
+- The `ON ... JOIN` above is the exact capability DynamoDB's single-table design is working around
+  not having — one SQL statement, two tables, no application-side merge logic.
+- Wrapping the inventory-check-then-insert in a single transaction is what "ACID across multiple
+  statements as the default" concretely looks like in code, not just a vocabulary word.
+
 ## Key Features / Components
 
 - **Multi-engine support** — MySQL, PostgreSQL, MariaDB, Oracle, Microsoft SQL Server (Aurora is
@@ -259,16 +323,68 @@ flowchart LR
 
 ## Use Cases — When to Use It
 
-- You're migrating an existing on-prem MySQL/PostgreSQL/Oracle/SQL Server app to AWS with minimal
-  rewrite ("lift and shift").
-- Your data is inherently relational: orders linked to customers linked to products, with
-  transactions needing strict ACID guarantees (e.g., an e-commerce checkout, a banking ledger).
-- Your team already knows SQL and your app's ORM (Django ORM, Hibernate, ActiveRecord) expects a
-  relational backend.
-- You need complex multi-table JOINs, foreign key constraints, and strong consistency without
-  building that logic yourself.
-- Licensing requirements force Oracle or SQL Server specifically (RDS supports both, License
-  Included or Bring-Your-Own-License).
+- **E-commerce order system with strict inventory/payment consistency.** An order must debit
+  inventory and record payment atomically — if either half fails, both roll back. RDS's ACID
+  transactions guarantee this as the default. Tradeoff vs DynamoDB: DynamoDB can do this too via
+  `TransactWriteItems`, but only as an explicit, scoped exception (up to 100 items/25 tables);
+  RDS gives you this guarantee for free on every multi-statement transaction, which fits a
+  domain where "did the money and the inventory actually stay in sync" is constantly relevant.
+- **Banking / financial ledger with double-entry bookkeeping.** Every transaction debits one
+  account and credits another, and the books must always balance across many accounts. This is
+  the textbook relational use case: foreign keys enforce referential integrity, and multi-row
+  transactions are the normal mode of operation, not a rare case. Tradeoff vs DynamoDB: modeling
+  ongoing double-entry bookkeeping across arbitrary account pairs as DynamoDB items/transactions
+  is awkward and fights the tool; RDS's relational model is a natural fit.
+- **Lift-and-shift of an on-prem MySQL/PostgreSQL/Oracle/SQL Server application.** An existing
+  app with its schema, stored procedures, and SQL already written, moving to AWS with minimal
+  rewrite. Tradeoff vs Aurora: Aurora is wire-compatible with MySQL/PostgreSQL and usually faster,
+  but if the engine is Oracle/SQL Server, or the workload is modest and cost-sensitive, plain RDS
+  is the simpler, cheaper choice — Aurora's throughput/failover advantages are wasted at small
+  scale and come with a real cost premium.
+- **Internal admin dashboard / back-office reporting tool.** Moderate traffic, ad-hoc SQL queries
+  that change shape as business questions evolve, used by a handful of internal staff. Tradeoff
+  vs DynamoDB: DynamoDB would force upfront access-pattern design for queries that are, by nature,
+  unpredictable and evolving — RDS's SQL flexibility is specifically suited to this instability.
+- **SaaS application with per-tenant relational data (multi-tenant schema).** Customer accounts,
+  users, and permissions modeled with foreign keys and row-level constraints, queried with JOINs
+  across tenant-scoped tables. Tradeoff vs DynamoDB: a relational schema naturally expresses
+  tenant-scoped referential integrity (e.g., "a user must belong to an existing account") via
+  foreign keys; replicating that constraint in DynamoDB requires application-level enforcement.
+- **Reporting replica offloading read-heavy dashboards from a live OLTP database.** A Read
+  Replica serves analyst/reporting queries so they don't compete with checkout-path traffic for
+  CPU/IO on the primary. Tradeoff vs Redshift: a read replica is the right tool while reporting
+  queries are still genuinely *relational* (joins, moderate row counts); once queries become
+  heavy aggregation across billions of historical rows, migrate that workload to Redshift instead
+  of continuing to add replicas — a replica doesn't change the underlying row-store I/O shape.
+- **Disaster recovery via a cross-Region read replica.** A standby copy of a production database
+  in a second Region, promotable to a standalone primary if the first Region becomes unavailable.
+  Tradeoff vs Aurora Global Database: Aurora Global DB replicates with sub-second lag and faster
+  promotion; a plain RDS cross-Region replica is cheaper and simpler when a slightly higher RPO
+  (replication lag) and promotion time are acceptable for the actual business continuity need.
+- **Licensed commercial database migration (Oracle/SQL Server) with compliance requirements.** A
+  regulated workload that must stay on a specific licensed engine. RDS supports both License
+  Included and Bring-Your-Own-License models. Tradeoff vs Aurora: Aurora doesn't support Oracle
+  or SQL Server at all — if the engine is a hard requirement, RDS is the only AWS-managed option.
+- **Content management system with structured, versioned content.** Articles, authors, categories,
+  and revision history modeled relationally, with foreign keys enforcing that a revision always
+  references a real article. Tradeoff vs DocumentDB: if content is uniformly structured and
+  relationship-heavy (authors, categories, tags), relational fits naturally; DocumentDB is the
+  better fit only once content shapes genuinely vary per record (see `documentdb.md`).
+- **Blue/Green major version upgrade for a business-critical database.** A full staging
+  environment validated against production-like traffic before cutover, with an immediate
+  rollback path. Tradeoff vs a manual snapshot-and-swap: Blue/Green is purpose-built, safer, and
+  faster to roll back from — recognize it as the named feature rather than reinventing the
+  pattern manually with snapshots.
+- **Dev/test environments needing periodic, point-in-time-accurate data snapshots.** Automated
+  backups and manual snapshots let a team spin up a copy of production data for staging/QA.
+  Tradeoff vs Aurora's fast cloning: RDS snapshot/restore is slower and costs a full duplicate
+  copy per environment; Aurora's copy-on-write cloning is faster and cheaper for frequent,
+  many-environment dev/test churn — a reason to prefer Aurora specifically when this is common.
+- **Geospatial or full-text search workloads using PostgreSQL extensions.** PostGIS for location
+  queries, or `pg_trgm`/full-text search for text search, directly inside the relational engine.
+  Tradeoff vs a dedicated search service (OpenSearch): RDS/PostgreSQL extensions are simpler when
+  search needs are modest and co-located with other relational data; a dedicated search engine
+  wins once query volume or search sophistication (relevance ranking, faceting) grows significantly.
 
 ## When NOT to Use It / Alternatives
 

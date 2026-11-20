@@ -147,6 +147,68 @@ for the shared fundamentals). What's specifically different and worth designing 
   your min/max ACU bounds around your actual traffic variance (e.g., min 0.5 ACU overnight, max 16
   ACU during peak), not a single "typical" number — the entire value proposition is in that range.
 
+### Querying Aurora Serverless via the Data API (boto3, no persistent connection)
+
+Aurora's Data API lets Lambda (or any HTTP-capable caller) run SQL over a managed HTTPS endpoint
+instead of opening a direct database connection — removing the connection-exhaustion problem
+entirely rather than just pooling around it with RDS Proxy.
+
+```python
+import boto3
+
+rds_data = boto3.client("rds-data", region_name="us-east-1")
+
+CLUSTER_ARN = "arn:aws:rds:us-east-1:123456789012:cluster:study-aurora"
+SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:aurora-creds-AbCdEf"
+
+# No connection object to open/close/pool — each call is a stateless HTTPS request,
+# which is exactly why this pattern pairs so well with Lambda's scale-to-thousands model.
+response = rds_data.execute_statement(
+    resourceArn=CLUSTER_ARN,
+    secretArn=SECRET_ARN,
+    database="orders",
+    sql="""
+        SELECT customer_id, SUM(order_total) AS lifetime_value
+        FROM orders
+        WHERE created_at >= :since
+        GROUP BY customer_id
+        ORDER BY lifetime_value DESC
+        LIMIT 10
+    """,
+    parameters=[{"name": "since", "value": {"stringValue": "2026-01-01"}}],
+)
+
+for record in response["records"]:
+    customer_id, lifetime_value = record[0]["stringValue"], record[1]["doubleValue"]
+    print(customer_id, lifetime_value)
+
+# A transactional, multi-statement write using the Data API's explicit transaction handle —
+# needed because each execute_statement call is otherwise its own independent transaction.
+tx = rds_data.begin_transaction(resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database="orders")
+try:
+    rds_data.execute_statement(
+        resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database="orders",
+        transactionId=tx["transactionId"],
+        sql="UPDATE inventory SET quantity = quantity - 1 WHERE sku = :sku",
+        parameters=[{"name": "sku", "value": {"stringValue": "WIDGET-1"}}],
+    )
+    rds_data.execute_statement(
+        resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database="orders",
+        transactionId=tx["transactionId"],
+        sql="INSERT INTO orders (customer_id, order_total) VALUES (:cid, :total)",
+        parameters=[
+            {"name": "cid", "value": {"stringValue": "cust-001"}},
+            {"name": "total", "value": {"doubleValue": 89.99}},
+        ],
+    )
+    rds_data.commit_transaction(resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN,
+                                 transactionId=tx["transactionId"])
+except Exception:
+    rds_data.rollback_transaction(resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN,
+                                    transactionId=tx["transactionId"])
+    raise
+```
+
 ## Key Features / Components
 
 - **MySQL & PostgreSQL compatibility** — your app, driver, and SQL stay the same; swapping RDS
@@ -277,16 +339,66 @@ at small scale, due to cost).
 
 ## Use Cases — When to Use It
 
-- You want MySQL/PostgreSQL's relational model and SQL compatibility but your workload has
-  outgrown standard RDS performance (high transaction volume, heavy read replica fan-out).
-- SaaS applications with unpredictable or spiky traffic, where **Aurora Serverless v2** avoids
-  over-provisioning for peak while still auto-scaling down to save cost off-peak.
-- Global applications needing low-latency reads in multiple Regions with a single source of
-  truth (**Aurora Global Database**).
-- Teams migrating off expensive commercial databases (Oracle/SQL Server) to a cheaper,
-  open-source-compatible engine without losing relational guarantees (via AWS Schema Conversion
-  Tool + DMS).
-- Dev/test environments that need frequent, cheap, near-instant database clones.
+- **High-throughput SaaS application that has outgrown plain RDS.** MySQL/PostgreSQL schema and
+  SQL stay unchanged, but transaction volume now needs read-replica fan-out beyond RDS's 5-replica
+  ceiling. Tradeoff vs RDS: Aurora's I/O-based billing and ~20% higher per-vCPU rate is a real
+  cost increase that only pays for itself once you're genuinely past RDS's throughput/replica
+  ceiling — recognize that threshold before migrating speculatively.
+- **Global SaaS application needing low-latency reads in multiple Regions.** Aurora Global
+  Database gives sub-second cross-Region replication with a single authoritative write Region.
+  Tradeoff vs a plain RDS cross-Region read replica: Global Database is purpose-built for this
+  (faster lag, faster promotion in minutes) but is Aurora-only — if the engine must be Oracle/SQL
+  Server, this option doesn't exist and a standard cross-Region replica is the fallback.
+- **Spiky SaaS traffic with long idle periods and sudden 10x bursts.** Aurora Serverless v2
+  scales compute within configured ACU bounds automatically. Tradeoff vs fixed-size RDS/Aurora
+  instances: Serverless carries a per-ACU premium over the equivalent dedicated vCPU rate, so it's
+  the wrong choice for flat, steady traffic — the value is specifically in not paying for idle
+  capacity during long troughs between bursts.
+- **E-commerce order system requiring both relational guarantees and fast failover.** Checkout
+  logic needs multi-table ACID transactions *and* can't tolerate a 60-120 second Multi-AZ
+  failover window during a peak sales event. Tradeoff vs RDS: Aurora's sub-30-second failover and
+  quorum-based storage model directly address this; RDS Multi-AZ DB clusters narrow the gap but
+  Aurora remains the faster option for this specific requirement.
+- **Migrating off expensive commercial licensing (Oracle/SQL Server) to reduce database spend.**
+  Using AWS Schema Conversion Tool + DMS to move to Aurora PostgreSQL/MySQL compatibility.
+  Tradeoff vs staying on RDS for Oracle/SQL Server: the migration effort (stored procedure
+  conversion is rarely 100% automatic) is real and nontrivial, but the ongoing licensing savings
+  compound over years — budget the migration as a project, not a quick switch.
+- **Dev/test environments needing dozens of near-identical, frequently refreshed databases.**
+  Aurora's copy-on-write fast cloning spins up a full working copy in seconds/minutes regardless
+  of the source dataset's size. Tradeoff vs RDS snapshot/restore: RDS snapshot/restore works but
+  is slower and costs a full duplicate copy per environment — choose Aurora specifically when this
+  churn is frequent (e.g., per feature branch), not for a single long-lived staging environment.
+- **Near-real-time analytics on live transactional data without a custom ETL pipeline.** A
+  zero-ETL integration continuously replicates Aurora data into Redshift. Tradeoff vs hand-built
+  ETL (Glue/EMR jobs): zero-ETL removes pipeline maintenance entirely for the common case, but
+  offers less control over transformation logic than a custom pipeline — fine when the goal is
+  "recent data, standard shape," less so for heavily reshaped/cleaned analytical datasets.
+- **Reporting workload that still benefits from staying relational, just needs to not hit the
+  writer.** Analytical-style scan/aggregate queries pushed down via Aurora Parallel Query (MySQL)
+  run across the distributed storage layer in parallel. Tradeoff vs Redshift: Parallel Query keeps
+  the data in the same operational database (simpler, no separate warehouse to maintain) for
+  moderate analytical workloads; once query complexity/volume grows into genuine OLAP territory,
+  migrate to Redshift instead of continuing to lean on Parallel Query.
+- **Multi-tenant SaaS platform with many small, bursty tenants sharing one deployment.** Aurora
+  Serverless v2's per-tenant or per-cluster scaling absorbs each tenant's independent traffic
+  pattern without manually sizing for every tenant's peak. Tradeoff vs a single large fixed
+  instance: fixed instances are cheaper per-vCPU at sustained high utilization, but force sizing
+  for the sum of all tenants' peaks simultaneously, which rarely happens in practice.
+- **Disaster recovery requiring both fast regional failover and zero data loss within a Region.**
+  Aurora's 6-copy/3-AZ quorum write model tolerates a full AZ loss without write-availability
+  interruption. Tradeoff vs RDS Multi-AZ: RDS Multi-AZ also survives AZ loss, but with a longer
+  failover window and without the read-quorum guarantee Aurora's model provides.
+- **Teams wanting MySQL/PostgreSQL compatibility with minimal application changes versus NoSQL.**
+  A relational workload with existing JOINs, foreign keys, and ORM code that doesn't want a
+  DynamoDB-style access-pattern redesign. Tradeoff vs DynamoDB: Aurora preserves the existing
+  query flexibility at the cost of an eventual horizontal-scaling ceiling that DynamoDB doesn't
+  have — fine for the vast majority of relational workloads that never actually hit that ceiling.
+- **Feeding both an operational app and an ML feature pipeline from one relational source.**
+  Aurora serves live app traffic while zero-ETL replication feeds Redshift for feature
+  engineering (relevant to MLA-C02's Domain 1). Tradeoff vs maintaining two separately-synced
+  databases: zero-ETL removes the custom sync code, but the feature pipeline's freshness is only
+  as good as the (typically near-real-time, not instantaneous) zero-ETL replication lag.
 
 ## When NOT to Use It / Alternatives
 

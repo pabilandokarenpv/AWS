@@ -267,15 +267,66 @@ failover to the replica Region references the exact same image, not a rebuilt eq
 
 ## Use Cases — When to Use It
 
-- Any container-based workload on AWS (ECS, EKS, Fargate, Lambda container images) needs a
-  registry — ECR is the default, IAM-integrated choice.
-- Teams that need strict access control over who can push/pull specific images (e.g., only the CI
-  pipeline's role can push; only specific service roles can pull).
-- Organizations needing vulnerability scanning baked into the image lifecycle before deployment.
-- Multi-region or multi-account deployments that need the same image replicated close to where
-  it's consumed.
-- Standardizing dozens/hundreds of microservice repositories with consistent naming, scanning, and
-  lifecycle configuration via repository creation templates.
+Each scenario names the situation, why ECR fits, and the tradeoff accepted versus an alternative.
+
+1. **Baseline registry for any container workload on AWS.** Situation: ECS, EKS, Fargate, or Lambda
+   container images all need somewhere to live. Why ECR fits: IAM-native auth means no separate
+   registry credentials to manage across every compute service that pulls images. Tradeoff: tighter
+   coupling to AWS than a cloud-agnostic registry, which matters less if you're all-in on AWS
+   compute anyway.
+2. **Strict push/pull access control per pipeline.** Situation: only the CI pipeline's role should
+   push images; developers' laptops should never be able to. Why ECR fits: a repository resource
+   policy can grant push only to a named IAM role, pull to everyone else. Tradeoff: cross-account
+   access needs *both* the repository policy and the external role's own identity policy to agree
+   — a one-sided grant silently denies access.
+3. **Vulnerability-gated deployment pipeline.** Situation: images must be scanned for CVEs before
+   reaching production. Why ECR fits: enhanced scanning (Amazon Inspector) continuously rescans
+   stored images, not just at push time, and EventBridge can gate promotion on findings. Tradeoff:
+   enhanced scanning is billed per image scanned — basic scanning is free but only scans once, on
+   push.
+4. **Multi-region/multi-account disaster recovery.** Situation: a failover region needs the exact
+   same image available locally if the primary region goes down. Why ECR fits: replication rules
+   copy images (keeping tags and digests identical) automatically on every push, registry-wide.
+   Tradeoff: cross-region replication incurs standard data transfer charges and a small propagation
+   delay versus a single-region setup.
+5. **Standardizing hundreds of microservice repositories.** Situation: a platform team wants
+   consistent naming, scanning, and lifecycle configuration across every new microservice repo.
+   Why ECR fits: repository creation templates auto-apply rules whenever a matching new repo is
+   created. Tradeoff: templates only apply at creation time — retrofitting policy onto existing
+   repos still needs a separate bulk update pass.
+6. **Monorepo CI/CD producing many images per commit.** Situation: a monorepo build fans out into
+   dozens of service images on a single pipeline run. Why ECR fits: one repository per service,
+   each independently lifecycle-managed, keeps storage costs bounded as commit volume grows.
+   Tradeoff: without disciplined naming conventions, repo sprawl becomes hard to audit at scale.
+7. **Hotfix emergency deploys needing instant, traceable image availability.** Situation: a
+   critical patch must reach production fast with zero ambiguity about which bytes are running.
+   Why ECR fits: image digests are immutable — pulling by digest (or a commit-SHA tag) guarantees
+   the exact image deployed, even under time pressure. Tradeoff: teams that fall back to mutable
+   tags like `:latest` during a rushed release lose that guarantee entirely.
+8. **Multi-tenant SaaS with per-tenant image variants.** Situation: a SaaS platform builds
+   tenant-specific container variants. Why ECR fits: one repository per tenant/service, each scoped
+   by its own resource policy, cleanly separates who can push/pull which variant. Tradeoff:
+   repository sprawl at real scale requires active governance or it becomes unmanageable.
+9. **Fully private-subnet deployments with no internet egress.** Situation: compute runs in
+   subnets with no NAT Gateway or public route at all. Why ECR fits: VPC interface endpoints for
+   `ecr.api`/`ecr.dkr` plus a gateway endpoint for `s3` let tasks pull images with a fully private
+   network path. Tradeoff: interface endpoints carry their own hourly charge versus a NAT Gateway,
+   though usually still cheaper and more secure at scale.
+10. **Build-once, deploy-many promotion across environments.** Situation: the same image must move
+    from dev to staging to production without being rebuilt at each stage. Why ECR fits: pulling by
+    immutable digest guarantees bit-for-bit identical artifacts across every environment.
+    Tradeoff: requires pipeline discipline to always reference the digest/commit-SHA, never a
+    floating environment tag, or the guarantee silently breaks.
+11. **Supply-chain security via image signing and attestation.** Situation: compliance requires
+    proof an image genuinely came from the CI pipeline, not a manual push. Why ECR fits: OCI
+    artifact support stores Cosign/Sigstore signatures and SBOMs alongside the image in the same
+    registry. Tradeoff: adds verification tooling (admission controllers, signing infrastructure)
+    that itself must be maintained and trusted.
+12. **Reducing dependency on public base-image registries.** Situation: builds pull `python:3.12`-
+    style base images directly from Docker Hub, subject to its public rate limits. Why ECR fits: a
+    pull-through cache rule serves repeat pulls from inside AWS, immune to a Docker Hub outage or
+    rate-limit event. Tradeoff: the very first pull of any new upstream tag still depends on the
+    public registry being reachable at that moment.
 
 ## When NOT to Use It / Alternatives
 

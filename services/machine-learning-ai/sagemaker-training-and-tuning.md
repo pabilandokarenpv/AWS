@@ -255,21 +255,75 @@ setup SageMaker HyperPod is built to manage reliably at scale.
 
 ## Use Cases — When to Use It
 
-- You have a well-understood tabular problem (churn prediction, credit risk, fraud) → start with
-  the **XGBoost built-in algorithm**; it's usually competitive out of the box.
-- You have a custom deep learning architecture (a specific CNN, transformer variant) → **script
-  mode** with PyTorch or TensorFlow.
-- You need the best possible model and have budget for a systematic search → **AMT**, especially
-  Bayesian strategy for expensive-to-train models (fewer total jobs needed than Random/Grid).
-- You're training on a large dataset that doesn't fit one instance's memory → **distributed data-
-  parallel training**.
-- You're training a large model that doesn't fit one GPU → **model-parallel training**.
-- Your training budget is tight and jobs can tolerate interruption/resumption → **Managed Spot
-  Training**.
-- You're training at a scale where hardware failures during a multi-day run are a real
-  operational risk → **SageMaker HyperPod**.
-- You need an algorithm with no existing open-source/framework implementation that fits, or need
-  to control the entire runtime environment precisely → **Bring Your Own Container**.
+- **Fraud detection training (financial services):** Problem — build a classifier on millions of
+  labeled historical transactions with dozens of engineered features. Why it fits — the XGBoost
+  built-in algorithm is the strongest default baseline for exactly this tabular classification
+  shape, with no custom code to write. Tradeoff vs. script mode with a custom neural network — a
+  custom architecture might eke out marginal accuracy gains but costs far more engineering time
+  for a problem type XGBoost usually already handles well.
+- **Customer churn prediction (telecom/SaaS):** Problem — predict cancellation from account/usage
+  history, then systematically tune to squeeze out the last few points of accuracy. Why it fits —
+  XGBoost baseline first, then AMT's Bayesian search converges on strong hyperparameters with
+  fewer total trials than brute force. Tradeoff vs. Random/Grid search — Bayesian needs the AMT
+  controller to reason about prior trial results, adding a little setup complexity Random/Grid
+  don't need, in exchange for materially fewer total training jobs for the same result quality.
+- **Medical imaging classification (healthcare):** Problem — train a CNN to flag anomalies in a
+  hospital's own labeled scan archive, where no off-the-shelf model fits the institution's
+  specific imaging protocol. Why it fits — script mode with a custom PyTorch/TensorFlow CNN gives
+  full architectural control. Tradeoff vs. a built-in algorithm — SageMaker's built-in
+  "Object Detection/Image Classification" algorithms cover generic vision tasks faster to set up,
+  but a bespoke CNN architecture is often necessary for specialized medical imaging modalities
+  they weren't tuned for.
+- **Demand forecasting (retail/CPG):** Problem — forecast SKU-level demand across hundreds of
+  related, correlated product time series. Why it fits — DeepAR is purpose-built to learn shared
+  patterns across many related series simultaneously, unlike training 500 independent models. 
+  Tradeoff vs. Amazon Forecast — Forecast wraps the same underlying capability behind a fully
+  managed API with its own AutoML algorithm selection; choose DeepAR here specifically when the
+  forecasting step needs to live inside a broader custom training pipeline.
+- **Recommendation engine (e-commerce):** Problem — learn from extremely sparse, high-dimensional
+  user-item interaction data (most users haven't interacted with most items). Why it fits —
+  Factorization Machines is specifically designed for this sparse-data shape, where simpler
+  linear models underperform. Tradeoff vs. Amazon Personalize — Personalize ships pre-built recipe
+  templates needing far less tuning expertise; use Factorization Machines directly when you need
+  custom feature engineering Personalize's recipes don't expose.
+- **Content/document classification (any back-office, e.g., legal/insurance triage):** Problem —
+  classify free-text documents (support tickets, contract clauses, claim narratives) into a fixed
+  set of categories at volume. Why it fits — BlazingText trains fast, scalable text classification
+  with no deep-learning expertise required. Tradeoff vs. Bedrock prompt-based classification —
+  BlazingText needs labeled training data and a training job up front but then classifies at a
+  lower marginal cost per item than a per-token foundation-model call at very high sustained
+  volume.
+- **Anomaly/outlier detection for quality control (manufacturing):** Problem — flag unusual sensor
+  readings or defective units on a production line without pre-labeled "defective" examples. Why
+  it fits — Random Cut Forest detects statistical outliers unsupervised, which is exactly the
+  right fit when labeled defect examples are scarce or nonexistent. Tradeoff vs. a supervised
+  classifier — a supervised model would need enough labeled defect examples to learn from, which
+  manufacturing QA data often simply doesn't have in sufficient volume; RCF sidesteps that
+  requirement entirely.
+- **Credit risk scoring at scale (banking):** Problem — train a model too large or on data too
+  large to fit comfortably on one training instance. Why it fits — data-parallel distributed
+  training splits the dataset across instances while every node keeps a full model copy. Tradeoff
+  vs. staying single-instance — single-instance training is simpler to configure and debug, but
+  becomes the bottleneck once dataset size genuinely exceeds what one instance can process in
+  reasonable time.
+- **Large-scale foundation-model-adjacent training (research/platform teams):** Problem — train
+  a model whose parameter count is too large to fit in a single GPU's memory. Why it fits —
+  model-parallel training splits the model's own layers across multiple GPUs/nodes. Tradeoff vs.
+  data-parallel training — model-parallel solves a fundamentally different bottleneck (model size,
+  not data size) and adds communication overhead between layers that data-parallel training
+  doesn't incur; picking the wrong one for your actual bottleneck wastes significant setup effort.
+- **Cost-constrained batch retraining (any regularly-retrained production model):** Problem — a
+  nightly/weekly retraining job's compute cost adds up fast at scale. Why it fits — Managed Spot
+  Training runs the same job on spare EC2 capacity at up to ~90% off, with automatic
+  checkpoint/resume if interrupted. Tradeoff vs. On-Demand training — Spot risks occasional
+  interruption and mandates your script actually implement checkpointing; On-Demand guarantees
+  uninterrupted completion at full price, which matters for a one-time, time-critical training run.
+- **Multi-day foundation-model-scale training runs (platform/research teams):** Problem — a
+  training run spanning days across hundreds of GPUs where a single hardware failure would
+  otherwise force a full restart. Why it fits — SageMaker HyperPod automatically detects and
+  replaces faulty nodes mid-run. Tradeoff vs. plain distributed training libraries without
+  HyperPod — HyperPod adds real operational overhead to set up, justified only once the training
+  run's duration/scale makes a hardware failure a near-certainty rather than a rare edge case.
 
 ## When NOT to Use It / Alternatives
 

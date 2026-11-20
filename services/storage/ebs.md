@@ -148,13 +148,59 @@ not.
 
 ## Use Cases — When to Use It
 
-- **Boot volumes for EC2 instances** — the root device almost every EC2 instance uses.
-- **Relational databases on EC2** (self-managed MySQL/PostgreSQL/SQL Server) needing consistent,
-  low-latency block I/O.
-- **Transactional, latency-sensitive workloads** where the filesystem needs to behave like a local disk.
-- **Workloads needing resizable, swappable performance** — start on gp3, bump IOPS live if a
-  workload gets heavier, no downtime.
-- **Point-in-time recovery / cloning** — snapshot before a risky deployment, restore if it goes wrong.
+- **Boot volumes for a fleet of EC2 web servers.** Every EC2 instance needs a root device to boot its
+  OS and application code from. EBS gp3 is the default, resizable without downtime. *Alternative
+  cost:* instance store (ephemeral local disk) is faster but vanishes on stop/terminate — unacceptable
+  for anything that must survive a restart.
+- **Self-managed relational database for a SaaS company on EC2.** A team runs PostgreSQL directly on
+  EC2 (not RDS) for full control over extensions/tuning. EBS io2 gives the consistent low-latency
+  block I/O a transactional database needs. *Alternative cost:* S3 isn't an option at all here — it
+  has no random-write, low-latency semantics a database engine's storage layer requires.
+- **Genomics/bioinformatics pipeline scratch disk.** A research pipeline needs fast local scratch space
+  for intermediate alignment files during a multi-hour job. A gp3 or io2 volume sized for the job gives
+  predictable IOPS. *Alternative cost:* using network file storage (EFS) for pure scratch work instead
+  adds unnecessary multi-AZ replication cost for data that's deleted at job end anyway.
+- **Pre-deployment snapshot-and-rollback for a financial trading platform.** Before a risky schema
+  migration, the team snapshots production EBS volumes, enabling immediate rollback if the migration
+  fails. *Alternative cost:* relying solely on application-level migration-reversal scripts is riskier
+  under real incident pressure than a point-in-time disk restore.
+- **Clustered database storage via Multi-Attach for an SAP HANA scale-out deployment.** Several nodes
+  need to see the same block device concurrently, coordinated by a cluster-aware filesystem. EBS
+  Multi-Attach is the only block-storage option supporting this topology directly. *Alternative cost:*
+  giving each node its own separate volume and replicating data at the application layer duplicates
+  work HANA's own clustering already solves.
+- **Big-data cluster with tiered volume types.** A Hadoop/Spark cluster on EC2 mixes gp3 (hot working
+  data), st1 (large sequential log/shuffle files), and sc1 (cold historical partitions) on the same
+  node. *Alternative cost:* putting everything on gp3/io2 instead pays for random-IOPS performance the
+  sequential workloads don't need.
+- **Golden AMI with Fast Snapshot Restore for a flash-sale e-commerce platform.** An Auto Scaling group
+  must launch fully warmed-up instances the instant a traffic spike hits. FSR pre-warms the AMI's
+  backing snapshot so every new volume has full I/O from boot. *Alternative cost:* without FSR, each
+  new instance lazy-loads blocks on first access — exactly when the platform can least afford degraded
+  disk performance.
+- **Cross-Region DR for a manufacturing company's ERP system.** Scheduled snapshots of the ERP's EBS
+  volumes are copied to a secondary Region via Data Lifecycle Manager, ready to restore if the primary
+  Region fails. *Alternative cost:* a live, continuously-replicated standby volume isn't possible at
+  all — EBS volumes can't span Regions, so snapshot-copy is the only cross-Region path EBS has.
+- **Encrypted local caching tier for a media transcoding farm.** Transcoding nodes need a fast local
+  disk to hold the source file and intermediate renditions during a job. io2/gp3 with EBS
+  encryption-by-default satisfies both performance and at-rest encryption in one resource.
+  *Alternative cost:* streaming the source file directly from S3 on every read during transcoding adds
+  API latency/cost to an already I/O-bound workload.
+- **Database storage for a legacy on-prem application migrated via lift-and-shift.** An application
+  expects a local disk mount with POSIX/NTFS semantics and no application-rewrite budget. EBS behaves
+  exactly like the on-prem SAN LUN it replaces. *Alternative cost:* re-platforming onto S3 or a managed
+  database at the same time multiplies the project's risk and timeline for no immediate business
+  requirement.
+- **Log processing storage for a batch analytics pipeline.** A nightly ETL job reads large sequential
+  log files start-to-finish on a single worker instance. st1 (Throughput Optimized HDD) is tuned
+  exactly for this access pattern. *Alternative cost:* gp3/io2 instead charges for random-IOPS
+  performance the purely sequential job never exercises.
+- **Compliance archival of cold EBS snapshots for a regulated enterprise.** Years of nightly snapshots
+  pile up, most of which will never be restored. The EBS Snapshots Archive tier cuts storage cost
+  roughly 75% for snapshots kept purely for audit/compliance retention. *Alternative cost:* leaving
+  every historical snapshot in the standard tier pays full price indefinitely for recovery points that
+  are, realistically, never going to be restored.
 
 ## When NOT to Use It / Alternatives
 

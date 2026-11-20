@@ -146,15 +146,67 @@ every new workload.
 
 ## Use Cases — When to Use It
 
-- **Long-term regulatory/compliance records** (7–10+ year retention: financial statements,
-  healthcare records, legal documents) — Deep Archive is usually the cheapest fit.
-- **Media and scientific archives** — raw footage, research datasets kept "just in case," rarely reopened.
-- **Backup target for AWS Backup / Storage Gateway Tape Gateway** — both services write their
-  coldest retention tiers into Glacier classes under the hood.
-- **Replacing physical tape vaults** — Glacier (via Tape Gateway) is the direct modern substitute
-  for off-site tape rotation.
-- **Immutable compliance archives** — Vault Lock (or S3 Object Lock on Glacier-class objects) for
-  data that must be provably untampered.
+- **Long-term regulatory records for a bank (7–10 year retention).** Records must be kept but are
+  essentially never reopened, and deleting them isn't legally permitted. Deep Archive's
+  ~$0.00099/GB-month rate makes multi-year retention of large regulatory datasets affordable at scale.
+  *Alternative cost:* keeping the same data on S3 Standard instead costs roughly 23x as much for data
+  nobody expects to read.
+- **Media and scientific raw-footage archive for a documentary production company.** Raw 4K/8K camera
+  footage from completed projects is kept "just in case" a future re-cut needs it, with access measured
+  in years, not days. Glacier Flexible Retrieval tolerates a multi-hour wait the company has already
+  accepted for this use case. *Alternative cost:* Standard-IA instead would still charge the full
+  millisecond-access storage premium for data that will essentially never need millisecond access.
+- **Healthcare imaging archive needing same-business-day retrieval despite rare access.** Patient
+  imaging must be retained per regulation and, on the rare occasion a malpractice case or transfer
+  requires it, produced within hours, not days. Glacier Flexible Retrieval's Expedited/Standard tiers
+  both fit comfortably within a business day. *Alternative cost:* Deep Archive, despite being cheaper,
+  would fail this RTO outright with its 12–48 hour window — the classic trap of picking "cheapest"
+  without checking retrieval-time constraints.
+- **Backup target underlying AWS Backup / Storage Gateway Tape Gateway for a logistics company.** Both
+  services need somewhere durable and cheap to land their coldest retention tier automatically. Glacier
+  classes are what those services write into under the hood, with no separate integration work
+  required. *Alternative cost:* building a custom cold-storage export pipeline alongside those services
+  duplicates functionality they already provide natively.
+- **Replacing a physical offsite tape vault for an engineering firm's CAD archive.** Design files from
+  completed projects must be retained for the life of the product (often decades) but are opened
+  extremely rarely. Tape Gateway writing into Glacier Deep Archive removes the physical tape supply
+  chain (courier, media, library hardware) entirely. *Alternative cost:* continuing to pay for offsite
+  tape rotation carries ongoing operational cost and courier-loss risk a software-only archive doesn't
+  have.
+- **Immutable compliance archive for a pharmaceutical company's clinical trial data.** Regulators
+  require provable, tamper-evident retention for the life of a drug's approval and beyond. Vault Lock
+  (legacy API) or S3 Object Lock Compliance mode on Glacier-class objects makes the data undeletable
+  even by the company's own administrators until the retention period elapses. *Alternative cost:* a
+  bucket policy or IAM deny rule can always be loosened by someone with sufficient privilege — it
+  doesn't satisfy "provably untamperable."
+- **Genomics raw sequencing data archive for a research institute.** Raw sequencer output is kept for
+  reproducibility requirements but reanalysis happens rarely and without urgency. Glacier Flexible
+  Retrieval's free Bulk tier makes occasional, non-urgent bulk restores essentially free. *Alternative
+  cost:* keeping the same multi-petabyte dataset on Standard-IA instead costs meaningfully more for
+  data that's reopened perhaps once a year.
+- **Legal e-discovery hold archive for a law firm.** Documents under litigation hold must be retained
+  immutably but are read only if the case is reopened. S3 Object Lock Compliance mode on Glacier
+  Instant Retrieval-class objects balances "must be producible quickly if subpoenaed" against "almost
+  certainly never read." *Alternative cost:* a plain Deep Archive class instead risks failing a short
+  e-discovery production deadline if the hold is ever actually invoked.
+- **Satellite imagery/geospatial archive for an agriculture-analytics company.** Historical imagery is
+  retained for trend analysis across years but any single image is read rarely after its season passes.
+  Glacier Instant Retrieval keeps millisecond access (useful for ad hoc historical queries) at a
+  fraction of Standard's storage cost. *Alternative cost:* Standard-IA instead would still be several
+  times more expensive per GB for data with this access profile.
+- **Decommissioned product/device telemetry archive for an IoT device manufacturer.** When a product
+  line is discontinued, its historical telemetry must be kept for warranty/liability reasons but is
+  essentially never queried again. A scheduled lifecycle transition straight into Deep Archive
+  (skipping intermediate tiers once the product's end-of-life is known) minimizes both ongoing storage
+  cost and the number of billed transition events. *Alternative cost:* leaving it on whatever tier it
+  was already in means paying active-tier rates indefinitely for data with a known, permanent access
+  cliff.
+- **Cold database storage for a company retiring a legacy application's historical records.** A
+  decommissioned app's database export must be preserved for potential future audit but will almost
+  certainly never be queried again. Exporting to flat files in Deep Archive is far cheaper than keeping
+  a live (even minimal) database instance running just to hold dormant historical records.
+  *Alternative cost:* keeping even a small RDS instance alive purely to preserve access to retired data
+  bills continuously for compute the data doesn't need.
 
 ## When NOT to Use It / Alternatives
 

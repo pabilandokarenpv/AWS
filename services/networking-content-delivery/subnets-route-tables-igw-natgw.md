@@ -247,15 +247,73 @@ free Gateway Endpoint already covers — see `vpc-endpoints-privatelink.md`.
 
 ## Use Cases — When to Use It
 
-- **Public subnet**: internet-facing load balancers, bastion/jump hosts, NAT Gateways themselves.
-- **Private subnet**: application servers, databases, internal microservices — anything that
-  should never be directly dialable from the internet.
-- **Multiple subnets per AZ**: separate public/private/data tiers within the same AZ for
-  defense-in-depth (e.g., a "data" subnet with even tighter NACLs than the "app" subnet).
-- **NAT Gateway**: private EC2 instances that need outbound-only internet (OS patches, hitting
-  external APIs, pulling container images) without being inbound-reachable.
-- **One NAT Gateway per AZ** (not one shared across AZs): avoids cross-AZ data transfer charges
-  and removes the single-AZ failure point — a standard SAA-C03 cost/resiliency tradeoff question.
+- **Multi-tier web application subnet layout.** A standard web app needs its load balancer
+  internet-reachable but its app and database tiers hidden from direct access. Public subnets
+  hold only the ALB/NAT Gateway; private app and data subnets hold everything else, segmented by
+  route table membership alone. Tradeoff vs. one flat subnet for everything: real isolation
+  between tiers, at the cost of more subnets/route tables to design and maintain per AZ.
+- **Hybrid cloud outbound patching without inbound exposure.** On-prem-style private servers
+  (EC2 in a private subnet) need to reach the internet for OS patches and package updates, but
+  must never be dialable from outside. A NAT Gateway route (`0.0.0.0/0 → nat-gateway-id`) gives
+  outbound-only reachability. Tradeoff vs. a direct IGW route: NAT Gateway preserves the
+  "never reachable inbound" property an IGW route would break, but adds an hourly + per-GB cost
+  an IGW route doesn't have.
+- **Multi-Region DR with per-Region NAT topology.** A DR Region's standby VPC needs its own
+  independent public/private subnet and NAT Gateway layout mirroring the primary Region's, so a
+  failover doesn't also require reconfiguring basic internet reachability. Tradeoff vs. relying
+  on the primary Region's NAT path somehow surviving: duplicating the NAT/subnet design per
+  Region costs more NAT Gateway-hours across two Regions, but a failover that still needs network
+  reconfiguration isn't really a fast failover.
+- **Global content delivery origin tier.** A CloudFront origin (ALB + EC2/ECS fleet) sits in
+  public and private subnets just like any web app, with the public subnet also hosting the NAT
+  Gateway the private origin servers use for outbound calls (license checks, third-party APIs).
+  Tradeoff vs. serving directly from a public subnet with no private tier: layering in a private
+  origin tier adds NAT Gateway cost and a routing hop, but removes direct internet reachability
+  to the origin servers themselves.
+- **Microservices mesh with per-tier subnet isolation.** A service mesh running many
+  microservices on EKS places the ingress gateway in a public subnet and every internal service
+  in private subnets with no direct internet route, reachable only from the mesh's internal
+  routing. Tradeoff vs. giving every service its own public IP: much smaller internet attack
+  surface, but every outbound call (image pulls, external API calls) now depends on a shared NAT
+  Gateway or VPC endpoints instead of direct connectivity.
+- **Compliance-driven fully isolated subnet.** A data-processing subnet handling regulated data
+  must prove it has *no* path to the internet, including outbound. The route table carries only
+  the implicit `local` route plus VPC endpoint routes for the specific AWS APIs it needs — no IGW,
+  no NAT Gateway route at all. Tradeoff vs. a private subnet with NAT Gateway egress: satisfies a
+  stricter "never touches the internet" requirement, but any legitimate new external dependency
+  requires a new VPC endpoint or an architecture change rather than just working.
+- **M&A account consolidation — scheduled/cost-optimized NAT during a migration window.** During
+  a merger, a temporary batch migration job in a private subnet only needs outbound internet
+  access during a nightly window. A NAT Instance that's stopped/started on a schedule (via
+  EventBridge + Lambda) can be cheaper than a permanently-running NAT Gateway for this specific,
+  time-boxed need. Tradeoff vs. a standard NAT Gateway: lower cost for genuinely bursty, scheduled
+  traffic, but you take on the NAT instance's patching/HA/bandwidth-sizing burden yourself.
+- **Cost-optimized AWS-service-only private subnet.** A private subnet's only outbound need is
+  calling S3/DynamoDB — no other internet dependency exists. Removing the NAT Gateway entirely and
+  routing only via a Gateway VPC Endpoint satisfies this at zero marginal cost. Tradeoff vs.
+  keeping a NAT Gateway "just in case": saves real, recurring per-GB NAT Gateway processing cost,
+  but any future non-S3/DynamoDB internet dependency will need its own fix (a new endpoint or
+  reintroducing NAT) rather than already being covered.
+- **Centralized NAT via Transit Gateway hub VPC.** An enterprise with many spoke VPCs wants to
+  avoid running (and paying for) a NAT Gateway pair in every single VPC. Routing all spokes'
+  outbound traffic through one central "egress VPC" attached via Transit Gateway cuts the total
+  NAT Gateway count dramatically. Tradeoff vs. per-VPC NAT Gateways: far fewer NAT Gateways to
+  manage and pay the hourly rate for, but adds a Transit Gateway hop (its own per-GB charge and a
+  shared bandwidth ceiling) to every spoke's outbound path.
+- **Bastion host administrative access pattern.** Operators need SSH/RDP access to private
+  instances without exposing those instances directly to the internet. A bastion host sits in the
+  public subnet with its own security group restricted to a known office/VPN CIDR; private
+  instances accept SSH only from the bastion's security group. Tradeoff vs. giving every instance
+  a public IP and relying solely on security groups: a single, tightly controlled entry point is
+  much easier to audit and lock down, at the cost of a single additional hop for every
+  administrative session.
+- **IPv6 dual-stack outbound-only access.** A workload running dual-stack (IPv4 + IPv6) needs
+  outbound-only internet access on both address families. IPv4 traffic routes through a NAT
+  Gateway; IPv6 traffic routes through an Egress-Only Internet Gateway, since IPv6 has no concept
+  of a private address to hide behind. Tradeoff vs. treating IPv6 the same as IPv4: correctly
+  modeling IPv6's globally-routable-by-design nature avoids accidentally exposing IPv6 addresses
+  inbound, but requires maintaining two parallel sets of outbound-only gateway routes instead of
+  one.
 
 ## When NOT to Use It / Alternatives
 

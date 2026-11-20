@@ -381,16 +381,64 @@ listener types is exactly this decryption-location decision.
 
 ## Use Cases — When to Use It
 
-- **ALB**: standard web applications, microservices with path-based routing, container workloads
-  (ECS/EKS), anything needing host-header or path-based routing, WAF integration, or
-  authentication at the edge.
-- **NLB**: extreme performance/low-latency requirements (gaming, financial trading, IoT),
-  workloads needing a **static IP** for firewall allowlisting, non-HTTP TCP/UDP protocols,
-  preserving the original client IP without needing `X-Forwarded-For`.
-- **GWLB**: centralizing third-party security appliances (firewalls, IDS/IPS) in front of many
-  VPCs without redesigning each VPC's routing — a common enterprise security architecture.
-- **CLB**: only relevant if you're maintaining a pre-2016 legacy workload that hasn't migrated;
-  never the right answer for a new design.
+- **Multi-tier web application front door.** A standard web app needs HTTPS termination,
+  path-based routing, and health-check-driven failover across an Auto Scaling group. An ALB in
+  front of the app tier handles all three natively. Tradeoff vs. no load balancer (single
+  instance + Elastic IP): ALB adds a small hourly + LCU cost and a network hop, but removes the
+  single point of failure a lone instance represents and enables horizontal scaling.
+- **Hybrid cloud API front end with static IP allowlisting.** An on-prem partner's firewall only
+  permits traffic from specific, pre-approved IPs reaching a backend that's otherwise fronted by
+  an ALB (no native static IP). An NLB — or Global Accelerator in front of the ALB — provides the
+  fixed IP the partner's firewall requires. Tradeoff vs. an ALB alone: NLB/Global Accelerator adds
+  the static IP capability, but NLB can't do ALB's path/host-based HTTP routing, so complex
+  routing logic still needs an ALB behind it.
+- **Multi-Region disaster recovery target.** A DR Region's standby infrastructure needs its own
+  regional load balancer ready to receive traffic the moment Route 53 or Global Accelerator
+  fails over to it. Tradeoff vs. provisioning the load balancer only after failover begins:
+  a pre-provisioned standby ALB/NLB is instantly ready (seconds, not the minutes an ALB needs to
+  warm up/scale), at the cost of paying its baseline hourly charge even while idle.
+- **Global content delivery origin for dynamic content.** A CloudFront distribution needs a
+  regional origin for non-cacheable, personalized requests. An ALB behind CloudFront handles
+  this, with CloudFront handling the global edge/caching layer and the ALB handling in-Region
+  routing to the right backend service. Tradeoff vs. pointing CloudFront directly at individual
+  instances: the ALB adds health-check-driven resilience and path-based routing CloudFront alone
+  doesn't provide, at the cost of one more component to operate.
+- **Microservices mesh path-based routing.** A platform with many backend services wants one
+  public domain and one TLS certificate covering all of them. One ALB with multiple listener
+  rules (`/users/*`, `/orders/*`, `/payments/*`) routes to separate target groups per service.
+  Tradeoff vs. one load balancer per microservice: dramatically fewer load balancers/domains/
+  certificates to manage, but all services now share one ALB's listener-rule limit and blast
+  radius if the ALB itself has an issue.
+- **Compliance-driven TLS passthrough.** A regulated workload requires that the load balancer
+  itself never have access to decrypted traffic — only the application may terminate TLS. NLB in
+  TCP mode forwards encrypted bytes without ever decrypting them. Tradeoff vs. ALB's TLS
+  termination-and-reencrypt model: satisfies strict "never decrypts" compliance language, but
+  loses ALB's ability to route by HTTP content (path/host), since the NLB never looks inside the
+  encrypted stream at all.
+- **M&A account consolidation — unifying legacy and modern load balancers.** A newly merged
+  company inherits a fleet of pre-2016 Classic Load Balancers from the acquired entity. Migrating
+  them to ALB/NLB (depending on traffic type) unifies the combined organization's tooling,
+  observability, and target-group-based deployment patterns. Tradeoff vs. leaving CLBs in place:
+  migration takes real engineering effort and testing, but CLB lacks target groups, container/
+  Lambda target support, and the routing flexibility the rest of the merged estate now expects.
+- **Third-party security appliance insertion across many VPCs.** A security team wants every
+  packet entering/leaving several VPCs inspected by a next-generation firewall, without each
+  application team changing their own routing beyond a one-time update. Gateway Load Balancer,
+  paired with GWLB endpoints per VPC, inserts the appliance transparently. Tradeoff vs. deploying
+  the firewall inline per-VPC: centralizes the appliance fleet (fewer to manage/scale), but adds
+  a GWLB hop and its own throughput/cost profile to every inspected packet's path.
+- **Blue/green and canary deployments.** A team wants to gradually shift production traffic from
+  version 1 to version 2 of an application while watching error rates, with instant rollback
+  capability. Weighted target groups on a single ALB listener rule achieve this per-request, with
+  no DNS propagation delay. Tradeoff vs. a Route 53 weighted-record-based cutover: ALB weighting
+  shifts and reverts instantly; Route 53 weighting is subject to DNS TTL/resolver caching delay
+  before a shift is fully reflected in real traffic.
+- **Extreme low-latency, non-HTTP backend.** A financial trading platform or real-time gaming
+  backend needs raw TCP/UDP at the lowest possible latency with millions of requests/sec. NLB's
+  Layer 4 design (no HTTP parsing, no TLS termination overhead unless explicitly configured)
+  fits this precisely. Tradeoff vs. ALB: NLB can't do content-aware routing at all, so any
+  workload that also needs path/host-based logic must add an ALB downstream of the NLB or forgo
+  that routing entirely.
 
 ## When NOT to Use It / Alternatives
 

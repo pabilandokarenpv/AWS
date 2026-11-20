@@ -325,18 +325,67 @@ Most production systems combine at least two of these four — the exam rewards 
 
 ## Use Cases — When to Use Which (or Combine Them)
 
-- **"Many services need to independently react to the same business event, and each must not
-  lose the message if it's briefly down"** → SNS fan-out to multiple SQS queues.
-- **"Route this to different places depending on the event's content, from many different AWS
-  services, possibly on a schedule too"** → EventBridge.
-- **"This needs a specific order of steps with retries/rollback, and I need to see where a
-  specific execution currently is"** → Step Functions, usually triggered by an EventBridge rule.
-- **"One producer, one type of background job, workers just need to pull it and do it"** →
-  plain SQS, no fan-out or routing needed.
-- **"A mobile client needs a single API call that returns live-updating data from multiple
-  backends"** → that's outside this queue/topic/bus family entirely — see `appsync.md`.
-- **Most production systems use at least two of these together** — the exam rewards
-  recognizing *which combination* fits a scenario, not picking just one service in isolation.
+1. **Durable fan-out to multiple independent reactors** — "many services need to independently
+   react to the same business event, and each must not lose the message if it's briefly down."
+   SNS fan-out to multiple SQS queues is the fit. **Tradeoff vs. EventBridge for the same fan-out**:
+   EventBridge adds a rules engine that's valuable once routing needs to vary by event content,
+   but is pure overhead if every subscriber genuinely wants every event unconditionally.
+2. **Content-based routing from many different sources** — "route this to different places
+   depending on the event's content, from many different AWS services, possibly on a schedule
+   too." EventBridge is the fit. **Tradeoff vs. SNS with filter policies**: SNS filter policies
+   can achieve similar per-subscriber filtering for events you publish yourself, but EventBridge
+   natively ingests 200+ AWS service event sources and schedules that SNS has no concept of.
+3. **Specific, ordered, multi-step business process with visibility** — "this needs a specific
+   order of steps with retries/rollback, and I need to see where a specific execution currently
+   is." Step Functions, usually triggered by an EventBridge rule, is the fit. **Tradeoff vs.
+   chaining Lambdas that invoke each other directly**: direct chaining is simpler to set up
+   initially, but loses the single, auditable execution history Step Functions provides for
+   debugging a specific stuck order weeks later.
+4. **Simple point-to-point background work, no fan-out or routing needed** — "one producer, one
+   type of background job, workers just need to pull it and do it." Plain SQS is the fit.
+   **Tradeoff vs. reaching for EventBridge + Step Functions by default**: adding routing and
+   orchestration machinery for a single producer/single consumer job adds latency, cost, and
+   failure surfaces for zero actual resilience gain — restraint matters as much as capability
+   here.
+5. **A mobile client needing live-updating data from multiple backends in one call** — this sits
+   outside the queue/topic/bus family entirely; AppSync's GraphQL + subscriptions is the fit.
+   **Tradeoff vs. wiring SNS/EventBridge notifications into a custom WebSocket layer**: a custom
+   layer can be built, but AppSync already combines multi-source data assembly and real-time push
+   in one managed service purpose-built for client-facing APIs.
+6. **Security event aggregation with automated, severity-based response** — GuardDuty/CloudTrail
+   findings from many accounts need HIGH-severity ones to trigger automated remediation while
+   ALL findings also reach a SIEM queue. EventBridge routing into both Step Functions (for
+   remediation) and SQS (for SIEM ingestion) from the same bus is the fit. **Tradeoff vs. one
+   Lambda handling both branches**: a single Lambda centralizes the logic, but a bug in the SIEM-
+   forwarding code path could then also break the remediation path — separate EventBridge rules
+   keep the two reactions independent.
+7. **Multi-tenant SaaS event platform with per-tenant workflows** — many tenants each need their
+   own isolated billing/processing workflow, but also need to flow into one shared audit log.
+   A shared EventBridge bus with per-tenant rules starting per-tenant Step Functions executions,
+   plus a broad "all tenants" audit rule, is the fit. **Tradeoff vs. one Step Functions state
+   machine per tenant deployed as separate infrastructure**: per-tenant infrastructure avoids any
+   shared-bus noisy-neighbor risk, but doesn't scale operationally past a modest tenant count the
+   way one shared bus with declarative rules does.
+8. **IoT telemetry with priority-based incident routing** — millions of daily telemetry events
+   mostly need buffering for batch processing, but a "critical alert" subset needs to kick off an
+   incident workflow immediately. EventBridge routing the critical subset into Step Functions
+   while everything else lands in an SQS buffer is the fit. **Tradeoff vs. routing everything
+   through Step Functions**: running every telemetry event through a state machine would be far
+   more expensive than necessary for the vast majority that need no orchestration at all — only
+   the content-matched critical subset needs that level of handling.
+9. **Alerting + automated system response from one trigger** — "an alarm needs to notify a
+   person by email and also trigger an automated remediation Lambda." One SNS topic with two
+   subscriptions (email + Lambda) is the fit for the simple case. **Tradeoff vs. an EventBridge
+   rule with two targets**: EventBridge also supports multiple targets per rule and adds content-
+   based matching if the alarm source later needs to vary by severity — SNS is simpler when the
+   requirement genuinely stays "notify everyone, every time."
+10. **Guaranteeing strict order for a specific key across a multi-hop chain** — "order of
+    operations matters for this specific customer's events, across several hops." SQS FIFO (or a
+    FIFO SNS topic feeding FIFO SQS) end-to-end is the fit. **Tradeoff vs. routing any part of
+    that chain through EventBridge**: EventBridge does not guarantee delivery order at all —
+    inserting it anywhere in a chain that needs strict ordering breaks the guarantee unless it's
+    deliberately re-established downstream (e.g., a FIFO `MessageGroupId` re-derived at the SQS
+    target).
 
 ## When NOT to Use This Combined Pattern / Simpler Alternatives
 

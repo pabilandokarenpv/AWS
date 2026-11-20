@@ -401,32 +401,84 @@ configuration change, not an architecture change.
 
 ## Use Cases — When to Use It
 
-- You want a chatbot/assistant that answers questions grounded in your own company documents
-  without hallucinating — Knowledge Bases (RAG).
-- You want generative text (summaries, drafts, classification, extraction) in your application
-  without hosting any model infrastructure — direct model invocation via the Bedrock API.
-- You need an AI feature to actually *do* things (look up an order, file a ticket, query a
-  database) based on natural-language requests, not just answer questions — Agents.
-- You need every AI response to comply with a content policy (no competitor mentions, no medical
-  advice, PII scrubbed) regardless of underlying model — Guardrails.
-- You need a model that speaks in your brand's voice, follows a very specific output format, or
-  knows deep domain-specific jargon your base model wasn't trained on — fine-tuning or continued
-  pre-training.
-- You're prototyping which foundation model fits your use case best before committing — Bedrock's
-  single API makes it cheap to A/B test Claude vs. Titan vs. Llama with the same application code.
-- You need predictable latency/cost at very high constant volume — Provisioned Throughput, or
-  Model Distillation if quality tolerance allows a smaller model.
-- You need to summarize long documents (contracts, transcripts, research papers) into short,
-  structured digests for a human reviewer — direct model invocation, long-context models
-  (Claude, AI21 Jamba) shine here.
-- You need to extract structured fields (invoice number, dates, line items) from unstructured
-  text where the format varies too much for a rules-based parser — though check whether Textract
-  (purpose-built document extraction) solves it more cheaply first.
-- You're building a multilingual support experience and want one model to both understand and
-  respond fluently across languages without a separate translation step.
-- You need synthetic training data (example conversations, labeled text) to bootstrap a smaller
-  custom model elsewhere — a foundation model can generate a first draft of this dataset far
-  faster than manual authoring, subject to human review for quality.
+Each scenario names the business problem, why the specific Bedrock feature fits it, and the
+tradeoff against the nearest alternative:
+
+- **Internal IT/HR helpdesk chatbot (any enterprise):** Problem — employees waste time hunting
+  through wikis/PDFs for policy answers. Why Bedrock fits — Knowledge Bases (RAG) retrieve the
+  exact current policy passage and generate a grounded, cited answer. Tradeoff vs. Amazon Q
+  Business (see `amazon-q.md`) — Q Business packages this entire pattern (connectors, indexing,
+  chat UI) with far less engineering; build directly on Bedrock only when you need custom
+  chunking, a bespoke UI, or tighter control than Q's managed defaults allow.
+- **Customer-facing product support bot (e-commerce/SaaS):** Problem — support tickets repeat the
+  same questions about a catalog or feature set that changes weekly. Why Bedrock fits — RAG means
+  re-ingesting updated product docs keeps answers current with zero retraining. Tradeoff vs.
+  fine-tuning — fine-tuning would need a full retrain every time the catalog changes, a slow,
+  expensive cycle RAG avoids entirely for fast-changing facts.
+- **Fraud-pattern narrative summarization (financial services):** Problem — fraud analysts must
+  read hundreds of flagged-transaction case notes a day. Why Bedrock fits — a foundation model
+  summarizes each case's evidence into a short, structured brief, letting analysts triage faster.
+  Tradeoff vs. a custom SageMaker summarization model — Bedrock needs no training data or
+  infrastructure, but a tightly-scoped custom model might eventually be cheaper at extreme,
+  sustained volume.
+- **Medical literature / clinical note summarization (healthcare):** Problem — clinicians need
+  key facts extracted from long, unstructured clinical notes or research papers quickly. Why
+  Bedrock fits — long-context models (Claude, AI21 Jamba) digest a multi-page note into a
+  structured summary in one call. Tradeoff vs. Comprehend Medical — Comprehend Medical is
+  purpose-built for extracting discrete medical entities (conditions, dosages) more cheaply and
+  predictably; Bedrock is the better fit for open-ended summarization/synthesis Comprehend Medical
+  doesn't attempt.
+- **Content moderation and brand-safety filtering (media/UGC platforms):** Problem — generative
+  features must never produce off-brand, unsafe, or legally risky text regardless of what a user
+  prompts. Why Bedrock fits — Guardrails apply denied-topic, content-filter, and PII-redaction
+  policy uniformly across every model call. Tradeoff vs. Rekognition's image-moderation
+  categories — Guardrails governs *generated text*, Rekognition governs *uploaded images/video*;
+  a platform handling both content types needs both tools, not one in place of the other.
+- **Demand-forecasting narrative explanations (retail):** Problem — a forecasting model (Amazon
+  Forecast or SageMaker DeepAR) produces numbers a merchandising team doesn't intuitively trust.
+  Why Bedrock fits — a model call turns raw forecast output into a plain-English explanation
+  ("demand is projected up 12% due to the historical pattern around this holiday"). Tradeoff vs.
+  a human analyst writing the same narrative — Bedrock scales to thousands of SKUs instantly;
+  accuracy of the *narrative* still depends entirely on the upstream forecast being correct.
+- **Recommendation engine re-ranking and explanation (e-commerce):** Problem — a recommendation
+  model (Personalize/SageMaker) returns a ranked list, but the product team wants a natural-
+  language "why we recommended this" line per item. Why Bedrock fits — a lightweight prompt
+  turns structured recommendation metadata into a persuasive, grounded one-line explanation.
+  Tradeoff vs. hand-written template strings — templates are cheaper and fully deterministic but
+  can't adapt phrasing to each item's actual attributes the way a model call can.
+- **Document/contract analysis (legal/insurance):** Problem — extract obligations, dates, and risk
+  clauses from long, unstructured contracts that vary wildly in format. Why Bedrock fits — a
+  long-context model reads the whole document and extracts structured fields with reasoning
+  Textract's layout-based extraction can't perform (it finds structure, not legal meaning).
+  Tradeoff vs. Textract — Textract is far cheaper and more deterministic for form/table
+  extraction; Bedrock is the right tool once the task requires actually *understanding* the text,
+  not just locating it.
+- **Synthetic training data generation (any ML team bootstrapping a smaller model):** Problem — a
+  team needs thousands of example conversations or labeled text to train a smaller, cheaper
+  downstream model, and manual authoring is too slow. Why Bedrock fits — a foundation model
+  drafts a first-pass dataset far faster than human authors. Tradeoff vs. fully human-authored
+  data — synthetic data is faster and cheaper but needs human review for quality/bias before it's
+  trusted as training data, unlike a smaller, curated human-written set.
+- **Multilingual customer support (global consumer products):** Problem — support agents and
+  customers speak different languages, and translating through a separate service loses context
+  between turns. Why Bedrock fits — one model both understands and responds fluently across
+  languages in the same conversation, no separate Translate hop required. Tradeoff vs. Transcribe
+  + Translate + Polly chained together (see `ai-services-overview.md`) — the chained AI-services
+  pipeline is cheaper per call and fully deterministic in each step, but Bedrock handles open-ended
+  conversational nuance across languages better than a rigid translate-then-respond pipeline.
+- **Code generation and review assistance (software engineering):** Problem — developers want
+  inline code suggestions and natural-language explanations of unfamiliar code. Why Bedrock fits —
+  direct model invocation for ad hoc code-related prompts inside a custom internal tool. Tradeoff
+  vs. Amazon Q Developer — Q Developer packages this exact capability into IDE/CLI integrations
+  with zero setup; build directly on Bedrock only if you need a bespoke tool Q Developer doesn't
+  offer.
+- **Insurance claims triage (insurance):** Problem — incoming claims (text descriptions, attached
+  photos' captions, adjuster notes) need to be read, categorized by severity, and routed to the
+  right team. Why Bedrock fits — an Agent can read a claim, classify it, query a claims database
+  via an Action Group, and route it — a multi-step task, not just a single answer. Tradeoff vs. a
+  rules-based routing engine — rules are fully deterministic and auditable but brittle against
+  claims phrased in ways the rule author didn't anticipate; an Agent handles that variability at
+  the cost of needing careful Action Group schema design and ongoing monitoring.
 
 ## When NOT to Use It / Alternatives
 

@@ -131,15 +131,74 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- Terminating HTTPS on an Application Load Balancer or CloudFront distribution in front of a
-  public website, with zero cost for the certificate itself.
-- A multi-service internal API mesh where every service needs to prove identity to every other
-  service via mutual TLS (mTLS) — issue each service a certificate from a Private CA.
-- IoT fleets where every device needs a unique, revocable certificate identity, issued from a
-  private root you control rather than trusting a public CA for internal device auth.
-- API Gateway custom domain names needing a valid HTTPS certificate for a branded API endpoint.
-- Code-signing internal build artifacts using a Private CA-issued certificate so downstream
-  systems can verify provenance without a public CA relationship.
+- **Free HTTPS on a public ALB/CloudFront distribution.** Situation: a public website needs TLS
+  termination with zero certificate cost and no manual renewal tracking. Why this fits: a
+  DNS-validated public ACM cert auto-renews indefinitely for free as long as the validation
+  record stays in place. Tradeoff: the private key can never be exported for use on a
+  self-managed server — if the architecture later needs TLS to terminate directly on an
+  unmanaged instance instead of behind ALB/CloudFront, ACM alone can't provide that.
+- **Internal service mesh with mutual TLS (mTLS).** Situation: every microservice must prove its
+  identity to every other service, not just trust network location. Why this fits: a Private CA
+  issues per-service certificates trusted only within the organization's own hierarchy, with no
+  exposure to the public CA trust chain at all. Tradeoff: Private CA has a real, non-trivial
+  monthly cost per active CA plus a per-certificate-issued fee — this is explicitly not "ACM is
+  free" territory, and the cost needs to be justified against the mTLS architecture's actual risk
+  reduction.
+- **IoT fleet identity at scale.** Situation: thousands of devices each need a unique, revocable
+  certificate identity rather than one shared credential. Why this fits: Short-Lived CA mode
+  issues high-volume, frequently-rotated device certificates at a lower per-CA rate tuned for
+  exactly this pattern. Tradeoff: short validity periods mean devices must reliably reconnect and
+  re-provision on schedule — a device that goes offline past its certificate's validity window
+  needs a re-enrollment process, not just a passive renewal.
+- **Branded API custom domain with HTTPS.** Situation: an API Gateway endpoint needs a
+  company-branded domain name with valid HTTPS rather than the default AWS-generated URL. Why
+  this fits: ACM issues a free public certificate attachable directly to the API Gateway custom
+  domain. Tradeoff: the domain's DNS must be correctly delegated/configured for validation to
+  succeed and for renewal to keep working — a later DNS migration that drops the validation
+  CNAME silently breaks future auto-renewal.
+- **Code-signing internal build artifacts.** Situation: downstream systems need to verify a
+  build artifact genuinely came from the official pipeline. Why this fits: a Private
+  CA-issued signing certificate lets verification happen without a public CA relationship, kept
+  entirely within the organization's own trust boundary. Tradeoff: every verifying system must be
+  explicitly configured to trust the Private CA's root — this doesn't "just work" the way a
+  publicly-trusted certificate would on an unconfigured machine.
+- **M&A — extending a centralized Private CA hierarchy to an acquired company's services.**
+  Situation: an acquired company's internal services need to participate in the parent
+  company's mTLS service mesh after integration. Why this fits: sharing the parent's subordinate
+  CA (not the root) via AWS RAM lets the acquired team start issuing certificates for their own
+  services under the unified trust hierarchy without exposing root-level trust to a newly
+  integrated team. Tradeoff: the acquired services' existing certificates (likely from a
+  different, incompatible CA) must be migrated/reissued during the transition — mTLS
+  relationships break if one side updates its trust chain before the other side's certificates
+  are reissued to match.
+- **Compliance evidence for encryption-in-transit (PCI-DSS/HIPAA).** Situation: an auditor wants
+  proof that data in transit is encrypted with properly managed, non-expired certificates. Why
+  this fits: ACM's automatic renewal plus CloudTrail logging of certificate lifecycle events give
+  concrete, inspectable evidence rather than a manually-tracked spreadsheet of expiry dates.
+  Tradeoff: this evidence only covers ACM-issued/managed certificates — any imported or
+  externally-purchased certificate still relies on manual tracking, which an auditor may
+  specifically ask about separately.
+- **Zero-trust device/VPN client certificates.** Situation: a VPN or internal access system
+  should authenticate clients by certificate rather than a shared password. Why this fits: a
+  Private CA issuing individual, revocable client certificates lets each device/user be uniquely
+  identified and individually revoked without affecting anyone else. Tradeoff: revocation
+  requires actually publishing and having clients check a CRL or OCSP responder — a short-lived
+  cert that simply expires is simpler operationally than a long-lived one that depends on active
+  revocation infrastructure being correctly consumed.
+- **Avoiding certificate-expiry outages entirely.** Situation: a company has previously had a
+  production outage from a manually-managed certificate expiring unnoticed. Why this fits:
+  switching to DNS-validated ACM certificates removes the human-forgetfulness failure mode
+  completely for every AWS-integrated endpoint going forward. Tradeoff: any certificate imported
+  from elsewhere (a legacy purchased cert, or one used outside AWS-integrated services) still
+  does **not** auto-renew — the fix only covers newly-issued ACM-managed certificates, not every
+  certificate the organization already has in flight.
+- **CI/CD pipelines issuing a fresh certificate per deployment.** Situation: a pipeline deploys
+  dozens of times a day, each deployment wanting its own short-lived internal service
+  certificate. Why this fits: Short-Lived CA mode is priced and designed specifically for this
+  high-issuance-frequency, short-validity pattern. Tradeoff: choosing General-Purpose mode
+  instead for this workload means paying for capability (longer validity assumptions) the
+  pipeline never uses — matching the CA mode to the actual usage pattern is a real,
+  testable cost decision, not just a technical one.
 
 ## When NOT to Use It / Alternatives
 

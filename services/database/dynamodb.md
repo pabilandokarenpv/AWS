@@ -62,6 +62,77 @@ Step by step:
    traffic) or Provisioned (you set read/write capacity units, cheaper at steady predictable load,
    can use Auto Scaling to adjust).
 
+### What Actually Happens on a PutItem Request — Full Lifecycle
+
+The diagram and step list above describe the architecture; this section walks through one
+specific, concrete request end-to-end, because "what happens when I call PutItem" is both a
+common interview/exam question and the fastest way to make the hashing/replication/consistency
+concepts above feel real rather than abstract.
+
+```mermaid
+sequenceDiagram
+    participant App as Application (SDK)
+    participant Router as Request Router
+    participant Part as Partition (primary copy)
+    participant R1 as Replica copy (same Region, AZ-b)
+    participant R2 as Replica copy (same Region, AZ-c)
+    participant Stream as DynamoDB Streams
+    participant Global as Global Table replica (Region B)
+
+    App->>Router: PutItem(TableName, Item{PK=cust-00482, ...})
+    Router->>Router: Hash partition key value "cust-00482"
+    Router->>Part: Route request to the owning partition
+    Part->>Part: Validate item (size <=400KB, schema, conditional expression if any)
+    Part->>R1: Replicate write synchronously
+    Part->>R2: Replicate write synchronously
+    R1-->>Part: Ack
+    R2-->>Part: Ack
+    Part-->>Router: Write durable (quorum of 3 copies ack'd)
+    Router-->>App: 200 OK (consumed WCU reported)
+    Part-.->>Stream: Emit change record (if Streams enabled)
+    Part-.->>Global: Async cross-Region replication (if Global Tables enabled, ~1s)
+```
+
+1. **The SDK call is just an HTTPS POST.** Unlike RDS/Aurora, there's no persistent database
+   connection to manage — `PutItem` is a stateless API call authenticated via IAM (Signature V4),
+   which is *why* Lambda functions can call DynamoDB without any connection-pool exhaustion risk
+   that plagues Lambda-to-RDS architectures.
+2. **The request router hashes the partition key value** (e.g., `"cust-00482"`) using an internal
+   hash function. This hash — not the literal key value — determines which physical partition
+   owns the item. Two keys that look "close" alphabetically (e.g., `cust-00482` and `cust-00483`)
+   typically land on *completely different* partitions, because the hash output is effectively
+   randomized; this is deliberate, and it's what spreads load evenly across the table.
+3. **The owning partition validates the item**: total item size (attribute names + values) must
+   be under 400 KB, and if the call included a `ConditionExpression` (e.g., "only write if this
+   item doesn't already exist" for idempotent order creation), that condition is evaluated here,
+   before anything is persisted — a failed condition returns `ConditionalCheckFailedException`
+   without writing anything.
+4. **Within the Region, the write is synchronously replicated to 2 additional copies** across
+   different Availability Zones before DynamoDB acknowledges success back to the application —
+   this is why a single-Region DynamoDB table already survives an AZ failure without data loss,
+   with no Multi-AZ configuration step required (unlike RDS, where Multi-AZ is an explicit,
+   separate setting).
+5. **The SDK call returns once a quorum of the 3 in-Region copies has acknowledged the write.**
+   This is the moment "the write is durable" — from the application's point of view, the
+   `PutItem` call simply returns successfully; all of the hashing, routing, and replication above
+   is invisible machinery the application never has to reason about directly.
+6. **If DynamoDB Streams is enabled**, a change record describing the write (new image, old
+   image, or both, depending on configuration) is appended to the table's stream, available for a
+   Lambda consumer to process within roughly a second — this is what powers the event-driven
+   order-pipeline pattern described in Common Architectures below.
+7. **If Global Tables is enabled**, the write is also propagated asynchronously to every other
+   replica Region, typically landing within about a second. This replication is *not* part of the
+   original acknowledgment — the write is already durable and already returned to the caller in
+   the home Region before cross-Region propagation even starts, which is the direct, mechanical
+   reason Global Tables reads in a different Region can briefly show slightly older data.
+8. **Consistency model for subsequent reads**: a `GetItem`/`Query` immediately after this write,
+   if issued against the *same* Region with `ConsistentRead=true`, is guaranteed to see this
+   write (DynamoDB reads from a copy that has definitely applied it). The default — eventually
+   consistent reads — may briefly read from a copy that hasn't caught up yet (typically within
+   milliseconds), trading a small staleness window for roughly half the read cost and marginally
+   lower latency. GSI reads are *always* eventually consistent, with no strongly consistent option
+   at all, because a GSI update is itself propagated asynchronously after the base table write.
+
 ### Partition Key Design: Hashing, Splits, and Hot Partitions
 
 ```mermaid
@@ -133,6 +204,71 @@ fallback later the way SQL's `WHERE` clause provides.
   encoded directly in the key, rather than a separate join table — workable for shallow
   relationships; genuinely deep/multi-hop relationship traversal is Neptune's job, not
   DynamoDB's (see `neptune.md`).
+
+### Working with DynamoDB via boto3 (Python)
+
+The CLI commands in the Hands-on Lab section below show the raw API shape; most real
+applications talk to DynamoDB through an SDK instead. Here's the same `Orders` table workflow in
+Python using boto3, with the higher-level `resource` API (which handles type marshaling for you,
+unlike the low-level `client` API used by the AWS CLI's JSON syntax above):
+
+```python
+import boto3
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
+# resource() gives you a Pythonic interface (plain dicts/strings/numbers);
+# client() would require explicit {"S": "..."} / {"N": "..."} type wrappers like the CLI does.
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+table = dynamodb.Table("Orders")
+
+# --- Write a new order, idempotently ---
+# ConditionExpression prevents accidentally overwriting an existing order if this Lambda
+# invocation is retried after a transient network error (a common serverless failure mode).
+try:
+    table.put_item(
+        Item={
+            "CustomerId": "cust-001",
+            "OrderDate": "2026-11-20",
+            "Total": 89.99,
+            "Status": "SHIPPED",
+            "LineItems": [
+                {"Sku": "WIDGET-1", "Qty": 2},
+                {"Sku": "GADGET-9", "Qty": 1},
+            ],
+        },
+        ConditionExpression="attribute_not_exists(CustomerId)",
+    )
+except ClientError as e:
+    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        print("Order already exists — this PutItem was a safe, idempotent no-op retry")
+    else:
+        raise  # a real error (throttling, validation) — don't swallow it
+
+# --- Read a single order back by its exact key (fastest possible DynamoDB operation) ---
+response = table.get_item(
+    Key={"CustomerId": "cust-001", "OrderDate": "2026-11-20"},
+    ConsistentRead=True,  # guarantees we see the write above immediately, at 2x the RCU cost
+)
+order = response.get("Item")
+
+# --- Query: all orders for one customer after a given date (uses the sort key range) ---
+# This is a single partition lookup, not a table scan — it stays fast regardless of table size.
+response = table.query(
+    KeyConditionExpression=Key("CustomerId").eq("cust-001") & Key("OrderDate").gte("2026-01-01"),
+)
+for item in response["Items"]:
+    print(item["OrderDate"], item["Status"], item["Total"])
+
+# --- Atomic counter update: increment a view counter without a read-modify-write race ---
+# UpdateItem's ADD is atomic server-side — two concurrent requests both land correctly,
+# unlike "read value, add 1, write value back" which can lose updates under concurrency.
+table.update_item(
+    Key={"CustomerId": "cust-001", "OrderDate": "2026-11-20"},
+    UpdateExpression="ADD ViewCount :inc",
+    ExpressionAttributeValues={":inc": 1},
+)
+```
 
 ## Key Features / Components
 
@@ -245,14 +381,71 @@ flavor text.
 
 ## Use Cases — When to Use It
 
-- High-traffic, high-scale applications where latency must stay flat as traffic grows: shopping
-  carts, gaming leaderboards, session stores, IoT device state.
-- Access patterns are known upfront and simple — "get this item by its key," "get all items for
-  this user" — rather than ad-hoc, evolving analytical queries.
-- Serverless architectures (Lambda + API Gateway + DynamoDB) where you want no servers, no
-  connection pool management, and pay-per-request billing that scales to zero.
-- Need multi-Region active-active writes with automatic conflict resolution (Global Tables).
-- Event-driven systems that react to data changes in real time via DynamoDB Streams + Lambda.
+- **E-commerce shopping cart / checkout state.** Carts are keyed by `userId`, updated on every
+  add/remove-from-cart click, and must stay fast during flash-sale traffic spikes. DynamoDB fits
+  because the access pattern is a pure key lookup with flat latency regardless of concurrent
+  shoppers. Tradeoff vs RDS: you give up the ability to atomically join cart + inventory +
+  pricing in one SQL transaction as the default mode — that logic has to be built explicitly
+  (DynamoDB Transactions, or application-level orchestration) rather than falling out of a JOIN.
+- **Session store for web/mobile apps.** Tens of millions of concurrent login sessions, read and
+  written on nearly every request, with a TTL attribute auto-expiring logged-out/stale sessions
+  for free. Tradeoff vs ElastiCache: Redis is faster (true in-memory, sub-millisecond) and is the
+  better fit if raw speed is the bottleneck, but DynamoDB is itself durable storage — no separate
+  cache-invalidation logic to write, because there's no second copy of the truth to keep in sync.
+- **Gaming leaderboard with real-time rank updates.** Millions of players, extremely read-heavy
+  (everyone checks rank far more than they score), paired with DAX for microsecond reads.
+  Tradeoff vs ElastiCache Sorted Sets: Redis gives you ranking "for free" from a native data
+  structure (`ZRANGE`) with no secondary index design; DynamoDB needs a GSI on score plus the DAX
+  add-on cost to match that read speed, but gains DynamoDB's own durability and backup model
+  without a separate persistence strategy.
+- **IoT device state and recent telemetry.** Millions of devices reporting status every few
+  seconds, keyed by `deviceId` with a `timestamp` sort key, TTL auto-expiring old readings.
+  Tradeoff vs Timestream/Redshift: DynamoDB is ideal for "what is device X's current state" and
+  short recent-window queries; genuine time-series rollups/analytics across years of history for
+  millions of devices belong in a purpose-built time-series store or an exported OLAP warehouse,
+  not repeated Scans against DynamoDB.
+- **Social "likes"/"follows" counters.** High-frequency atomic increments (`UpdateItem` with
+  `ADD`) across huge numbers of objects, with no locking needed because the increment is atomic
+  server-side. Tradeoff vs Neptune: simple counts/relationships as flat attributes fit DynamoDB
+  cleanly; actual multi-hop graph traversal ("friends of friends who also liked this") belongs in
+  Neptune once you're past 1–2 hops.
+- **Serverless API backend (API Gateway + Lambda + DynamoDB).** An event-driven microservice with
+  spiky, hard-to-predict traffic. DynamoDB's HTTP-API nature means no connection pool to exhaust
+  across thousands of concurrent Lambda invocations. Tradeoff vs RDS + RDS Proxy: you avoid the
+  proxy's cost/complexity entirely, but lose ad-hoc SQL querying — every access pattern must be
+  known and designed for upfront.
+- **Financial transaction ledger / per-account audit trail.** An append-only log of account
+  events keyed by `accountId` + `timestamp`, supporting fast range queries like "all transactions
+  for account X this month," with Streams feeding a downstream reconciliation job. Tradeoff vs
+  RDS: you give up cross-account atomic multi-row transactions as the default mode of operation
+  (DynamoDB Transactions handle the occasional all-or-nothing case, up to 100 items/25 tables, but
+  ongoing double-entry bookkeeping *across many accounts* is more naturally modeled relationally).
+- **Globally distributed product catalog with local writes.** A retail catalog read constantly
+  from the US, EU, and APAC, with occasional local price updates needing to propagate everywhere.
+  Global Tables give true multi-writer active-active replication with automatic conflict
+  resolution. Tradeoff vs Aurora Global Database: Aurora Global DB has one authoritative write
+  Region (fast promotion on failure, but writes funnel through one place); choose DynamoDB Global
+  Tables specifically when multiple Regions must accept writes concurrently, not just serve reads.
+- **Real-time feature store for ML inference.** A low-latency key-value lookup serving
+  pre-computed ML features or recommendations at the moment of inference. DynamoDB's `GetItem` is
+  predictably fast regardless of load, which matters for online serving (relevant to MLA-C02).
+  Tradeoff vs Redshift: Redshift is where the features get *computed* in batch (OLAP-shaped);
+  DynamoDB is where they get *served* at request time — they're complementary, not competing.
+- **Event-driven order-processing pipeline.** An `Orders` table's status changes need to trigger
+  inventory decrements, customer notifications, and audit logging. DynamoDB Streams + Lambda
+  reacts to the write itself with no polling. Tradeoff vs EventBridge/SNS: Streams is simpler and
+  free when the trigger is specifically "this table changed"; a dedicated message bus is the
+  better choice once non-DynamoDB producers/consumers or more complex routing rules are involved.
+- **Multiplayer game session / matchmaking state.** Ephemeral, extremely latency-sensitive match
+  state during active play, with TTL cleaning up abandoned matches automatically. Tradeoff vs
+  ElastiCache: similar reasoning to session stores — pick DynamoDB when the state must durably
+  survive a cache-node failure without extra replication configuration, pick Redis when raw
+  in-memory speed is the dominant requirement and brief data loss on a node failure is tolerable.
+- **Configuration / feature-flag store behind a mostly-static site.** A small, cheap,
+  flexible-schema table of config values or A/B test assignments. Tradeoff vs RDS: at genuinely
+  low traffic and complexity, a small RDS instance (which a team already fluent in SQL may find
+  simpler to reason about) can be just as adequate — DynamoDB's scaling advantage only clearly
+  pays for itself once traffic or access-pattern stability actually demands it, not by default.
 
 ## When NOT to Use It / Alternatives
 

@@ -251,16 +251,66 @@ code at all — a common incremental-migration pattern.
 
 ## Use Cases — When to Use It
 
-- **Serverless REST/HTTP APIs backed by Lambda** — the canonical pairing; API Gateway + Lambda +
-  DynamoDB is the most common serverless web backend pattern on AWS.
-- **Exposing internal services to external partners** — API keys, usage plans, and throttling
-  give you metering and abuse protection out of the box.
-- **Real-time apps (chat, live dashboards, multiplayer features)** — WebSocket API.
-- **Mobile backends** — Cognito-authenticated, auto-scaling API with no servers to manage.
-- **Legacy/on-prem backend modernization** — API Gateway can front an existing HTTP backend (even
-  non-AWS) as an incremental step toward serverless, adding auth/throttling/caching immediately.
-- **Private, internal-only APIs** — REST API type supports Private API Gateway, reachable only
-  via a VPC endpoint, never exposed to the public internet.
+- **Multi-tier serverless web backend.** A new product needs a REST/HTTP API backed by Lambda
+  and DynamoDB with no servers to manage at any layer. API Gateway + Lambda + DynamoDB is the
+  canonical pairing. Tradeoff vs. an ALB + EC2/ECS backend: no capacity planning or idle-server
+  cost at low traffic, but per-request pricing can exceed a steady, high-volume ALB-based setup's
+  cost at large scale.
+- **Hybrid cloud legacy backend modernization.** A company wants to start modernizing an existing
+  on-prem or EC2-hosted HTTP backend without touching its code yet. API Gateway fronts it directly
+  via an HTTP integration, adding auth/throttling/caching immediately as an incremental first step.
+  Tradeoff vs. a full rewrite before exposing any new API surface: delivers modernization benefits
+  (metering, auth, observability) right away, but the legacy backend's own scaling/reliability
+  limits remain until it's actually replaced.
+- **Multi-Region API failover.** A customer-facing API needs to keep working if its primary
+  Region's backend becomes unavailable. Regional API Gateway endpoints behind Route 53 health-
+  checked failover routing (or a custom domain mapped across Regions) provide this. Tradeoff vs.
+  a single-Region API with no failover: added DR infrastructure cost and the complexity of keeping
+  both Regions' API definitions/stages in sync, in exchange for surviving a full Regional outage.
+- **Global content delivery for public APIs.** A public API wants faster, more resilient delivery
+  to global clients and an absorbed layer against volumetric attacks. Placing CloudFront in front
+  of API Gateway achieves this, with CloudFront also able to cache cacheable GET routes. Tradeoff
+  vs. exposing API Gateway's `execute-api` endpoint directly: adds one more component to configure
+  (custom domain, cache behaviors), but gains edge TLS termination, DDoS absorption, and optional
+  caching API Gateway's own caching (REST API only, billed hourly) doesn't replace at the edge.
+- **Microservices mesh API aggregation.** A platform with many backend microservices wants one
+  consistent external API surface, authentication model, and throttling policy instead of each
+  service exposing its own ad hoc endpoint. API Gateway routes map external paths to the correct
+  internal Lambda/HTTP integration per microservice. Tradeoff vs. letting each microservice expose
+  its own API Gateway: centralizes auth/throttling/versioning policy in one place, but makes that
+  one API Gateway deployment a shared dependency and potential bottleneck for unrelated teams'
+  release schedules.
+- **Compliance-driven private internal API.** An internal microservice API must never be reachable
+  from the public internet, only from specific VPCs in the company's AWS Organization. A Private
+  REST API type behind an interface VPC endpoint, with a resource policy naming allowed VPC
+  endpoints, satisfies this. Tradeoff vs. a public API Gateway locked down only by IAM/Cognito
+  auth: network-level isolation is a stronger guarantee for compliance audits than auth alone, but
+  adds VPC endpoint cost and requires every legitimate internal caller to actually be inside an
+  authorized VPC.
+- **M&A account consolidation — unified partner API gateway.** After a merger, both companies'
+  external partner integrations need to be exposed through one consistent API surface with unified
+  usage plans and API keys instead of two separate, inconsistently metered systems. Tradeoff vs.
+  leaving both companies' API gateways running independently: one gateway gives unified metering/
+  throttling/billing per partner, but migrating existing partners to new endpoints/keys requires a
+  coordinated cutover that risks breaking existing integrations if rushed.
+- **Monetized partner API with tiered access.** A SaaS company wants to offer a public API with
+  free, pro, and enterprise pricing tiers, each with different rate limits and quotas. Usage
+  plans and API keys per tier achieve this natively. Tradeoff vs. building custom per-customer
+  rate limiting in application code: offloads metering/throttling entirely to the managed layer,
+  but ties quota periods and reset behavior to API Gateway's own usage-plan semantics rather than
+  fully custom business logic.
+- **Real-time applications via WebSocket API.** A chat application or live dashboard needs
+  persistent, bidirectional connections pushed to specific connected clients. WebSocket API's
+  `$connect`/`$disconnect`/custom-route model, paired with a connection-ID store (commonly
+  DynamoDB), handles this. Tradeoff vs. running a self-managed WebSocket server (e.g., Socket.IO
+  on EC2): fully managed scaling and connection lifecycle, but the custom-route-by-payload-field
+  model is a different mental model than a typical path-based WebSocket server framework.
+- **Private, VPC-internal service mesh entry point.** Internal services inside a VPC want a
+  managed, auth-enforced entry point without any public exposure at all, as part of a broader
+  internal service mesh. Private API Gateway serves this role for HTTP-based internal APIs.
+  Tradeoff vs. a purely internal ALB with no API-management layer: gains throttling, usage plans,
+  and request validation an ALB alone doesn't provide, at the cost of API Gateway's per-request
+  pricing and its hard 29-second integration timeout for any long-running internal call.
 
 ## When NOT to Use It / Alternatives
 

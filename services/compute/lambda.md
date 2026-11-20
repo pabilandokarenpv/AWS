@@ -57,6 +57,48 @@ to a database), and returns a result (or, for async triggers, simply finishes). 
 automatically streams logs and metrics to CloudWatch, without you configuring any agent — it's
 built into the execution environment.
 
+### How It Works — Step by Step: From an Event to a Response
+
+Tracing one invocation end-to-end from trigger to result ties together the whole execution model:
+
+1. **Event arrives.** An event source (S3, API Gateway, SQS, EventBridge, dozens of others)
+   produces an event and calls the Lambda service — synchronously, asynchronously, or via a
+   polling event source mapping, depending on the source (see the invocation-model diagram below).
+2. **Environment selection.** Lambda's internal placement system checks whether a warm execution
+   environment already exists for this function (and this specific concurrency "slot"). If so, it
+   reuses it; if not, it provisions a brand-new one — this is the cold-vs-warm fork that
+   determines most of a function's latency variance.
+3. **Init phase (cold start only).** On a cold start, Lambda downloads your deployment package or
+   pulls your container image, bootstraps the chosen language runtime, starts any configured
+   Lambda extensions, and then runs your code's static initialization — anything declared outside
+   the handler function (a database connection pool, a loaded ML model, a parsed config file).
+   This phase is skipped entirely on a warm invocation.
+4. **IAM role assumed.** Lambda assumes the function's configured execution role for the duration
+   of the invocation, handing your code temporary credentials scoped to whatever that role allows
+   — your code never needs (and should never have) long-lived access keys baked in.
+5. **Invoke phase.** Your handler function runs with the event payload as its argument, does its
+   actual work (read a file, call an API, write to a database), and returns a result (or, for
+   asynchronous invocations, simply finishes without a caller waiting on the return value).
+6. **Response delivery.** For a synchronous invocation, the result is handed straight back to the
+   caller (API Gateway, an ALB, another service's SDK call). For an asynchronous invocation, Lambda
+   itself handles success/failure routing — retrying automatically on failure, and delivering to a
+   configured destination or DLQ if retries are exhausted. For poll-based sources, the event
+   source mapping marks the batch as processed (or retries/bisects it per your configuration) once
+   the handler returns.
+7. **Environment freeze or shutdown.** After returning, Lambda freezes the execution environment
+   (keeping it warm for a subsequent invocation, often for several minutes of inactivity) rather
+   than destroying it immediately — this is why a *second* invocation shortly after the first is
+   usually much faster than the one that preceded it. Eventually, after enough idle time or during
+   a deployment, Lambda runs the **Shutdown** phase and tears the environment down for good.
+8. **Logs and metrics flush.** Throughout, CloudWatch Logs receives the `START`/`END`/`REPORT`
+   triplet for the invocation automatically, with no agent to configure — this is the first place
+   to look when diagnosing either a bug or an unexpected bill.
+
+This sequence is also the fastest mental checklist for debugging: "slow first call, fast
+subsequent calls" points at step 3 (cold start); "AccessDenied calling another service" points at
+step 4 (execution role); "response never arrives but the function clearly ran" points at step 6
+(check the invocation model and whether a destination/DLQ is configured).
+
 ### The execution environment lifecycle in detail
 
 Lambda's own documentation breaks every invocation down into three phases: **Init**, **Invoke**,
@@ -80,6 +122,13 @@ This is why the common cold-start optimization advice is "move expensive setup o
 handler" — code there only pays the Init cost once per environment, not once per invocation.
 
 ### Anatomy of a cold start
+
+*The flowchart below traces the branch point that defines Lambda's latency profile: every
+invocation checks for a warm environment first, and only pays the download/bootstrap/init cost on
+the path where none exists. Understanding that this is a genuine fork — not a gradual slowdown —
+is why cold-start mitigation techniques (provisioned concurrency, SnapStart, smaller packages)
+each target a specific box on the "cold" side of this diagram rather than trying to make every
+invocation uniformly faster.*
 
 ```mermaid
 flowchart TD
@@ -126,6 +175,16 @@ flowchart TD
     end
 ```
 
+*This diagram is the single most important thing to internalize about Lambda beyond "it runs
+code": the invocation model determines who is responsible for handling failure. In the synchronous
+case, the caller sees the error directly and must decide whether to retry — Lambda itself does
+nothing extra. In the asynchronous case, Lambda silently retries twice more on your behalf before
+giving up, which means a function with no DLQ/destination configured can fail repeatedly with
+nobody ever finding out. In the poll-based case, a single malformed record can block an entire
+batch (and, without per-record handling enabled, the whole shard) until it's resolved — the
+classic "poison pill" failure mode. Picking the wrong mental model for a given trigger type is
+the single most common source of "why did my Lambda silently stop processing" incidents.*
+
 ### Event-driven glue architecture (classic pattern)
 
 ```mermaid
@@ -138,6 +197,14 @@ flowchart LR
     SNS --> L2[Lambda: downstream processing]
     L2 --> S3B2[(S3 processed-output bucket)]
 ```
+
+*This is the canonical "serverless glue" pattern referenced throughout this file: an S3 upload
+triggers a Lambda asynchronously, that Lambda writes structured metadata to DynamoDB and fans out
+a notification via SNS, which in turn triggers both a human-facing email and a second Lambda for
+further downstream processing — all without a single server provisioned anywhere in the chain. The
+reason this pattern recurs across so many real architectures is that every arrow in the diagram is
+a managed, automatically-scaling integration: nobody writes polling code, manages a message
+broker, or provisions capacity for any of these steps.*
 
 ## Memory, CPU, and Concurrency — Deep Dive
 
@@ -321,19 +388,75 @@ the team is using Java, SnapStart (or switching languages) is a more targeted an
 
 ## Use Cases — When to Use It
 
-- **Event-driven, short-lived tasks**: resize an image the moment it's uploaded to S3, validate/
-  transform a record the moment it lands in a DynamoDB stream, process an SQS message.
-- **APIs with spiky or unpredictable traffic** fronted by API Gateway, where paying for idle EC2
-  capacity between requests makes no sense.
-- **Scheduled jobs** (cron-style) via EventBridge — nightly cleanup scripts, periodic report
-  generation — without a dedicated always-on server just to run a 2-minute job once a day.
-- **Glue code between AWS services** — a classic pattern: S3 event → Lambda → write metadata to
-  DynamoDB → notify via SNS, with zero infrastructure to provision anywhere in that chain.
-- **Lightweight ML inference** for small models that fit the memory/time limits, especially behind
-  an API for on-demand predictions.
-- **Infrastructure automation** — custom CloudFormation resources, Config rule remediation,
-  scheduled account hygiene tasks — anywhere you need a small piece of logic to run in response to
-  an AWS-internal event rather than external user traffic.
+- **E-commerce order-confirmation image processing (retail/e-commerce).** Situation: every time a
+  customer uploads a product review photo, it needs to be resized into three thumbnail sizes and
+  scanned for inappropriate content. Why Lambda fits: the work takes a few hundred milliseconds,
+  happens at unpredictable volume, and has real idle time between uploads — exactly Lambda's
+  sweet spot. What the alternative would cost: running an always-on EC2/Fargate image-processing
+  service to handle a trickle of uploads throughout the day would mean paying for 24 hours of
+  compute to do maybe 10 minutes of actual work.
+- **Fintech real-time fraud-check API (financial services).** Situation: a payments API needs a
+  lightweight scoring function invoked on every transaction, with highly spiky volume tied to
+  shopping patterns (nights and weekends far busier than weekday mornings). Why Lambda fits:
+  API Gateway + Lambda scales per-request automatically, so a 3am Black Friday spike is handled
+  identically to a quiet Tuesday afternoon without anyone pre-provisioning capacity. What the
+  alternative would cost: sizing an EC2 fleet for the Black Friday peak would mean that capacity
+  sits mostly idle (and billed) for the other 364 days of the year.
+- **Media/streaming metadata extraction pipeline (media & entertainment).** Situation: a video
+  platform needs to extract metadata (duration, resolution, embedded captions) the moment a new
+  file lands in an upload bucket, before the heavier transcoding step begins. Why Lambda fits:
+  metadata extraction is fast, stateless, and event-driven — a textbook S3-trigger Lambda. What
+  the alternative would cost: routing this quick, lightweight step through the same Fargate/Batch
+  transcoding pipeline used for the heavy encoding work would add unnecessary container-startup
+  overhead to a task that takes a fraction of a second.
+- **Healthcare appointment-reminder scheduler (healthcare).** Situation: a clinic scheduling
+  system needs to send SMS/email reminders 24 hours before every appointment, checked against a
+  database on a recurring schedule. Why Lambda fits: an EventBridge-scheduled Lambda running every
+  few minutes to check for due reminders needs no server sitting idle between runs. What the
+  alternative would cost: a dedicated always-on EC2 instance just to run a cron job that executes
+  for a few seconds every few minutes would be almost entirely wasted compute spend.
+- **Gaming leaderboard update glue (gaming).** Situation: whenever a match ends, a game backend
+  needs to update a player's leaderboard rank and push a notification if they moved into the top
+  100 — a small, fast, bursty piece of logic triggered by match-completion events. Why Lambda
+  fits: event-driven, sub-second execution with huge swings in concurrent match-end events during
+  peak play hours. What the alternative would cost: a dedicated microservice on EC2/Fargate for
+  this one small piece of logic would add an entire deployment, scaling, and on-call surface for
+  work that Lambda handles with zero infrastructure.
+- **SaaS multi-tenant webhook processing (SaaS).** Situation: a SaaS platform receives inbound
+  webhooks from dozens of third-party integrations, each needing fast validation and routing to
+  the correct tenant's data store. Why Lambda fits: Function URLs or API Gateway in front of
+  per-integration Lambda functions isolate blast radius (one integration's bug can't take down
+  another's) and scale independently per integration. What the alternative would cost: a single
+  monolithic webhook-handling service on EC2 couples every integration's reliability to the same
+  deployment and the same scaling profile, so one noisy integration partner can degrade service
+  for every tenant.
+- **Batch analytics nightly report generation (data analytics).** Situation: a company needs a
+  summary report generated and emailed every night, reading from a data warehouse and formatting
+  results — a job that reliably finishes in under two minutes. Why Lambda fits: well within the
+  15-minute timeout, scheduled via EventBridge, with no server to provision for a job that runs
+  once a day. What the alternative would cost: a dedicated EC2 instance kept running solely to
+  execute a 2-minute job once every 24 hours wastes nearly all of its billed uptime.
+- **IoT device-shadow state synchronization (IoT).** Situation: an IoT platform needs to react
+  immediately whenever a device publishes a new state to its shadow document, validating the
+  payload and writing normalized data to DynamoDB. Why Lambda fits: IoT Core can invoke Lambda
+  directly on a rule match, giving per-message, auto-scaling processing without a persistent
+  listener process. What the alternative would cost: a persistent EC2-based listener process would
+  need its own scaling and failover logic to handle uneven device check-in traffic throughout the
+  day.
+- **Infrastructure automation and compliance remediation (any regulated industry).** Situation: a
+  cloud security team needs to automatically disable any IAM access key that's been inactive for
+  90 days, triggered by an AWS Config rule evaluation. Why Lambda fits: this is exactly the
+  "small piece of logic reacting to an AWS-internal event" pattern Lambda is built for, with no
+  user-facing traffic involved at all. What the alternative would cost: running a dedicated
+  always-on service to poll Config rule results would be significant operational overhead for a
+  task that happens a handful of times a day at most.
+- **Lightweight ML inference behind an API (MLOps).** Situation: a product team needs to serve
+  predictions from a small, fast classification model (not a large deep-learning model) behind a
+  public API, with unpredictable traffic tied to app usage. Why Lambda fits: the model fits
+  comfortably within Lambda's memory/time limits, and request volume is too spiky to justify a
+  warm, dedicated inference endpoint. What the alternative would cost: a SageMaker real-time
+  endpoint or always-on EC2 inference server billed by the hour would run (and cost money) even
+  during the long stretches when no prediction requests arrive.
 
 ## When NOT to Use It / Alternatives
 
@@ -523,6 +646,10 @@ do) and an S3-triggered asynchronous invocation (the classic event-driven glue p
 
 ### Extra practice: concurrency controls
 
+The commands below demonstrate reserved concurrency, which caps *and* guarantees a slice of your
+account's concurrency pool for one specific function — the correct tool whenever a downstream
+dependency (like a database's connection limit) needs protecting from an overly aggressive Lambda:
+
 ```bash
 # Cap this function's concurrency to protect a downstream DB connection limit
 awslocal lambda put-function-concurrency \
@@ -535,6 +662,11 @@ awslocal lambda get-function-concurrency --function-name hello-lambda
 # Remove the cap
 awslocal lambda delete-function-concurrency-config --function-name hello-lambda 2>/dev/null || true
 ```
+
+With the cap in place, the 11th simultaneous invocation is throttled (returns a `429
+TooManyRequestsException` to a synchronous caller, or is retried/routed to a DLQ for an
+asynchronous one) rather than being allowed through to overwhelm whatever this function talks to
+downstream.
 
 ## Exam Tips
 

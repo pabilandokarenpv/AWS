@@ -60,6 +60,43 @@ downtime risk). Throughout the environment's life, Beanstalk continuously report
 health** (Ok/Warning/Degraded/Severe, derived from instance and load balancer health checks) and
 streams logs to CloudWatch, giving you an operational dashboard without configuring one yourself.
 
+### How It Works — Step by Step: From `eb deploy` to a Live Environment
+
+Tracing exactly what happens between uploading a source bundle and having traffic flow to it
+shows how much CloudFormation/EC2/ASG/ALB machinery one `eb deploy` command actually triggers:
+
+1. **Source bundle uploaded.** Your zipped application code (or Docker image reference) is
+   uploaded to an S3 bucket Beanstalk manages on your behalf, versioned as a new "application
+   version."
+2. **CloudFormation stack created or updated.** Beanstalk translates your environment's
+   configuration (platform, instance type, scaling settings, `.ebextensions` customizations) into
+   a CloudFormation template and creates (for a new environment) or updates (for a redeploy) the
+   underlying stack — this is the stack you can inspect directly in the CloudFormation console.
+3. **Underlying resources provisioned.** CloudFormation provisions (or updates) the security
+   groups, the Auto Scaling group's launch template, the Auto Scaling group itself, and the
+   Application Load Balancer — exactly the resources covered in `ec2.md` and
+   `ec2-auto-scaling.md`, just generated for you instead of hand-written.
+4. **Instances launch and bootstrap.** Each EC2 instance in the new Auto Scaling group boots and
+   runs a bootstrap process that installs the **Host Manager** daemon and your platform's runtime
+   (e.g., Nginx + the Python/Node.js/Java runtime), then pulls and deploys your uploaded
+   application version onto it.
+5. **Deployment policy applied.** Depending on the configured policy, this instance-launch step
+   happens to all instances simultaneously (all-at-once), in waves (rolling), with temporary extra
+   capacity (rolling with additional batch), or against an entirely separate, parallel
+   environment that's swapped in only once healthy (immutable).
+6. **Health Manager reports status.** Once instances are running, the Host Manager on each one
+   continuously reports health (CPU, process status, the application's own HTTP response codes)
+   back to the Beanstalk service, which aggregates it into the environment's single Ok/Warning/
+   Degraded/Severe status.
+7. **Traffic flows.** The Application Load Balancer begins routing real traffic to any instance
+   that passes its target group health check — at this point the environment's public URL
+   (a Beanstalk-managed CNAME) is genuinely serving your application.
+
+Knowing this sequence explains why Beanstalk feels instant for simple changes but can take
+several minutes for structural ones: a pure code deployment only re-touches step 4-7, while
+changing the instance type or platform version forces CloudFormation to update or replace
+resources all the way back at step 3.
+
 ### The full resource stack a web server environment actually creates
 
 ![AWS Elastic Beanstalk web server tier architecture diagram.](https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/images/aeb-architecture2.png)
@@ -91,6 +128,14 @@ flowchart TB
     CF[CloudFront] --> S3B
     CF --> ALB
 ```
+
+*This diagram shows the dynamic/static content split that's the practical reason to pair Beanstalk
+with CloudFront and S3 rather than serving everything through the environment: static assets
+(images, CSS, JS bundles) go straight from S3 through CloudFront's edge cache, bypassing the
+EC2/ALB tier entirely, while CloudFront forwards only genuinely dynamic requests to the Beanstalk
+environment's ALB. The reason this matters for cost and performance: every static-asset request
+served by CloudFront is one fewer request the Beanstalk environment's Auto Scaling Group has to be
+sized (and billed) to handle.*
 
 ![Architecture diagram of Elastic Beanstalk working with other AWS products across multiple Availability Zones.](https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/images/aeb-architecture_crossaws2.png)
 
@@ -132,6 +177,14 @@ flowchart TD
     Q3 -->|Yes| ROLLADD[Rolling with additional batch: full capacity maintained]
     Q3 -->|No, zero risk tolerance| IMMUTABLE[Immutable: full parallel environment, swap only when healthy]
 ```
+
+*This decision tree is the practical shortcut for choosing a deployment policy based on two
+business questions rather than technical preference: can users tolerate a brief outage during
+deploy, and if not, is the team willing to pay for temporary extra capacity to avoid even a
+reduced-capacity window? The worked cost/risk example later in this file puts real numbers behind
+the bottom branch (Immutable), showing that the "safest" answer is usually only a few cents more
+expensive per deploy — which is why it's so often the correct exam answer despite technically
+costing more than All-at-once.*
 
 ## Key Features / Components
 
@@ -259,20 +312,78 @@ A few platform-specific notes worth knowing:
 
 ## Use Cases — When to Use It
 
-- **Standard web applications/APIs** where you want EC2-level control and cost but don't want to
-  hand-build the surrounding infrastructure — a startup's first production deployment is a classic
-  fit.
-- **Teams without dedicated DevOps/infra engineers** who still want proper Auto Scaling, load
-  balancing, and health monitoring instead of a single unmonitored EC2 instance.
-- **Background worker processing** via the Worker tier when you have an SQS-backed job queue and
-  want managed polling/scaling without building that plumbing yourself.
-- **Quick environment cloning** for staging/QA that mirrors production configuration exactly,
-  using saved configurations.
-- **Teams who want to "drop down" to raw EC2 occasionally** (SSH into an instance to debug) while
-  still getting managed provisioning day-to-day — Beanstalk doesn't hide the EC2 layer from you.
-- **Rapid prototyping that still needs to look production-grade** — spinning up a properly
-  load-balanced, auto-scaled environment in minutes for a demo or MVP, without the setup overhead
-  of hand-building the same thing.
+- **E-commerce storefront launch for a small retailer (retail/e-commerce).** Situation: a growing
+  online retailer needs a production-grade web storefront quickly, without a dedicated infra
+  engineer on staff. Why Beanstalk fits: `eb create` produces a properly load-balanced, auto-scaled
+  environment in minutes, with health monitoring built in from day one. What the alternative would
+  cost: hand-wiring EC2 + ASG + ALB + security groups correctly the first time requires real AWS
+  networking expertise the team doesn't have yet, risking a misconfigured, single-point-of-failure
+  deployment under time pressure.
+- **Fintech internal reporting API (financial services).** Situation: a finance team needs an
+  internal API serving daily reports to other systems, wanting EC2-level cost efficiency without
+  building CI/CD and scaling infrastructure from scratch. Why Beanstalk fits: `.ebextensions`
+  customization covers the few non-standard configuration needs (custom cron, specific package
+  installs) while Beanstalk handles the Auto Scaling/ALB/health-check plumbing. What the
+  alternative would cost: building the same thing with raw CloudFormation would take meaningfully
+  longer for a small team to get right, time better spent on the reporting logic itself.
+- **Media/streaming content-ingestion API (media & entertainment).** Situation: a mid-size content
+  platform needs a web-tier API accepting metadata uploads from content partners, with
+  moderate, predictable traffic and a need for quick iteration during active development. Why
+  Beanstalk fits: `eb deploy` as a one-command redeploy step fits naturally into a fast iteration
+  cycle without a heavyweight CI/CD pipeline. What the alternative would cost: standing up a full
+  CodePipeline/CodeDeploy pipeline for a small team's early-stage API adds setup overhead
+  disproportionate to the project's current size.
+- **Healthcare patient-intake form backend (healthcare).** Situation: a healthcare startup needs
+  a HIPAA-adjacent web backend running on infrastructure it can audit and control at the EC2 level,
+  while still wanting managed scaling and health monitoring. Why Beanstalk fits: it doesn't hide
+  the EC2 layer — the team can SSH in, inspect configuration, and satisfy an auditor's request to
+  see the actual compute environment, while still getting Auto Scaling and load balancing for
+  free. What the alternative would cost: a fully serverless (Lambda/Fargate) approach might
+  complicate certain compliance audits that expect to inspect a traditional server environment
+  directly.
+- **Gaming companion-app backend (gaming).** Situation: a game studio needs a simple companion
+  mobile-app backend (account linking, cosmetic-item sync) separate from the latency-critical game
+  servers themselves, built quickly by a small backend team. Why Beanstalk fits: it's fast to stand
+  up, with standard web-tier scaling that fits this moderate-traffic, non-latency-critical use
+  case well. What the alternative would cost: building this companion backend with the same
+  custom infrastructure rigor as the core game servers would be significant over-engineering for a
+  comparatively low-stakes, low-traffic service.
+- **SaaS startup's MVP production environment (SaaS).** Situation: an early-stage SaaS startup
+  needs its first production environment to look and behave like a "real" scalable service for
+  investor demos and early customers, without a platform team. Why Beanstalk fits: a properly
+  load-balanced, auto-scaled environment is live within minutes, projecting production readiness
+  without the setup time of hand-built infrastructure. What the alternative would cost: a single
+  unmonitored EC2 instance (the common alternative at this stage) risks an embarrassing outage
+  during an investor demo or early customer's first week, with no automatic recovery.
+- **Batch analytics lightweight reporting dashboard (data analytics).** Situation: an analytics
+  team needs a small internal dashboard application served to a handful of internal stakeholders,
+  with predictable, low traffic. Why Beanstalk fits: a single small instance environment (often
+  within Free Tier) with health monitoring is overkill-free for this scale, while still giving
+  automatic instance replacement if something crashes overnight. What the alternative would cost:
+  running this on a single unmonitored EC2 instance with no ASG means a crashed instance stays down
+  until someone notices manually, which for an internal tool can go unnoticed for days.
+- **IoT device-management console backend (IoT).** Situation: an IoT company's internal
+  device-fleet management console needs a backend API with moderate load tied to how many support
+  staff are actively using the console during business hours. Why Beanstalk fits: scheduled
+  scaling policies aren't even needed at this scale — a modest fixed-size or lightly-scaling
+  environment handles it, with the team's focus staying on the console's actual features rather
+  than its hosting infrastructure. What the alternative would cost: investing in a full
+  Fargate/ECS setup for a low-traffic internal tool would be disproportionate engineering effort
+  for the actual scale involved.
+- **Background worker processing for a document-processing SaaS (SaaS).** Situation: a document
+  SaaS needs to process uploaded files asynchronously (OCR, format conversion) via a queue, without
+  building the SQS-polling and worker-scaling logic from scratch. Why Beanstalk fits: the Worker
+  tier handles SQS polling and delivers each message as a local HTTP POST to application code,
+  letting developers write the same simple web-handler code for background jobs. What the
+  alternative would cost: hand-building SQS long-polling, worker scaling, and message-visibility
+  handling on raw EC2 would duplicate functionality the Worker tier provides out of the box.
+- **Rapid prototyping for an enterprise pilot (any industry).** Situation: an enterprise vendor
+  needs to stand up a convincing, properly-architected pilot environment for a prospective
+  customer's technical evaluation, on a tight timeline. Why Beanstalk fits: a production-grade,
+  load-balanced environment is live in minutes, giving the pilot the same architectural shape
+  (ALB + ASG + health monitoring) the eventual production deployment would use. What the
+  alternative would cost: hand-building the same infrastructure for a time-boxed pilot wastes
+  engineering time that could go toward the actual pilot features being evaluated.
 
 ## When NOT to Use It / Alternatives
 
@@ -430,6 +541,12 @@ awslocal autoscaling describe-auto-scaling-groups \
 awslocal autoscaling delete-auto-scaling-group \
   --auto-scaling-group-name eb-lab-asg --force-delete
 ```
+
+Walking through this lab builds the exact mental model Beanstalk's own abstraction hides from
+you day to day: the security group, launch template, and Auto Scaling group here are the literal
+resources a real `eb create` call would provision behind a single console click — seeing them
+built by hand once makes it much easier to reason about what `eb logs`/`eb ssh` are actually
+connecting to later.
 
 If you want to practice the real `eb` CLI workflow (`eb init`, `eb create`, `eb deploy`) against
 actual AWS, use the AWS Free Tier directly with a tight budget alert — Beanstalk's own layer adds

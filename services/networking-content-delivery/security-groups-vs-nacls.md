@@ -271,6 +271,13 @@ flowchart LR
     SGA -.->|"cross-VPC SG reference,<br/>same Region required"| SGB
 ```
 
+Reading this: `app-sg` lives in Account 1's VPC A, and `db-sg` lives in Account 2's VPC B — the
+two accounts are connected only by a VPC peering connection, yet `db-sg`'s inbound rule can still
+name `app-sg` directly as its allowed source, exactly as if both groups lived in the same VPC.
+This only works because the peering connection is same-Region; the dashed line marks that this
+is a cross-VPC *reference*, not a data path itself — actual traffic still flows over the solid
+peering connection, the SG reference just controls whether it's allowed through.
+
 ## Reachability Analyzer for SG/NACL debugging
 
 When a connectivity issue could be either layer, **VPC Reachability Analyzer** is the fastest
@@ -290,6 +297,13 @@ flowchart TD
     Result -->|"path exists"| Reachable
     Result -->|"path blocked"| Blocked
 ```
+
+Reading this: you give Reachability Analyzer just a source and destination (two ENIs, or an
+instance/IP + port combination) and it does the work a human would otherwise do by hand — walking
+every route table, security group, and NACL rule that traffic between those two points would
+actually traverse. The output is binary and specific: either REACHABLE with the full path shown,
+or NOT REACHABLE with the exact component and rule that would block it named directly, so you
+never have to guess which of the three layers (route table, SG, NACL) is at fault.
 
 ## AWS Network Firewall and WAF — where they fit relative to SG/NACL
 
@@ -369,17 +383,81 @@ flowchart LR
     HardenedSG -.->|"BLOCKED — no matching rule"| Internet((Arbitrary Internet Destination))
 ```
 
+Reading this: the hardened security group has exactly two outbound allow rules — one to the VPC
+endpoint's security group, one to the database's security group — and nothing else, because the
+default outbound-allow-all rule was explicitly deleted rather than left in place. Any attempt
+from this instance to reach an arbitrary internet destination simply has no matching rule to
+allow it, so it's dropped the same way an inbound request with no matching rule would be —
+security groups don't need an explicit deny for this, the *absence* of an allow rule is enough.
+
 ## Use Cases — When to Use It
 
-- **Security Groups** — the default, everyday tool: "only allow port 443 from the internet to
-  my load balancer," "only allow port 3306 from my app-tier SG to my database SG." This covers
-  the vast majority of real-world rules.
-- **NACLs** — reach for them when you need a **blanket block** independent of which instance:
-  "deny this entire malicious IP range from the whole subnet right now," or as a coarse-grained
-  compliance control layered on top of (never instead of) security groups.
-- **Combining both** — standard production pattern: NACL as a broad perimeter guard (deny known
-  bad ranges, restrict subnet to expected protocols), security groups as the precise per-tier
-  access control (web SG → app SG → db SG chaining).
+- **Multi-tier web application access control.** A 3-tier app needs the ALB open to the internet,
+  the app tier reachable only from the ALB, and the database reachable only from the app tier.
+  Security-group-to-security-group chaining (`alb-sg` → `app-sg` → `db-sg`) expresses this without
+  ever hardcoding an IP. Tradeoff vs. CIDR-based rules: SG references survive autoscaling (new
+  instances automatically inherit the rule via their SG), but only work within the same VPC/Region
+  unless cross-VPC/cross-account SG referencing is explicitly set up.
+- **Hybrid cloud perimeter blocking.** A company connects an on-prem network to a VPC via VPN/
+  Direct Connect and needs to instantly deny a newly identified malicious on-prem-adjacent IP
+  range from an entire subnet, regardless of which instance's security group would otherwise
+  allow it. A low-numbered NACL deny rule achieves this in one change. Tradeoff vs. editing every
+  affected instance's security group: one NACL rule covers the whole subnet instantly, but NACLs
+  are stateless and subnet-wide — a necessary complement to, never a substitute for, per-instance
+  security groups.
+- **Multi-Region DR with consistent security posture.** A DR Region's standby VPC needs the exact
+  same tier-chaining security group pattern as the primary Region so a failover doesn't also
+  introduce new, unreviewed access rules. Tradeoff vs. designing DR security groups independently:
+  replicating the exact SG/NACL pattern (via IaC) guarantees consistent posture, but means any
+  security fix must be deployed to both Regions, not just the active one.
+- **Global content delivery origin protection.** An origin ALB/EC2 fleet behind CloudFront should
+  only accept traffic that has actually gone through CloudFront, not direct internet hits.
+  Security groups referencing the AWS-managed CloudFront prefix list achieve this at the instance
+  level. Tradeoff vs. relying on CloudFront's domain alone: enforces the restriction even if
+  someone discovers the origin's direct IP/hostname, at the cost of needing to keep the prefix
+  list reference current as AWS updates CloudFront's IP ranges (handled automatically via the
+  managed prefix list, but still a dependency to understand).
+- **Microservices mesh least-privilege networking.** A platform with dozens of independently
+  deployed microservices needs each service reachable only by the specific services that
+  legitimately call it, not by every other service in the mesh. Dedicated security groups per
+  service, each referencing only its known callers' SGs, enforce this. Tradeoff vs. one shared
+  security group for the whole mesh: far smaller blast radius if one service is compromised, but
+  meaningfully more security groups to create and keep in sync as the service graph grows.
+- **Compliance-driven defense-in-depth for data tiers.** A regulated workload's database tier
+  must remain unreachable even if a developer accidentally attaches an overly permissive security
+  group to it. A subnet-level NACL allowing inbound only from the app tier's specific CIDR on the
+  database port acts as an independent backstop regardless of what any individual instance's
+  security group says. Tradeoff vs. relying on security groups alone: genuine defense-in-depth
+  against human error, at the cost of needing to keep NACL rules in sync with legitimate traffic
+  patterns or risk breaking something the NACL wasn't updated to allow.
+- **M&A account consolidation — security group sharing across merged accounts.** After a merger,
+  a central security team wants to own and update the canonical security group rule set used by
+  both companies' application accounts, without every account duplicating it. Security group
+  sharing via AWS Resource Access Manager lets one account's SG definition be referenced by
+  resources in other accounts in the same Organization. Tradeoff vs. each account maintaining its
+  own copy of the rules: central updates propagate everywhere at once (good for consistency,
+  risky if a bad change goes out broadly), versus independent per-account copies that drift but
+  fail more locally.
+- **Egress-lockdown for data-exfiltration compliance.** An audit requires proof that a tier of
+  instances cannot send data to arbitrary internet destinations, not just that inbound access is
+  restricted. Removing the security group's default outbound-allow-all rule and adding back only
+  narrow, specific outbound rules (e.g., to a VPC endpoint's SG) achieves this at the instance
+  level. Tradeoff vs. leaving default outbound-allow: materially reduces exfiltration risk, but
+  any new legitimate outbound dependency now requires an explicit rule addition instead of just
+  working.
+- **Bastion-host administrative access pattern.** Operators need SSH access to private instances
+  without exposing them to the internet directly. The bastion's security group allows SSH only
+  from a known office/VPN CIDR; every other instance's security group allows SSH only from the
+  bastion's security group. Tradeoff vs. giving every instance its own allowed SSH source: a
+  single audited entry point is far easier to monitor and revoke, at the cost of a single point of
+  failure for administrative access if the bastion itself goes down.
+- **Rapid incident response — emergency subnet-wide block.** During an active incident, security
+  needs to immediately block a known-malicious IP range from an entire production subnet
+  containing dozens of differently-configured instances, without touching each one individually.
+  One NACL deny rule at a low rule number applies instantly subnet-wide. Tradeoff vs. editing
+  every instance's security group under time pressure: much faster and less error-prone during an
+  incident, at the cost of NACLs being coarser (subnet-wide, not per-instance) than the
+  eventual, more precise fix.
 
 ## When NOT to Use It / Alternatives
 

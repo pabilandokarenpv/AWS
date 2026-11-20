@@ -257,15 +257,64 @@ stream based purely on declarative filter policies — no branching logic in the
 
 ## Use Cases — When to Use It
 
-- **Fan-out to multiple microservices**: one "order placed" event needs to reach billing,
-  shipping, and analytics teams' systems independently — SNS → three SQS queues is the
-  canonical pattern.
-- **Alerting/notifications**: CloudWatch Alarms publish to an SNS topic that emails the on-call
-  engineer and posts to a Slack webhook simultaneously.
-- **Mobile/SMS push notifications** at scale, without building your own push-notification
-  infrastructure.
-- **Application-to-person (A2P) messaging**: order confirmations, OTP codes via SMS.
-- **Broadcasting configuration/state changes** to many independent services at once.
+1. **Fan-out to independent microservices on one business event** — an "order placed" event
+   needs to reach billing, shipping, and analytics systems independently, each owned by a
+   different team. SNS → three SQS queues is the fit. **Tradeoff vs. the order service calling
+   each downstream API directly**: direct calls couple the order service to every consumer's
+   availability and API shape — adding a fourth consumer means changing the order service's code.
+2. **Alerting a human and a system simultaneously** — a CloudWatch Alarm needs to both email the
+   on-call engineer and post to a Slack webhook the instant it fires. One topic with two
+   subscriptions is the fit. **Tradeoff vs. a single Lambda that sends both notifications
+   itself**: a single Lambda is one less AWS resource to manage, but means every new notification
+   channel requires a code change instead of just adding a subscription.
+3. **Mobile/SMS push notifications at scale** — a retail app needs to push an order-confirmation
+   notification to both iOS and Android devices without building APNs/FCM connection management.
+   SNS Platform Endpoints are the fit. **Tradeoff vs. calling APNs/FCM directly from application
+   code**: direct calls avoid SNS's per-notification cost, but mean the team owns device-token
+   registration, connection pooling, and retry logic SNS already handles.
+4. **Application-to-person (A2P) one-time codes** — a login flow needs to send an SMS OTP code
+   the moment a user requests one. SNS's SMS delivery is the fit for this narrow, latency-
+   sensitive A2P case. **Tradeoff vs. a third-party SMS provider (e.g., Twilio)**: a dedicated
+   SMS provider may offer better regional carrier reach/deliverability in some markets, but adds
+   a second vendor relationship and billing account to manage alongside AWS.
+5. **Broadcasting configuration/state changes across independent services** — a feature-flag
+   service needs every downstream service that reads a flag to invalidate its local cache the
+   instant the flag changes. SNS publish to all interested services is the fit. **Tradeoff vs.
+   each service polling the flag service on an interval**: polling is simpler to build per
+   service, but adds load on the flag service and up-to-a-poll-interval staleness SNS's
+   push-based delivery avoids.
+6. **Processing one uploaded object multiple independent ways** — an image upload needs
+   thumbnail generation, EXIF metadata extraction, and malware scanning, each as an independent
+   pipeline that shouldn't block the others. S3 event → SNS → three SQS queues → three Lambdas is
+   the fit, since S3 natively targets only a limited number of destinations per event type
+   directly. **Tradeoff vs. one Lambda doing all three jobs sequentially**: one Lambda is simpler
+   to deploy, but a bug or slowdown in malware scanning would then also delay thumbnailing, and a
+   single function doing three unrelated jobs is harder to reason about and scale independently.
+7. **Cross-account security event forwarding** — a central security account needs to receive
+   GuardDuty findings from every member account in an AWS Organization. SNS topic policies
+   granting cross-account subscription permission are the fit. **Tradeoff vs. each member account
+   writing directly to a central S3 bucket**: direct S3 writes are simpler for pure archival, but
+   SNS's push delivery lets the central account react in near-real-time (e.g., trigger automated
+   remediation) rather than only discovering findings on the next scheduled scan of the bucket.
+8. **Topic-queue chaining for durable, per-consumer retry** — multiple downstream consumers each
+   need the same event held durably with their own independent retry/DLQ, not just a best-effort
+   push. SNS → multiple SQS queues is the fit — SNS alone has no durable hold if a consumer is
+   briefly down. **Tradeoff vs. SNS alone with no queue**: SNS's own retry policy covers brief
+   outages, but a consumer down longer than that window simply never gets the message without an
+   SQS queue behind it.
+9. **Selectively routing a subset of events to each subscriber** — an order-events topic has many
+   subscribers, but the analytics queue wants every event while the email-receipt Lambda only
+   wants `order_placed` events specifically. SNS subscription filter policies are the fit.
+   **Tradeoff vs. creating a separate topic per event type**: separate topics avoid filter-policy
+   complexity, but mean the publisher must know in advance how many topics exist and route to
+   each one explicitly — filter policies let one topic serve many different subscriber needs
+   declaratively.
+10. **FIFO-ordered notifications for a specific business key** — a trading platform needs
+    "order placed" and "order cancelled" events for the same order ID delivered and processed in
+    that exact order by downstream FIFO SQS consumers. A FIFO SNS topic is the fit. **Tradeoff
+    vs. a Standard SNS topic**: Standard topics support far more delivery protocols (Lambda,
+    HTTP, email, mobile push) and higher throughput, but make no ordering guarantee at all —
+    FIFO topics trade that breadth away specifically to guarantee order.
 
 ## When NOT to Use It / Alternatives
 

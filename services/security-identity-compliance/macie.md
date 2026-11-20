@@ -117,16 +117,76 @@ findings stream that's meant for immediate action.
 
 ## Use Cases — When to Use It
 
-- Auditing hundreds of S3 buckets accumulated over years to find out where customer PII,
-  payment data, or health records actually live.
-- Continuously monitoring for a new bucket or object being created that accidentally exposes
-  sensitive data, catching it fast instead of during the next annual audit.
-- Supporting a compliance audit (PCI-DSS, HIPAA, GDPR) by producing concrete evidence of where
-  regulated data resides and that it's properly encrypted/access-controlled.
-- Scanning data lake landing zones before they're promoted to production pipelines, to catch
-  unintentionally included sensitive fields.
-- Gating an automated data pipeline: pause ingestion into a "scanned data" bucket until Macie
-  confirms no sensitive data slipped through from the raw landing zone.
+- **Auditing years of accumulated S3 buckets for forgotten PII.** Situation: an organization has
+  hundreds of buckets from years of ad hoc exports, backups, and test data, with no reliable
+  inventory of what's sensitive. Why this fits: Macie's managed identifiers scan content across
+  the entire S3 estate automatically, surfacing exactly where PII/financial/health data actually
+  lives without a manual bucket-by-bucket review. Tradeoff: running full classification jobs
+  against a very large, mostly-static estate is a real, recurring cost — most of that old data
+  isn't changing, so scanning it repeatedly on a schedule wastes money better spent elsewhere.
+- **Catching accidental exposure the moment it happens.** Situation: a new bucket or object is
+  created that accidentally exposes sensitive data, and the team wants to know in minutes, not
+  at the next annual audit. Why this fits: automated discovery continuously samples the S3
+  estate at lower cost, catching new exposure fast. Tradeoff: sampling means not every single
+  new object is scanned immediately — a sensitive file that happens to be missed in a given
+  sampling pass could sit exposed slightly longer than a full scan would catch, a real
+  cost/thoroughness tradeoff inherent to the automated tier.
+- **Compliance audit evidence for PCI-DSS/HIPAA/GDPR.** Situation: an auditor needs concrete
+  proof of where regulated data resides and that it's properly encrypted/access-controlled. Why
+  this fits: Macie produces a continuous, timestamped finding history instead of a one-time
+  manual spreadsheet, exactly the kind of ongoing evidence these frameworks expect. Tradeoff:
+  Macie reports on *discovery*, not remediation — passing the audit also requires the
+  organization to actually act on findings (encrypt, restrict), which Macie surfaces but doesn't
+  perform.
+- **Data lake landing-zone gating before pipeline promotion.** Situation: raw data entering a
+  data lake might accidentally contain sensitive fields that shouldn't flow into downstream
+  analytics. Why this fits: a Macie classification job as a pipeline checkpoint can pause
+  promotion until a human confirms no sensitive data slipped through. Tradeoff: adding this
+  checkpoint introduces latency into the pipeline — for a high-velocity ingestion pipeline, the
+  scan time itself becomes a throughput constraint that has to be budgeted for.
+- **M&A — scanning an acquired company's S3 estate before full data integration.** Situation: an
+  acquiring company needs to know what sensitive data exists in an acquired company's S3 buckets
+  before merging data pipelines or granting broader internal access. Why this fits: a targeted
+  Macie job against the acquired estate quickly surfaces what regulated data is present and
+  whether it's already exposed, informing both integration planning and immediate risk
+  mitigation. Tradeoff: the acquired company's object formats/conventions may differ from what
+  the parent company's managed identifiers are tuned for — custom data identifiers may be needed
+  to catch organization-specific sensitive formats the acquired company used internally.
+- **Correlating exposure and sensitivity to prioritize remediation.** Situation: a security team
+  has hundreds of flagged buckets and needs to know which to fix first. Why this fits:
+  correlating Macie's sensitive-data findings with IAM Access Analyzer's external-exposure
+  findings surfaces the true highest-risk intersection — buckets that are both reachable from
+  outside the account *and* contain something worth protecting. Tradeoff: building this
+  correlation requires custom tooling (a Lambda or Security Hub insight) stitching the two
+  services' findings together — it's not a single built-in combined view out of the box.
+- **Custom data identifiers for organization-specific sensitive formats.** Situation: an
+  internal employee ID format or proprietary record number isn't covered by Macie's 100+ managed
+  identifiers. Why this fits: a custom regex-based identifier, scoped with keyword proximity
+  matching, lets Macie catch organization-specific patterns the managed set was never designed
+  for. Tradeoff: custom identifiers require careful regex design and tuning to avoid false
+  positives (e.g., a pattern that also matches an unrelated product SKU) — this is genuine
+  ongoing maintenance, not a one-time setup.
+- **ML training data hygiene before model training.** Situation: a data science team wants to
+  confirm a dataset slated for model training doesn't contain PII that shouldn't end up memorized
+  by the model. Why this fits: a targeted Macie job against the training data bucket catches
+  sensitive fields before they ever reach a training job, aligning with MLA-C02's responsible
+  data-handling emphasis. Tradeoff: Macie classifies at the object/file level — it doesn't
+  understand model training semantics (e.g., which specific column in a CSV is the sensitive
+  one versus a benign numeric feature) as precisely as a schema-aware data profiling tool might.
+- **Zero-trust validation before granting broader data access.** Situation: a security team is
+  asked to grant a new internal team broad read access to a shared data lake bucket. Why this
+  fits: running a Macie scan first, rather than trusting that "it's probably fine," confirms
+  exactly what sensitive data that grant would actually expose before the access is approved.
+  Tradeoff: this adds a scan-and-review step into what might otherwise be a quick access-request
+  process — for low-risk, well-understood buckets this can feel like unnecessary friction if
+  applied indiscriminately everywhere.
+- **Allow-listing known test fixtures to reduce false positives.** Situation: a QA environment's
+  test data intentionally includes a well-known sample credit card number, which would otherwise
+  generate a constant stream of findings. Why this fits: an allow list suppresses exactly that
+  known-benign pattern while leaving every other detection fully active. Tradeoff: an allow list
+  that's too broadly scoped (matching more than just the intended test value) can accidentally
+  suppress a genuine finding that happens to share the same pattern — allow lists need periodic
+  review, not "set and forget."
 
 ## When NOT to Use It / Alternatives
 

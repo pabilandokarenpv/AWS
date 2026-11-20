@@ -224,15 +224,48 @@ testing whether you understand this separation.
 
 ## Use Cases — When to Use It
 
-- Historically: organizations with strict compliance/data-residency requirements wanting source
-  code to never leave the AWS account boundary, or teams wanting one IAM identity for both infra
-  access and source control.
-- Today, realistically: maintaining/operating **existing** CodeCommit repositories inherited from
-  before mid-2024, since AWS still runs them — not a recommended starting point for new projects.
-- Still useful as an exam topic: understanding how it wired into CodeBuild/CodePipeline tells you
-  how *any* Git source (now typically GitHub via CodeConnections) wires into AWS CI/CD.
-- Fully air-gapped or VPC-only environments where even GitHub/GitLab's SaaS endpoints aren't
-  reachable, but a private, VPC-endpoint-only Git remote is still needed.
+Each scenario names the situation, why CodeCommit fits, and the tradeoff accepted (keeping in mind
+AWS's own current guidance to use GitHub/GitLab/Bitbucket instead for new projects).
+
+1. **Compliance-bound source control (historical).** Situation: a regulated industry (finance,
+   government, healthcare) wants source code to never leave the AWS account boundary. Why it fit:
+   IAM/KMS/VPC-endpoint integration keeps code inside the same audit boundary as every other AWS
+   resource. Tradeoff: a much smaller ecosystem than GitHub, and AWS itself no longer recommends it
+   for new projects.
+2. **Maintaining inherited legacy repositories.** Situation: a team inherits a pre-mid-2024 AWS
+   environment with existing CodeCommit repos. Why it fits: AWS still runs existing repositories
+   with no forced migration deadline. Tradeoff: no new features or ecosystem growth — a slowly
+   aging platform that will eventually need migrating anyway.
+3. **Fully air-gapped or VPC-only Git hosting.** Situation: an environment where even GitHub/GitLab
+   SaaS endpoints aren't reachable. Why it fits: a VPC-endpoint-only Git remote authenticated via
+   IAM, with no public internet path required at all. Tradeoff: still bound by CodeCommit's
+   practical size/feature ceilings versus a dedicated self-hosted Git server.
+4. **Monorepo with path-based pipeline triggers.** Situation: a single repository holds multiple
+   services. Why it fits: EventBridge rules filtered on file path trigger only the pipeline for the
+   service that actually changed. Tradeoff: still clones the whole repository per trigger — genuine
+   monorepo build tooling (Bazel, Nx) does more targeted, incremental work than this alone.
+5. **Cross-account centralized source control.** Situation: a multi-account organization wants one
+   canonical repository, not separate copies per account. Why it fits: cross-account IAM role
+   assumption scoped to `GitPull`/`GitPush` avoids duplicating the repo. Tradeoff: adds IAM
+   complexity versus each account simply cloning its own copy.
+6. **Merge-blocking code review enforcement.** Situation: security policy requires two or more
+   approvals before any merge, enforced technically rather than by process alone. Why it fits:
+   approval rule templates act as a hard merge blocker, not just a courtesy gate. Tradeoff: can
+   slow down a legitimate hotfix unless a documented "break glass" reviewer path also exists.
+7. **Hotfix emergency deploys against a protected branch.** Situation: a critical patch is needed
+   fast, but `main` is approval-gated. Why it fits: a scoped approval pool can include an on-call
+   "break glass" reviewer role so emergencies still get reviewed, just faster. Tradeoff: still
+   requires at least one human review by design — there's no built-in bypass for genuine
+   emergencies without pre-planning one.
+8. **Migrating off CodeCommit to CodeConnections.** Situation: a team must modernize its source
+   control per AWS's current guidance. Why it fits (as a migration case): it's mostly a one-time
+   repo-content export plus a CodePipeline Source-stage repoint, with zero downstream pipeline
+   changes. Tradeoff: the cutover moment requires coordinating one final sync so no late commits
+   are lost between the old and new remotes.
+9. **Understanding legacy exam/architecture content.** Situation: studying for DVA-C03 where older
+   material still references CodeCommit directly. Why it fits: the underlying Source-stage mental
+   model transfers directly onto GitHub via CodeConnections. Tradeoff: time spent learning a
+   service AWS is sunsetting versus investing that time directly in CodeConnections/GitHub Actions.
 
 ## When NOT to Use It / Alternatives
 

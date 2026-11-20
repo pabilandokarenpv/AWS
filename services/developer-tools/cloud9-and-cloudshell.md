@@ -202,16 +202,44 @@ status note at the top.
 
 ## Use Cases — When to Use It
 
-- **CloudShell**: quick CLI operations from any machine/browser without wanting to configure the
-  AWS CLI locally; troubleshooting production issues from a borrowed/locked-down machine;
-  lightweight scripting that doesn't need a full IDE; running `sam`/`cdk`/`eksctl` commands from
-  any browser during a workshop without asking attendees to install anything locally.
-- **CloudShell VPC environments**: running CLI/scripting tasks that need to reach a resource only
-  accessible from inside a specific VPC (e.g., testing connectivity to a private RDS instance)
-  without standing up a bastion host.
-- **Cloud9 (where still in use)**: workshops/training environments needing a consistent,
-  zero-local-setup dev environment for every participant; legacy projects already built around
-  existing Cloud9 environments.
+Each scenario names the situation, which tool (CloudShell or Cloud9) fits, why, and the tradeoff
+accepted.
+
+1. **Incident response from a locked-down/borrowed machine.** Situation: an on-call engineer needs
+   to run AWS CLI commands but can't install software. Why CloudShell fits: it's pre-authenticated
+   and zero-install, reachable from any browser. Tradeoff: no persistent heavy compute — you can't
+   reliably run a long background process inside a CloudShell session.
+2. **Workshop/training at scale.** Situation: dozens of attendees need a working CLI environment
+   instantly. Why CloudShell fits: it's available the moment each attendee logs into the console,
+   with no provisioning step at all. Tradeoff: the 1 GB persistent storage ceiling isn't meant for
+   real build artifacts or large datasets.
+3. **Reaching a private VPC resource for a one-off diagnostic.** Situation: a private RDS instance
+   must be queried with no bastion host or VPN already set up. Why CloudShell fits: a CloudShell
+   VPC environment attaches a subnet/security group on demand. Tradeoff: VPC environments have zero
+   persistent storage — nothing in `$HOME` survives after the session ends.
+4. **Running SAM/CDK commands without a local toolchain.** Situation: a developer's laptop lacks
+   Docker, Node.js, or the AWS CLI. Why CloudShell fits: all three are pre-installed and
+   pre-authenticated. Tradeoff: still subject to CloudShell's 20–30 minute idle timeout, which can
+   interrupt a long-running build or deploy command.
+5. **Full browser-based IDE for workshops (legacy Cloud9 use).** Situation: a training event needs
+   a consistent dev environment for every participant without local installs. Why Cloud9 fit: it
+   provisioned a real EC2-backed editor, debugger, and terminal in the browser. Tradeoff: Cloud9 is
+   deprecated for new customers — this is now a legacy-only use case, with GitHub Codespaces as the
+   actively-maintained modern equivalent.
+6. **Legacy project maintenance on an existing Cloud9 environment.** Situation: a team inherited a
+   project built around Cloud9. Why it fits (for now): existing environments continue running on a
+   retirement timeline rather than being switched off immediately. Tradeoff: no new features, and
+   an eventual forced migration to GitHub Codespaces or a similar tool.
+7. **Hotfix emergency patch from an unfamiliar machine.** Situation: an engineer away from their
+   usual dev machine must push an urgent fix or mitigation. Why CloudShell fits: pre-authenticated
+   git/CLI/Python access lets them diagnose and even run a quick script-based mitigation
+   immediately. Tradeoff: not meant for writing or testing substantial new application code — it's
+   a terminal, not a full IDE.
+8. **Cost-free quick scripting and troubleshooting.** Situation: a one-off `boto3` script is needed
+   to check a service's health. Why CloudShell fits: Python and `boto3` are pre-installed, with no
+   `pip install` step, and it inherits the console session's IAM identity automatically. Tradeoff:
+   anything written outside `$HOME` doesn't persist between sessions, and CloudShell isn't
+   available in every AWS Region.
 
 ## When NOT to Use It / Alternatives
 

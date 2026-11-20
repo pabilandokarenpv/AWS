@@ -322,14 +322,54 @@ case.
 
 ## Use Cases — When to Use It
 
-- Building and deploying serverless applications (Lambda + API Gateway + DynamoDB + Step
-  Functions combinations) with minimal boilerplate.
-- Teams wanting fast local testing/debugging of Lambda functions before every deploy, which SAM's
-  `local` subcommands are purpose-built for.
-- Declarative, safe Lambda deployment strategies (canary/linear/blue-green via
-  `DeploymentPreference`) without hand-configuring CodeDeploy directly.
-- Teams who want "real CloudFormation" underneath (for state tracking, drift detection, rollback)
-  but don't want to write the verbose, repetitive raw YAML for every serverless resource.
+Each scenario names the situation, why SAM fits, and the tradeoff accepted versus CDK, raw
+CloudFormation, or another approach.
+
+1. **Fully serverless REST API.** Situation: building a Lambda + API Gateway + DynamoDB app. Why
+   SAM fits: `AWS::Serverless::Function`/`::Api`/`::SimpleTable` collapse the usual boilerplate.
+   Tradeoff: the shorthand only covers serverless resource types — broader infrastructure still
+   needs raw CloudFormation blocks in the same template.
+2. **Fast local development/testing loop.** Situation: a developer wants to iterate on Lambda code
+   without redeploying to AWS every time. Why SAM fits: `sam local invoke`/`start-api` emulate the
+   real runtime fully offline via Docker. Tradeoff: local emulation doesn't replicate every piece
+   of deployed AWS configuration (IAM edge cases, VPC networking) — final verification still needs
+   a real deploy.
+3. **Safe Lambda canary/blue-green deployment.** Situation: a Lambda-based service needs gradual
+   traffic shifting with automatic rollback. Why SAM fits: `DeploymentPreference` declaratively
+   wires CodeDeploy canary/linear with pre/post-traffic hooks. Tradeoff: hook functions must
+   explicitly report status back to CodeDeploy, or the deployment hangs until timeout.
+4. **Event-driven processing pipeline.** Situation: an S3 upload must trigger downstream
+   processing. Why SAM fits: a function's `Events: S3` block declares the trigger with no manual
+   bucket-notification wiring. Tradeoff: complex multi-step event chains are better expressed with
+   Step Functions than a chain of S3-triggered Lambdas.
+5. **Scheduled/cron-style jobs.** Situation: nightly reports or cleanup jobs are needed. Why SAM
+   fits: an `Events: Schedule` block replaces manually creating an EventBridge rule and target.
+   Tradeoff: still bound by Lambda's 15-minute execution ceiling — a genuinely long scheduled job
+   needs Fargate instead.
+6. **Hotfix emergency deploy via `sam sync`.** Situation: a bug in deployed Lambda code must be
+   fixed in seconds during an incident. Why SAM fits: `sam sync` pushes code directly to the
+   function, bypassing the full CloudFormation changeset. Tradeoff: explicitly not safe for normal
+   production use — it skips drift tracking, rollback safety, and `DeploymentPreference`
+   traffic-shifting entirely, so it should only be used in a true dev/incident context.
+7. **Least-privilege IAM without hand-writing policies.** Situation: a function needs scoped
+   DynamoDB/S3 access. Why SAM fits: policy templates (`DynamoDBReadPolicy`, etc.) and
+   `Connectors` compute least-privilege permissions declaratively. Tradeoff: policy templates grant
+   a fixed, documented action set, not a precise match to your exact intent — read the template's
+   actual scope before assuming it covers only what you expect.
+8. **Reusable component composition via the Serverless Application Repository.** Situation: a
+   common component (Slack notifier, auth layer) is needed without reimplementing it. Why SAM
+   fits: `AWS::Serverless::Application` nests a published SAR app as a sub-stack. Tradeoff: adds a
+   dependency on a third-party-maintained SAR app's release cadence and security practices.
+9. **ML inference via Lambda-backed serverless endpoints.** Situation: sparse, bursty inference
+   traffic where cost (not raw throughput) is the priority. Why SAM fits: its serverless-first
+   shape suits a scale-to-zero Lambda inference function cleanly. Tradeoff: cold starts and
+   Lambda's compute/memory ceiling may not suit larger models — Fargate or a SageMaker endpoint may
+   fit better once the model grows.
+10. **Monorepo CI/CD for many SAM-defined microservices.** Situation: multiple SAM templates/
+    services live in one repository. Why SAM fits: `sam pipeline` bootstraps a consistent
+    CodePipeline/GitHub Actions definition per service. Tradeoff: as service count grows, template
+    and pipeline sprawl need the same governance any monorepo-of-services requires, regardless of
+    which IaC tool is used.
 
 ## When NOT to Use It / Alternatives
 

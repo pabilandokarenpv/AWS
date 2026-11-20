@@ -59,6 +59,40 @@ add-ons (a load balancer, a managed database, a CDN distribution) at their own f
 notably — a **VPC peering/export path** that lets you connect a Lightsail instance into a full VPC
 or even migrate it to a regular EC2 instance once you've outgrown the simplified model.
 
+### How It Works — Step by Step: From Picking a Blueprint to a Running Server
+
+Tracing what happens between clicking "Create instance" and having a reachable server shows how
+Lightsail's simplicity is really EC2's complexity hidden behind fewer decisions, not different
+underlying technology:
+
+1. **Blueprint and plan selected.** You choose a blueprint (an AMI-equivalent, possibly with
+   software like WordPress pre-installed) and a plan (a bundled vCPU/RAM/SSD/data-transfer tier at
+   one flat price) — this single choice replaces EC2's separate AMI, instance-type, and EBS-volume
+   decisions.
+2. **Underlying EC2 instance provisioned.** Behind the scenes, Lightsail launches a real EC2
+   instance from a corresponding AMI, in a Lightsail-managed VPC you never have to configure
+   directly — the same placement/hypervisor/ENI/EBS mechanics from `ec2.md` all still happen, just
+   without surfacing any of those choices to you.
+3. **Simplified firewall applied.** Instead of writing security group rules, your port selections
+   in the simplified firewall UI are translated into an actual security group attached to the
+   instance's ENI — the same enforcement mechanism as EC2, with a friendlier interface.
+4. **Static IP assigned.** A public IP is allocated and attached for free while the instance is
+   running — functionally an Elastic IP, bundled into the plan price rather than itemized.
+5. **Blueprint software starts.** If you chose an application blueprint (WordPress, LAMP), the
+   pre-baked software stack (web server, database, application) starts automatically on first
+   boot, with no manual installation step — this is the practical reason blueprints exist: turning
+   a multi-step manual setup into "pick WordPress from a list."
+6. **Metrics begin flowing.** CPU, network, and status-check metrics start appearing in the
+   simplified Lightsail console immediately, backed by CloudWatch under the hood even though you
+   never configure CloudWatch directly.
+7. **Reachability.** The instance becomes reachable the moment its firewall allows the relevant
+   port and its static IP is attached — functionally identical to the EC2 reachability conditions
+   in `ec2.md`, just reached through fewer configuration screens.
+
+The practical takeaway from this sequence: every "Lightsail doesn't support X" limitation is a
+deliberately hidden EC2/VPC capability, not a technical impossibility — which is exactly why the
+VPC peering and EC2-export migration paths described later in this file exist as an escape hatch.
+
 ### CDN distribution architecture
 
 ![Lightsail distribution diagram.](https://docs.aws.amazon.com/lightsail/latest/userguide/images/distribution-diagram.png)
@@ -74,6 +108,11 @@ configuration surface directly.*
 **Source:** AWS Documentation — [Serve web content globally with Lightsail content delivery distributions](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-content-delivery-network-distributions.html), Amazon Lightsail User Guide.
 
 ### Container service architecture
+
+*The flowchart below shows the entire mental model a developer needs for Lightsail Container
+Service: push an image, and traffic is automatically load-balanced across however many compute
+nodes you configured — no cluster, no task definitions, no orchestrator concepts exposed at all.
+The image that follows is AWS's own rendering of the identical idea.*
 
 ```mermaid
 flowchart TD
@@ -107,6 +146,15 @@ flowchart LR
     I2 --> DB
 ```
 
+*This diagram shows the point at which a Lightsail deployment starts to resemble a scaled-down
+version of the Multi-AZ three-tier pattern from `ec2.md`: a Lightsail Load Balancer spreads traffic
+across two instances, both talking to a single Lightsail Managed Database, so a single instance
+failure no longer takes the whole site down. The ceiling worth noting here is that this is as
+sophisticated as Lightsail's availability story gets — there's no equivalent to a full EC2 Auto
+Scaling Group reacting to a CloudWatch metric, just a fixed set of instances behind the load
+balancer, which is exactly why a workload needing real elasticity eventually migrates off
+Lightsail.*
+
 ### Growing beyond Lightsail: VPC peering export path
 
 ```mermaid
@@ -116,6 +164,14 @@ flowchart LR
     MAINVPC --> EC2F[Full EC2 fleet]
     LS -.outgrows simplified model.-> MIGRATE[Snapshot & migrate to full EC2]
 ```
+
+*This diagram shows the two distinct escape hatches out of Lightsail's simplified model, and the
+reason they're drawn as separate paths matters: VPC peering (top path) is the lightweight option
+when a Lightsail resource just needs to reach one additional thing in the main account's VPC,
+while snapshot-and-migrate (bottom path) is the heavier option for when the workload itself has
+outgrown Lightsail's plan sizes or instance-count quota entirely. Picking the lighter option first
+— peering rather than a full migration — is the detail the Migration Path section later in this
+file expands on.*
 
 ## Key Features / Components
 
@@ -182,18 +238,78 @@ advantage scales with how much data transfer you actually use.
 
 ## Use Cases — When to Use It
 
-- **Personal websites/blogs, small business sites** that need a predictable, low monthly bill and
-  zero cloud expertise to set up.
-- **Learning cloud fundamentals** — genuinely useful as a first "I have a real server on the
-  internet" experience before tackling EC2/VPC complexity.
-- **Simple dev/test environments** or quick prototypes/demos where spinning up a full
-  VPC-aware EC2 setup is unnecessary overhead for a throwaway or short-lived project.
-- **Predictable, low/flat traffic applications** where the bundled, flat-rate pricing is easier to
-  reason about than EC2+EBS+data-transfer itemized billing.
-- **Small agencies/freelancers hosting multiple simple client sites**, each on its own small,
-  cheap, isolated instance.
-- **Simple containerized apps** that don't need a full orchestrator — Lightsail Container Service
-  covers "I have a container, I want it running and load-balanced" without ECS/EKS configuration.
+- **E-commerce side project / small shop storefront (retail/e-commerce).** Situation: a solo
+  entrepreneur wants to launch a simple online storefront (WordPress + WooCommerce) without
+  learning AWS networking first. Why Lightsail fits: the WordPress blueprint has the entire stack
+  pre-configured, and the flat monthly price is easy to budget against uncertain early revenue.
+  What the alternative would cost: configuring EC2 + a VPC + security groups + EBS correctly for
+  a first-time AWS user risks a misconfigured, possibly insecure deployment, and itemized EC2
+  billing is harder to predict for someone watching every dollar in an early-stage business.
+- **Fintech compliance-training microsite (financial services).** Situation: a small fintech
+  compliance team needs a simple internal microsite for annual training materials, used by a
+  modest number of employees a few times a year. Why Lightsail fits: predictable, low flat-rate
+  pricing for a genuinely low-traffic, low-stakes internal tool, with no need for the IAM/VPC
+  sophistication a regulated production system would require. What the alternative would cost:
+  provisioning full EC2+VPC infrastructure (and the security review that implies) for a seasonal
+  internal microsite is disproportionate operational overhead for the actual risk/traffic involved.
+- **Media/streaming creator's personal portfolio site (media & entertainment).** Situation: an
+  independent video creator wants a personal portfolio/landing page with a CDN for fast global
+  image loading, managed with minimal ongoing effort. Why Lightsail fits: the bundled CDN
+  distribution (CloudFront underneath) with free HTTPS requires no separate CloudFront
+  configuration, and the whole site fits comfortably in the entry-level plan. What the alternative
+  would cost: setting up S3 + CloudFront + ACM certificates separately would work but adds setup
+  steps disproportionate to a single creator's simple portfolio needs.
+- **Healthcare small clinic's appointment-request form (healthcare).** Situation: a small,
+  independent medical clinic needs a basic public-facing appointment-request form, with low,
+  predictable traffic and a tight IT budget. Why Lightsail fits: flat, predictable pricing suits a
+  small practice's budgeting needs, and the simplified firewall is easy for a non-specialist
+  office manager to understand if they ever need to check it. What the alternative would cost: a
+  full EC2 setup would introduce configuration complexity (VPC, NACLs, IAM) with no corresponding
+  benefit for a site this simple and low-traffic.
+- **Gaming indie developer's game-update/patch-notes site (gaming).** Situation: a solo or small
+  indie game studio needs a simple site to host patch notes and a community forum link, alongside
+  their actual (much more demanding) EC2-hosted game servers. Why Lightsail fits: the website
+  itself has completely different (far lower) scale requirements than the game servers, so it
+  doesn't need to share the main account's more complex VPC design. What the alternative would
+  cost: hosting the simple patch-notes site on the same sophisticated EC2 infrastructure as the
+  game servers adds unnecessary complexity to a piece of the stack that doesn't need it.
+- **SaaS freelancer/agency hosting multiple client sites (SaaS/agency).** Situation: a small web
+  agency hosts a dozen simple client websites, each needing isolation from the others but none
+  individually needing much compute. Why Lightsail fits: each client gets their own small, cheap,
+  isolated instance with predictable per-client billing that's easy to pass through to clients
+  individually. What the alternative would cost: running all client sites on a single larger EC2
+  instance to save money creates a shared-fault-domain risk (one client's traffic spike or
+  compromised site affects all the others sharing the box).
+- **Batch analytics internal reporting dashboard for a small team (data analytics).** Situation: a
+  small analytics team needs an internal dashboard application visible to under a dozen
+  colleagues, with negligible traffic. Why Lightsail fits: the lowest-tier plan comfortably
+  handles this load at a predictable few dollars a month, with none of the EC2/VPC setup
+  overhead for such a small audience. What the alternative would cost: standing up a full
+  Beanstalk or EC2+ASG+ALB environment for a dozen internal users is significant over-provisioning
+  relative to the actual need.
+- **IoT hobbyist/maker project dashboard (IoT).** Situation: a hobbyist building a small
+  home-automation project needs a simple dashboard server to visualize sensor data from a handful
+  of devices. Why Lightsail fits: the lowest-tier plan is cheap enough for a personal project
+  budget, and the simplified firewall is approachable for someone without professional AWS
+  networking experience. What the alternative would cost: learning full EC2/VPC/security-group
+  configuration is a meaningfully higher barrier to entry for a weekend hobby project than
+  Lightsail's guided setup flow.
+- **Learning cloud fundamentals (education/career development).** Situation: someone studying for
+  an AWS certification or learning cloud computing for the first time wants a real, internet-facing
+  server to experiment on without the risk of an expensive misconfiguration. Why Lightsail fits:
+  the predictable flat price and simplified firewall make it hard to accidentally run up a large
+  bill or leave a dangerously misconfigured security group, which is a real risk for a first-time
+  EC2 user. What the alternative would cost: a beginner experimenting directly with EC2+VPC risks
+  both unexpected itemized charges (especially data transfer) and more exposure to a genuine
+  security misconfiguration while still learning the basics.
+- **Small agency/freelancer client demo environments (software development/agency).** Situation: a
+  freelance developer needs to spin up a quick, presentable demo environment for a client review,
+  torn down shortly after. Why Lightsail fits: snapshots and fast instance creation make it trivial
+  to spin up and tear down a demo environment without worrying about leftover VPC/security-group
+  configuration lingering in the main AWS account. What the alternative would cost: using the full
+  EC2 console for a short-lived demo introduces more configuration surface area to clean up
+  afterward, and a forgotten resource is more likely to go unnoticed (and billed) in a complex VPC
+  setup than in Lightsail's simpler, per-Region instance list.
 
 ## When NOT to Use It / Alternatives
 
@@ -319,12 +435,20 @@ awslocal ec2 describe-instances \
 awslocal ec2 terminate-instances --instance-ids i-xxxxxxxx
 ```
 
+Even though these are raw EC2 commands, notice how few decisions they required compared to the
+full `ec2.md` lab — one security group, one instance, one static IP — which is the actual lived
+experience Lightsail's own console streamlines into roughly three clicks.
+
 To experience the actual Lightsail console/CLI UX directly (`aws lightsail create-instances`),
 try it against real AWS within the entry-level plan's cost (typically a few dollars a month,
 often covered by promotional credits for new accounts) — it's cheap enough that a short real trial
 is reasonable even outside Floci.
 
 ### Extra practice: what a Lightsail distribution maps to conceptually
+
+The command below is the closest real-AWS equivalent to what clicking "Create distribution" in the
+Lightsail console does behind the scenes — both ultimately create a CloudFront distribution, just
+through a different front door:
 
 ```bash
 # Lightsail distributions are CloudFront under the hood - while Floci/LocalStack

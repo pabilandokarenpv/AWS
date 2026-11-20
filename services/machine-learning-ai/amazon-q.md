@@ -209,20 +209,57 @@ codebase.
 
 ## Use Cases — When to Use It
 
-- A developer wants in-IDE code completion and chat help without building any custom AI
-  integration — **Q Developer**.
-- A team wants to ask natural-language questions about their AWS environment/costs/errors
-  directly in the console — **Q Developer**.
-- A company wants an internal chatbot that can answer employee questions across SharePoint,
-  Slack, Salesforce, and S3 documents, without a custom RAG build — **Q Business**.
-- You want AI assistance in code review/security scanning integrated into existing developer
-  workflows — **Q Developer**.
-- You want employees to be able to take simple actions (file a ticket, look up a record) via
-  natural language chat, grounded in your own systems — **Q Business** with plugins/actions.
-- You want a multi-step, agentic coding workflow (plan a feature, generate files, run commands,
-  iterate) rather than single inline suggestions — **Q Developer's** agentic coding mode.
-- You want non-technical employees to build small, purpose-specific tools from a natural-
-  language description without engineering involvement — **Q Apps**.
+- **In-IDE code completion for a development team (software engineering):** Problem — developers
+  want real-time code suggestions and chat help without building any custom AI integration. Why
+  it fits — Q Developer integrates directly into VS Code/JetBrains/CLI with zero setup. Tradeoff
+  vs. building on Bedrock directly — a custom Bedrock integration offers more control over UX and
+  model choice, but takes real engineering time Q Developer's packaged product skips entirely.
+- **AWS resource/cost troubleshooting (any team running AWS infrastructure):** Problem — a team
+  wants to ask "why did this CloudFormation stack fail" or "why is this month's bill higher than
+  usual" directly in the console. Why it fits — Q Developer's console integration answers
+  questions about your actual deployed resources, costs, and errors. Tradeoff vs. manually digging
+  through CloudTrail/Cost Explorer — manual investigation gives full control over the exact query
+  but is slower than Q Developer's natural-language shortcut for common troubleshooting questions.
+- **Internal HR/IT helpdesk chatbot (any enterprise):** Problem — employees waste time hunting
+  across SharePoint, Slack, and Confluence for policy answers. Why it fits — Q Business's
+  pre-built connectors index all three sources automatically with no custom RAG pipeline to build.
+  Tradeoff vs. a custom Bedrock Knowledge Base — a custom build gives full control over chunking
+  strategy and UI, but Q Business ships the entire managed retrieval/indexing stack with far less
+  engineering time.
+- **Code review and security scanning in CI/CD (software engineering):** Problem — catch insecure
+  code patterns before they merge, integrated into the existing pull-request workflow. Why it fits
+  — Q Developer's automated security scanning flags vulnerabilities with suggested fixes directly
+  in the PR. Tradeoff vs. a dedicated static-analysis tool — a specialized SAST tool may catch a
+  narrower set of issues more precisely; Q Developer's scanning is broader and conversational but
+  should complement, not replace, a mature security review process.
+- **Claims/ticket triage with action-taking (insurance/IT service management):** Problem —
+  employees want to both ask about a policy *and* file a ticket in Jira/ServiceNow from one chat
+  interface. Why it fits — Q Business plugins let the same assistant both retrieve answers
+  (connectors) and take actions (plugins) in the same conversation. Tradeoff vs. building a custom
+  Bedrock Agent with Action Groups — a custom Agent gives full control over the action's logic and
+  schema; a built-in Q Business plugin (Jira, ServiceNow, Salesforce) needs zero custom
+  development when the target system is already on the supported plugin list.
+- **Multi-file feature generation (software engineering):** Problem — a developer needs a
+  multi-file change (a new Lambda function plus its CDK stack wiring) generated from a single
+  natural-language description. Why it fits — Q Developer's agentic coding mode reads/writes
+  multiple real files and runs build/lint commands across a multi-step conversation, always
+  surfacing a reviewable diff. Tradeoff vs. a single inline suggestion — inline suggestions are
+  faster for small, single-line changes; agentic mode is the right tool once a request spans
+  multiple files and build verification, at the cost of a slower, more involved multi-step flow.
+- **Onboarding and internal knowledge discovery (any large enterprise):** Problem — new employees
+  don't know where internal documentation lives across a dozen disconnected tools. Why it fits —
+  Q Business's permissions-aware search surfaces the right document from whichever connected
+  system holds it, without the new hire needing to know which tool to check first. Tradeoff vs. a
+  single centralized wiki — a wiki requires actively migrating content into one place; Q Business
+  indexes content where it already lives, trading some structural tidiness for zero migration
+  effort.
+- **Lightweight internal tool creation by non-engineers (any business team):** Problem — a
+  business team wants a small, purpose-specific tool (e.g., "summarize meeting notes into action
+  items") without waiting on engineering bandwidth. Why it fits — Q Apps lets end users describe
+  and build a shareable mini-application in natural language, no code. Tradeoff vs. a proper
+  engineered internal tool — a Q App is faster to stand up but less customizable and robust than
+  an engineering team's purpose-built application; reserve Q Apps for genuinely lightweight,
+  low-stakes internal tooling.
 
 ## When NOT to Use It / Alternatives
 

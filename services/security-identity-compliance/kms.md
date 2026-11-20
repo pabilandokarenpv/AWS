@@ -163,17 +163,79 @@ completes.
 
 ## Use Cases — When to Use It
 
-- Encrypting an S3 bucket, EBS volume, RDS database, or DynamoDB table at rest with a key you
-  control the policy and rotation for (SSE-KMS).
-- Encrypting Lambda environment variables containing sensitive configuration.
-- Giving a partner your KMS public key (asymmetric key) so they can encrypt a file meant only
-  for your systems to decrypt, without issuing them any AWS credentials.
-- Signing a document/API payload with KMS so the private signing key never has to leave AWS,
-  and anyone with the public key can verify authenticity.
-- Enforcing "only principals that passed MFA may decrypt this data" via a KMS key policy
-  condition.
-- Encrypting application secrets client-side with the AWS Encryption SDK before they ever touch
-  a database, so even a database-level breach doesn't expose plaintext.
+- **Encrypting data at rest across the storage/database layer.** Situation: S3, EBS, RDS, and
+  DynamoDB all need to be encrypted with a key you control the policy and rotation for. Why this
+  fits: SSE-KMS gives one centrally governed key reused across every service, instead of each
+  service managing its own ad hoc encryption. Tradeoff: a high-request-volume service (lots of
+  `PutObject`/`GetItem` calls) can hit KMS API throttling limits or add measurable per-request
+  cost unless you enable a reuse mechanism like S3 Bucket Keys.
+- **Lambda environment variable encryption for sensitive config.** Situation: a function needs a
+  database connection string or API key available at runtime. Why this fits: KMS encrypts the
+  environment variable at rest with a CMK you choose, rather than relying on the default AWS
+  managed key with no custom access control. Tradeoff: using a CMK adds the $1/month per-key
+  cost and a key-policy dependency — for very simple, low-sensitivity config, Parameter Store's
+  `SecureString` may be simpler to operate.
+- **Sharing an encryption key with a partner who has no AWS account.** Situation: a partner
+  needs to encrypt a file meant only for your systems to decrypt. Why this fits: an asymmetric
+  KMS key's public key can be exported and given to the partner with zero AWS credentials
+  required on their side — the private key never leaves KMS. Tradeoff: asymmetric operations are
+  typically throttled at a lower default rate than symmetric ones, and the partner's own
+  encryption tooling (openssl, their own crypto library) must correctly implement the matching
+  algorithm — a mismatch produces ciphertext KMS can't decrypt.
+- **Signing build artifacts so downstream systems can verify provenance.** Situation: a build
+  pipeline needs to prove its packages are genuinely from that pipeline, without distributing a
+  shared secret to every verifier. Why this fits: an asymmetric `SIGN_VERIFY` key lets the
+  pipeline sign with `kms:Sign` while any verifier checks the signature offline using the
+  exported public key — no AWS credentials needed for verification. Tradeoff: if the private
+  key material is ever rotated or the key deleted, every previously-distributed public key
+  becomes useless for new signatures (though old signatures remain verifiable) — key lifecycle
+  planning matters more here than for simple encryption.
+- **MFA-gated decryption of highly sensitive data.** Situation: only users who've passed MFA
+  should ever decrypt a specific dataset, regardless of their other permissions. Why this fits: a
+  key policy condition requiring `aws:MultiFactorAuthPresent` adds this requirement at the
+  encryption-key layer itself, so it holds even if an IAM policy elsewhere is misconfigured too
+  permissively. Tradeoff: any automated/unattended process that legitimately needs to decrypt
+  this data (a nightly batch job, for instance) cannot satisfy an MFA condition — this pattern
+  only works for human-driven access paths.
+- **Client-side envelope encryption before data ever reaches a database.** Situation: an
+  application wants data encrypted before it's written anywhere, so even a full database breach
+  doesn't expose plaintext. Why this fits: the AWS Encryption SDK's envelope encryption pattern
+  lets the app hold a plaintext DEK briefly in memory, encrypt locally, then discard it — KMS
+  never sees the actual payload. Tradeoff: this pushes real cryptographic responsibility into
+  application code (correct DEK handling, discarding plaintext promptly) — a coding mistake here
+  (e.g., logging the plaintext DEK) defeats the entire purpose in a way KMS itself can't prevent.
+- **Cross-account data sharing without copying data.** Situation: Account B's analytics team
+  needs to read KMS-encrypted S3 objects owned by Account A. Why this fits: the key policy in
+  Account A names Account B's role directly, and once Account B's own IAM policy also allows the
+  call, data is readable without ever being duplicated into Account B. Tradeoff: both sides must
+  stay in sync — if Account B's role is ever recreated (new underlying principal ID), the key
+  policy referencing it by the stale ID can silently stop matching, breaking access with a
+  confusing error.
+- **M&A — isolating an acquired company's encrypted data during integration.** Situation: after
+  an acquisition, the acquired company's KMS-encrypted data should be readable only by the
+  specific integration team members who need it, not every employee at the parent company. Why
+  this fits: a tightly scoped key policy naming only the integration team's role (plus the
+  account root as fallback admin) lets you grant exactly the needed access without re-encrypting
+  anything or waiting for a full account migration. Tradeoff: a key policy that omits the account
+  root as fallback, in the rush of an acquisition timeline, risks a permanent lockout if the named
+  role is later deleted during account consolidation — this is a common, costly mistake under
+  M&A time pressure.
+- **Compliance evidence for encryption-at-rest requirements (PCI-DSS/HIPAA/SOC 2).** Situation:
+  an auditor needs proof that regulated data is encrypted and that key access is tightly
+  controlled. Why this fits: CloudTrail logs every KMS API call, and the key policy itself is
+  direct, inspectable evidence of exactly who can use or manage the key. Tradeoff: encryption
+  alone doesn't satisfy a full compliance requirement — auditors also expect evidence of key
+  rotation, access review cadence, and that the key policy's grants are still accurate, not just
+  that encryption is technically turned on.
+- **Zero-trust data access — decrypt only through an explicitly scoped path.** Situation: a
+  security team wants to guarantee a given dataset can only be decrypted when accessed through a
+  specific, approved service (not via a direct, unscoped API call from anywhere). Why this fits:
+  a `kms:ViaService` condition in the key policy restricts usage to only when invoked through a
+  named AWS service (e.g., only via S3), closing off a direct `kms:Decrypt` call from an
+  unexpected path even if the caller's IAM policy would otherwise allow it. Tradeoff: this adds a
+  layer of conditions that must be kept consistent with how the data is actually accessed — a
+  legitimate new access path (a new analytics tool reading the same data) requires updating the
+  `kms:ViaService` condition, or access silently fails.
 
 ## When NOT to Use It / Alternatives
 

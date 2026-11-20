@@ -145,17 +145,70 @@ regardless of how abstracted the GenAI service itself is.
 
 ## Use Cases — When to Use It (as a design principle)
 
-- Deciding whether a security finding/incident is "our fault" or "AWS's fault" during a
-  postmortem — almost every real-world breach traced through this model lands on the customer's
-  half (a misconfigured S3 bucket, an over-broad IAM policy, an unpatched guest OS), not AWS's.
-- Choosing between EC2 (full OS control, full OS responsibility) and a managed alternative
-  (Fargate, Lambda, RDS) specifically to shrink your own half of the responsibility surface
-  when you don't need that level of control.
-- Justifying, to an auditor or compliance team, exactly which controls are already satisfied by
-  AWS's own compliance certifications (via AWS Artifact) versus which controls your organization
-  must separately implement and prove.
-- Evaluating whether adopting Bedrock/SageMaker for a GenAI feature genuinely reduces your
-  team's security burden, and precisely which parts of that burden it does NOT reduce.
+- **Post-incident root-cause attribution.** Situation: a breach occurred and leadership wants to
+  know "whose fault was this, ours or AWS's." Why this fits: walking the incident through the
+  model (was it a misconfigured S3 bucket, an over-broad IAM policy, an unpatched guest OS?)
+  almost always lands on the customer's half, giving a clear, defensible answer rather than vague
+  finger-pointing. Tradeoff: this framing can become a blame exercise rather than a learning one
+  if used purely to assign fault — the more valuable use is identifying which specific customer-
+  side control was missing, so it gets fixed, not just naming whose "side" it was on.
+- **Choosing EC2 vs. a managed alternative to shrink your own responsibility surface.** Situation:
+  a new project needs compute and the team wants to minimize ongoing security operational
+  burden. Why this fits: moving from EC2 to Fargate or Lambda shifts OS patching and
+  virtualization-layer concerns entirely to AWS, leaving only code, IAM, and data decisions on
+  the customer side. Tradeoff: more-managed services mean less infrastructure control — a team
+  needing custom kernel modules, specific OS-level tooling, or non-standard runtime behavior may
+  find the trade not worth it despite the security-burden reduction.
+- **Producing compliance evidence efficiently via AWS Artifact.** Situation: an auditor asks for
+  proof that AWS's own infrastructure meets SOC 2/ISO 27001/PCI-DSS. Why this fits: AWS Artifact
+  gives on-demand access to AWS's own third-party audit reports, satisfying that half of the
+  audit without the customer needing to audit AWS's data centers themselves. Tradeoff: Artifact's
+  coverage is bounded by which compliance programs AWS has actually completed and published for
+  the specific Region/service in question — a customer assuming blanket coverage everywhere can
+  be caught off guard when a specific certification doesn't exist for their exact service/Region
+  combination.
+- **Evaluating whether adopting Bedrock reduces security burden, and how much.** Situation: a
+  team is deciding whether to build a GenAI feature on a fully-managed foundation model service.
+  Why this fits: the model correctly identifies that AWS handles model-hosting infrastructure
+  while prompt content, invocation IAM scoping, and guardrail configuration remain squarely the
+  customer's job — informing a realistic security roadmap rather than a false sense of "it's
+  managed, so it's secure." Tradeoff: this realistic framing requires the team to actually budget
+  effort for those remaining customer-side GenAI security tasks — skipping that step because the
+  underlying model is "managed" is exactly the mistake the model is meant to prevent.
+- **M&A — auditing an acquired company's shared-responsibility gaps.** Situation: Company A
+  acquires Company B and needs to assess whether Company B has been correctly fulfilling its own
+  half of the model across its AWS footprint. Why this fits: mapping every one of Company B's
+  services against the model's sliding scale (EC2 vs. RDS vs. serverless) quickly surfaces where
+  customer-side responsibilities (IAM hygiene, encryption choices, patching cadence) may have
+  been neglected before the acquisition. Tradeoff: this audit takes real time and access to
+  Company B's existing configuration — a rushed, surface-level pass during a tight M&A timeline
+  can miss subtle gaps (e.g., a permission boundary that looks fine on paper but was never
+  actually enforced in practice).
+- **Zero-trust architecture design grounded in the correct responsibility split.** Situation: a
+  security team designing a zero-trust architecture needs to know exactly which layer (network,
+  IAM, application) each control actually belongs to. Why this fits: the model clarifies that
+  network perimeter alone (AWS's side, largely) was never meant to be the sole trust boundary —
+  identity- and data-level verification (customer's side) must do the real work, which is the
+  entire zero-trust thesis grounded in this exact split. Tradeoff: fully embracing this means
+  more customer-side configuration (condition keys, fine-grained IAM, data classification) than a
+  simpler "trust the VPC" design — zero-trust is more operationally demanding precisely because
+  it leans harder into the customer's half of the model.
+- **Incident response tabletop exercises.** Situation: a security team runs a tabletop exercise
+  simulating a breach to test the incident response plan. Why this fits: framing each simulated
+  failure point against the model (was this an AWS-side failure we'd escalate to AWS Support, or
+  a customer-side failure we must remediate ourselves) tests whether the team actually
+  internalizes the split under pressure, not just in theory. Tradeoff: a tabletop exercise can
+  only test scenarios the team thought to simulate — the model itself doesn't generate novel
+  failure scenarios, so exercise design quality still depends entirely on the team's own
+  threat-modeling skill.
+- **Vendor/third-party risk assessment using the same mental model.** Situation: a company is
+  evaluating a SaaS vendor built on AWS and wants to understand where that vendor's own
+  responsibility boundary sits. Why this fits: the same AWS-side/customer-side framing applies
+  recursively — the vendor is "the customer" of AWS's model, and your company is, in turn, a
+  customer of the vendor's own service, with its own further split of responsibilities.
+  Tradeoff: this recursive reasoning requires the vendor to actually disclose their own AWS
+  configuration choices (encryption, IAM practices) — a vendor unwilling or unable to answer
+  those questions is itself a risk signal the model doesn't resolve, only highlights.
 
 ## When NOT to Use It / Alternatives
 

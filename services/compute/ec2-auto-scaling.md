@@ -61,6 +61,47 @@ crashed, out of memory, etc.), the ASG terminates it and launches a fresh replac
 same launch template — this is what makes the group "self-healing," independent of any scaling
 decision.
 
+### How It Works — Step by Step: From a CPU Spike to a New In-Service Instance
+
+Walking through exactly what happens between "CPU crosses the target tracking threshold" and "a
+new instance is serving traffic" ties together every component this file covers:
+
+1. **Metric collection.** CloudWatch collects the configured metric (e.g., average CPU across the
+   group) at one-minute granularity by default, aggregating across every currently `InService`
+   instance in the group.
+2. **Alarm evaluation.** A CloudWatch alarm — created and managed automatically behind a target
+   tracking policy — evaluates the metric against its threshold over the configured number of
+   evaluation periods. Only once the alarm actually transitions into `ALARM` state does anything
+   happen; a single noisy data point above the threshold doesn't trigger a scaling action by
+   itself.
+3. **Scaling policy invoked.** The alarm notifies its attached scaling policy, which calculates the
+   new desired capacity (target tracking runs a PID-controller-like calculation; step scaling
+   looks up the matching step; scheduled/predictive policies don't wait for an alarm at all and
+   instead fire at a pre-computed time).
+4. **ASG updates desired capacity.** The Auto Scaling group's desired count increases (bounded by
+   `MaxSize`), and the group calculates how many new instances are needed and which Availability
+   Zones to launch them in to keep the fleet balanced.
+5. **Launch Template invoked.** The ASG calls `RunInstances` under the hood using the launch
+   template's AMI, instance type, security groups, IAM instance profile, and user data — this is
+   the exact same EC2 launch mechanism covered in `ec2.md`, just invoked by the ASG instead of a
+   human.
+6. **Instance boots and passes the grace period.** The new instance goes through the full EC2 boot
+   sequence (placement, EBS/ENI attach, hypervisor boot, user data). During the configured **health
+   check grace period**, the ASG deliberately ignores failing health checks, since a slow-booting
+   application shouldn't be killed for not yet being ready.
+7. **Health check and load balancer registration.** Once the grace period elapses, both the EC2
+   status check and (if attached) the target group's health check must pass. Only after the
+   target group marks the instance `healthy` does the load balancer actually start sending it
+   live traffic — an instance can be `InService` from the ASG's point of view while still
+   `unhealthy` in the target group and therefore receiving zero real traffic.
+8. **Steady state.** The instance now counts toward the group's capacity for future scaling
+   decisions, and the whole loop (steps 1-7) repeats continuously for as long as the group exists.
+
+This loop is exactly why a scaling policy "not triggering" is almost always traceable to one
+specific step above — the alarm never entering `ALARM` state (step 2), a quota blocking the launch
+(step 5), or a health check grace period that's too short for the real boot time (step 6) — rather
+than some mysterious Auto Scaling malfunction.
+
 ### The instance lifecycle inside an Auto Scaling group
 
 Instances in an ASG follow a more elaborate lifecycle than a standalone EC2 instance, because the
@@ -109,6 +150,14 @@ flowchart TB
     A2 --> RDS
 ```
 
+*This diagram shows the full request path for a two-tier application: Route 53 resolves to a
+public ALB, which load-balances across a web-tier ASG; the web tier in turn calls an internal load
+balancer in front of an app-tier ASG, which talks to a Multi-AZ RDS database. The reason this
+layering matters is fault isolation — the web tier and app tier scale independently of each other
+based on their own distinct load characteristics, so a spike in rendering-heavy web traffic
+doesn't force the database-heavy app tier to over-scale (and pay for) capacity it doesn't need, and
+vice versa.*
+
 ![A basic three tier architecture with an Auto Scaling group.](https://docs.aws.amazon.com/autoscaling/ec2/userguide/images/sample-3-tier-architecture-with-azs-diagram.png)
 
 *The official AWS version of this same pattern, showing an Auto Scaling group explicitly spread
@@ -134,6 +183,15 @@ flowchart LR
     W3 -->|poll & process| SQS
 ```
 
+*This diagram shows a scaling trigger that has nothing to do with CPU or request count: a custom
+CloudWatch metric derived from the SQS queue's `ApproximateNumberOfMessagesVisible` attribute,
+divided by the current instance count, approximates "messages waiting per worker." A target
+tracking policy on that custom metric keeps the worker fleet sized to the backlog rather than to
+any per-instance resource usage — the practical reason this matters is that a worker tier's real
+bottleneck is almost always "how much unprocessed work is piling up," not CPU, so scaling on queue
+depth responds to the thing that actually matters to end users (how stale is the backlog) instead
+of a proxy metric that might lag behind it.*
+
 ### Scheduled + predictive scaling combined
 
 ```mermaid
@@ -143,6 +201,16 @@ flowchart TD
     TT[Target Tracking: react to live CPU] -->|fine-tune around the forecast| ASG
     ASG --> FLEET[Instance Fleet]
 ```
+
+*This diagram shows three scaling policies layered on the same group simultaneously rather than
+competing with each other: a scheduled action pre-sets capacity for a known daily pattern (e.g.,
+a retailer's predictable 8am traffic ramp), predictive scaling adds an ML-forecast-driven
+adjustment on top for patterns that are recurring but not perfectly calendar-shaped, and target
+tracking continuously fine-tunes around whatever the first two policies set, reacting to real-time
+deviations from the forecast. The practical reason to combine all three instead of picking one: a
+pure target-tracking policy only reacts *after* CPU rises, while layering in scheduled/predictive
+policies means capacity is already in place *before* the predictable portion of the spike even
+starts, with target tracking left to handle only the unpredictable residual.*
 
 ## Scaling Policy Types — Deep Dive
 
@@ -177,6 +245,15 @@ flowchart TD
     Q3 -->|Yes| TT[Target Tracking]
     Q3 -->|No, need tiered response| STEP[Step Scaling]
 ```
+
+*This decision tree is the practical shortcut for a recurring exam and real-world question —
+"which scaling policy type should this scenario use?" Read the scenario for two signals: is the
+traffic pattern genuinely known ahead of time on a calendar (scheduled), or recurring but inferred
+from history (predictive)? If neither, is the requirement a single target percentage (target
+tracking) or a tiered response curve with different step sizes at different thresholds (step
+scaling)? Picking the wrong branch here is a common real-world mistake — e.g., using step scaling
+for a simple "keep CPU near 50%" requirement adds unnecessary configuration complexity that target
+tracking already handles automatically.*
 
 ## Worked Example: Sizing a Target Tracking Policy
 
@@ -296,18 +373,79 @@ which is worth remembering before assuming a hook alone guarantees zero dropped 
 
 ## Use Cases — When to Use It
 
-- **Web/app tier behind a load balancer** that sees daily or weekly traffic patterns — classic
-  three-tier web architecture, the default "right answer" pattern on SAA-C03 resiliency questions.
-- **Self-healing fleets** — even with *zero* scaling need, running a fixed-size ASG (min = max =
-  desired) is still worth it purely for automatic replacement of failed instances.
-- **Batch/worker fleets** that pull from a queue (SQS) — scale workers based on queue depth so
-  processing throughput tracks backlog size.
-- **Cost optimization via Spot mix** — run a mixed-instance ASG that prefers Spot for cost and
-  falls back to On-Demand, for workloads tolerant of occasional instance replacement.
-- **Scheduled capacity** for known events — Black Friday, a product launch, a recurring batch
-  window — scale up ahead of time instead of reacting after users already see slowness.
-- **Zero-downtime patching/rollout** — use instance refresh to roll a new AMI across a fleet in
-  controlled batches instead of a manual, risky all-at-once replacement.
+- **E-commerce flash-sale web tier (retail/e-commerce).** Situation: an online retailer expects a
+  10x traffic spike during a scheduled flash sale, with a hard deadline for the promotion start
+  time. Why Auto Scaling fits: a scheduled action pre-scales the web tier to peak capacity minutes
+  before the sale opens, so the ASG isn't reacting to the spike after users already see slow page
+  loads. What the alternative would cost: relying purely on reactive target tracking risks several
+  minutes of under-capacity (and abandoned carts) while new instances boot and pass health checks
+  during the exact window most likely to convert.
+- **Fintech fraud-detection worker fleet (financial services).** Situation: a payments company
+  runs a fleet of workers that score transactions pulled from an SQS queue, with volume that
+  spikes unpredictably around paydays and holidays. Why Auto Scaling fits: a target tracking
+  policy on a custom "messages per worker" metric keeps the fleet sized to the actual backlog
+  rather than a fixed guess. What the alternative would cost: a fixed-size fleet sized for the
+  holiday peak would sit mostly idle (and billed) the other 350 days of the year; sized for
+  average load, it would let fraud-scoring latency balloon during peaks, directly increasing
+  fraud losses.
+- **Media/streaming live-event encoding tier (media & entertainment).** Situation: a sports
+  streaming platform needs far more encoding capacity during a live broadcast window than at any
+  other time, on a known schedule. Why Auto Scaling fits: scheduled scaling pre-provisions
+  encoding capacity exactly around the broadcast window, combined with a mixed-instance Spot
+  policy for the bulk of non-critical re-encoding work. What the alternative would cost: manually
+  scaling up before every broadcast is an operational task someone has to remember and execute
+  correctly every single time, with real financial downside (dropped streams) if they forget.
+- **Healthcare patient-portal web tier (healthcare).** Situation: a hospital system's patient
+  portal sees a reliable daily usage curve (higher during business hours, near-zero overnight) and
+  must stay available for compliance/SLA reasons. Why Auto Scaling fits: a Multi-AZ ASG behind an
+  ALB with ELB health checks self-heals from failed instances automatically, which matters for an
+  uptime SLA tied to patient-safety-adjacent systems. What the alternative would cost: a single
+  fixed EC2 instance (no ASG) means any instance-level failure is a full portal outage until a
+  human manually intervenes — unacceptable for a healthcare SLA.
+- **Gaming matchmaking service scale-out (gaming).** Situation: a mobile game's matchmaking
+  backend sees extreme daily cyclicality (evening peak, overnight trough) plus occasional viral
+  spikes from marketing pushes. Why Auto Scaling fits: predictive scaling learns the recurring
+  daily pattern from historical CloudWatch data and pre-provisions ahead of the evening peak, while
+  target tracking still catches unplanned viral spikes reactively. What the alternative would
+  cost: pure target tracking alone would always be a step behind the predictable evening ramp,
+  causing a few minutes of matchmaking queue delay every single evening that predictive scaling
+  would have avoided entirely.
+- **SaaS multi-tenant API tier (SaaS).** Situation: a B2B SaaS platform's API traffic is driven
+  by its customers' own business hours across many time zones, producing a traffic curve that's
+  smoother than any single customer's pattern but still has a clear baseline-plus-spike shape.
+  Why Auto Scaling fits: target tracking on `ALBRequestCountPerTarget` scales the fleet to actual
+  demand without the platform team hand-tuning capacity per customer segment. What the alternative
+  would cost: manually right-sizing for an aggregate, ever-changing multi-tenant traffic curve
+  would require constant manual intervention as the customer base grows and shifts.
+- **Batch analytics nightly aggregation workers (data analytics).** Situation: a company runs a
+  nightly aggregation job over an SQS-fed work queue, where the backlog size varies night to night
+  depending on how much raw data arrived that day. Why Auto Scaling fits: a worker ASG scaling on
+  queue depth processes a small backlog quickly with few instances and a large backlog faster with
+  more, without anyone manually adjusting fleet size per night. What the alternative would cost: a
+  fixed nightly worker count sized for the worst-case backlog wastes money on quiet nights and
+  risks missing the morning reporting deadline on the heaviest nights.
+- **IoT device-firmware update rollout fleet (IoT).** Situation: an IoT platform's backend
+  ingestion fleet needs to absorb a one-time traffic surge whenever a scheduled firmware push
+  causes hundreds of thousands of devices to check in and re-register within a short window. Why
+  Auto Scaling fits: a scheduled action timed to the firmware rollout window pre-scales the
+  ingestion tier ahead of the predictable surge. What the alternative would cost: without
+  pre-scaling, the predictable check-in storm would overwhelm a reactively-scaling fleet for the
+  several minutes it takes new instances to boot, causing retry storms that make the surge worse.
+- **Cost-optimized CI/CD build-runner fleet (software development).** Situation: an engineering
+  org runs self-hosted CI build agents on EC2 that sit idle most of the day and spike hard during
+  business-hours code pushes. Why Auto Scaling fits: a mixed-instances policy weighted heavily
+  toward Spot, scaling on a custom "queued build jobs" metric, keeps cost low for a workload that
+  tolerates occasional instance interruption (a killed build simply retries). What the alternative
+  would cost: always-on On-Demand build agents sized for peak business-hours load would run at
+  low utilization most of the day, paying full price for capacity that sits idle overnight and on
+  weekends.
+- **Zero-downtime security patch rollout (any regulated industry).** Situation: a security team
+  needs to roll a critical AMI patch across a production fleet without a maintenance window or
+  user-visible downtime. Why Auto Scaling fits: an instance refresh replaces instances in batches
+  while respecting a minimum healthy percentage, automatically pausing or rolling back if the new
+  AMI fails health checks. What the alternative would cost: manually replacing instances one at a
+  time (or all at once) risks either a slow, error-prone manual process or a disruptive all-at-once
+  outage during the patch window.
 
 ## When NOT to Use It / Alternatives
 
@@ -442,6 +580,10 @@ is second nature — the exam tests this relationship directly.
 
 ### Extra practice: scheduled action
 
+The commands below demonstrate pre-scaling ahead of a known traffic pattern rather than waiting
+for a metric to react — a weekday morning ramp-up and evening ramp-down, the signature use case
+for scheduled (rather than target-tracking) scaling:
+
 ```bash
 # Add a scheduled action to pre-scale ahead of a known daily peak
 awslocal autoscaling put-scheduled-update-group-action \
@@ -456,6 +598,10 @@ awslocal autoscaling put-scheduled-update-group-action \
   --recurrence "0 20 * * MON-FRI" \
   --min-size 2 --max-size 6 --desired-capacity 2
 ```
+
+Running `describe-scaling-activities` a few minutes after either cron time fires is the fastest
+way to confirm the schedule actually executed as expected, since scheduled actions fail silently
+in the console if the cron expression has a subtle syntax error.
 
 ## Exam Tips
 

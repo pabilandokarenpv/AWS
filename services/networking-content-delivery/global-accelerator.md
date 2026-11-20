@@ -213,17 +213,72 @@ confidence grows — a safer rollout pattern than an instant full cutover.
 
 ## Use Cases — When to Use It
 
-- **Global applications needing a fixed, allowlist-friendly IP** — financial services, gaming,
-  IoT backends where downstream firewalls or clients need to pin to a known, unchanging IP.
-- **Multi-Region active-active or active-passive architectures needing fast failover** — when
-  DNS TTL-based failover (Route 53) isn't fast enough for the application's availability target.
-- **Non-HTTP(S) global traffic (TCP/UDP)** — Global Accelerator works at the network layer, so
-  it supports protocols CloudFront (HTTP-focused CDN) cannot accelerate.
-- **Improving global user latency to dynamic, non-cacheable content** — where CloudFront's
-  caching model doesn't apply (CloudFront helps static/cacheable content; Global Accelerator
-  helps the network path itself, including for fully dynamic traffic).
-- **Combining with ALBs** — a very common pattern: Global Accelerator in front of regional ALBs
-  across multiple Regions, giving a fixed global IP plus ALB's Layer 7 routing within each Region.
+- **Multi-tier application needing a fixed IP despite an ALB front end.** A web application's
+  ALB has no native static IP, but a downstream partner firewall insists on allowlisting a fixed
+  address. Global Accelerator in front of the existing ALB provides the fixed anycast IPs without
+  re-architecting away from ALB. Tradeoff vs. switching to NLB for its per-AZ static IP: Global
+  Accelerator adds its own hourly + per-GB premium, but keeps ALB's path/host-based routing intact
+  instead of giving it up for NLB's Layer-4-only model.
+- **Hybrid cloud edge entry with consistent routing.** A company wants traffic entering AWS from
+  globally distributed users (including from branch offices reached via VPN/Direct Connect
+  elsewhere) to consistently enter AWS's network at the nearest edge, then travel AWS's backbone
+  rather than the public internet, for both performance and predictability. Tradeoff vs. relying
+  purely on each office's own internet routing to reach AWS: Global Accelerator improves the
+  "last mile into AWS" leg specifically, but doesn't replace Direct Connect/VPN for the actual
+  hybrid network connectivity itself — the two solve different legs of the same journey.
+- **Multi-Region active-active with sub-minute failover.** A trading or mission-critical platform
+  operating in two Regions needs failover within seconds of an outage, with partner systems
+  pinned to a fixed, unchangeable IP. Global Accelerator's static anycast IPs plus network-layer
+  health-check rerouting satisfy both requirements in one service. Tradeoff vs. Route 53 failover
+  routing: dramatically faster failover (seconds vs. TTL-bound minutes) and a fixed IP Route 53
+  alone cannot offer, but at a real ongoing hourly + data-transfer premium Route 53 doesn't carry.
+- **Global content delivery for non-cacheable, dynamic traffic.** A global application's content
+  is fully dynamic/personalized and gains nothing from CloudFront's caching model, but users still
+  suffer from unoptimized public-internet routing to the nearest Region. Global Accelerator
+  optimizes the network path itself rather than caching content. Tradeoff vs. CloudFront: the
+  right tool for dynamic, non-cacheable traffic since CloudFront's value is caching-dependent, but
+  Global Accelerator provides no caching benefit at all for workloads that are mostly static and
+  would benefit more from CloudFront instead.
+- **Microservices mesh UDP-based backend.** A gaming company's matchmaking backend uses UDP and
+  needs the lowest possible latency for players connecting from anywhere in the world to regional
+  game servers. Global Accelerator explicitly supports UDP, unlike CloudFront's HTTP focus.
+  Tradeoff vs. routing UDP traffic through standard internet paths to regional NLBs directly:
+  Global Accelerator's anycast-entry-plus-backbone-routing materially improves latency and
+  consistency, but adds its own hourly + data-transfer premium on top of the NLB's own cost.
+- **Compliance-driven fixed-IP partner integration.** A B2B financial integration partner's
+  security team insists on allowlisting one specific, unchanging IP address rather than a domain
+  name, for an API sitting behind infrastructure that could change or scale over time. Global
+  Accelerator's two static anycast IPs satisfy this durably regardless of backend changes.
+  Tradeoff vs. asking the partner to allowlist a domain/CNAME instead: Global Accelerator works
+  within the partner's existing IP-based security model without requiring them to change anything,
+  but commits the architecture to Global Accelerator's own ongoing cost for as long as that
+  requirement stands.
+- **M&A account consolidation — unifying multi-Region traffic entry after a merger.** Two merged
+  companies each operated their own Regional infrastructure and want one consolidated, fixed entry
+  point for combined global traffic without immediately unifying all backend infrastructure.
+  Global Accelerator's endpoint groups can point at each company's existing regional ALBs/NLBs
+  during the transition. Tradeoff vs. fully re-architecting onto shared infrastructure first:
+  gets a unified entry point and consistent failover behavior quickly, but the underlying
+  heterogeneous backend infrastructure (and its own operational quirks) still needs eventual
+  consolidation.
+- **Gradual multi-Region rollout via traffic dial.** A company wants to validate a newly deployed
+  secondary Region's infrastructure with a small percentage of real production traffic before
+  fully relying on it. Setting the new Region's endpoint group traffic dial to a low percentage
+  achieves staged validation. Tradeoff vs. an instant full cutover to the new Region: much safer,
+  observable rollout, but requires actively monitoring and manually increasing the dial over time
+  rather than a single one-time switch.
+- **Custom routing for gaming session backends.** A gaming company needs individual game sessions
+  routed to specific backend EC2 instance:port combinations across many VPCs, by the exact port a
+  client connects on. Global Accelerator's custom routing accelerator mode maps this
+  deterministically. Tradeoff vs. a standard accelerator with health/weight-based routing: gives
+  precise, session-level routing control custom gaming backends need, but loses the automatic
+  health-check-driven endpoint selection a standard accelerator provides for simpler workloads.
+- **Non-HTTP global TCP/UDP workloads needing failover.** An IoT backend using custom TCP/UDP
+  protocols (not HTTP) needs multi-Region failover and a stable entry point, which CloudFront
+  (HTTP-focused) cannot provide. Global Accelerator's Layer 4 operation covers protocols CloudFront
+  cannot accelerate at all. Tradeoff vs. building custom DNS-based failover for this traffic:
+  Global Accelerator gives fast, network-layer failover out of the box, but is a dedicated service
+  with its own cost model rather than reusing DNS infrastructure the team may already operate.
 
 ## When NOT to Use It / Alternatives
 

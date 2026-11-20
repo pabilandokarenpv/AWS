@@ -218,6 +218,15 @@ flowchart LR
     OutboundEP -->|"forwarding rule for corp.internal"| OnPremDNS
 ```
 
+Reading this both ways: when an on-prem system queries `internal.example.com`, its corporate DNS
+server forwards that query to the VPC's **Resolver inbound endpoint**, which hands it off to the
+**private hosted zone** for resolution — the on-prem side never needs its own copy of the VPC's
+internal records. In the other direction, the VPC's **Resolver outbound endpoint** holds a
+forwarding rule for `corp.internal` (or whatever the on-prem domain is) and sends matching
+queries from inside the VPC out to the real on-prem DNS server over Direct Connect/VPN. Both
+endpoints run independently — you can have one without the other if only one direction of
+resolution is actually needed.
+
 ## DNSSEC — preventing spoofed DNS answers
 
 ```mermaid
@@ -261,17 +270,68 @@ much finer, geography-aware control than a flat weighted split.
 
 ## Use Cases — When to Use It
 
-- **Any public-facing domain on AWS** — the default, standard choice for DNS management.
-- **Blue/green or canary deployments** — weighted routing to shift traffic gradually from an old
-  version to a new one and watch for errors before a full cutover.
-- **Active-passive disaster recovery** — failover routing policy pointing at a secondary Region's
-  infrastructure, automatically promoted when health checks fail on the primary.
-- **Global applications wanting lowest latency per user** — latency-based or geoproximity
-  routing across multiple Regions' endpoints.
-- **Compliance-driven content restriction** — geolocation routing to serve different content (or
-  block access entirely) based on the user's country/continent.
-- **Hybrid DNS** — Route 53 Resolver forwarding rules let on-prem systems resolve AWS private
-  hosted zone names and vice versa over Direct Connect/VPN.
+- **Multi-tier web application root domain.** A public-facing web app's root domain
+  (`example.com`, no subdomain) needs to point at an ALB, which a CNAME record cannot do per the
+  DNS spec. A Route 53 Alias record resolves this at the zone apex. Tradeoff vs. using a
+  subdomain instead (`www.example.com` via CNAME): Alias records are free and apex-compatible,
+  but they're an AWS-specific mechanism — migrating DNS hosting away from Route 53 later means
+  converting every Alias record to a standard record type pointing at a real IP/CNAME target.
+- **Hybrid cloud name resolution.** A merged on-prem/AWS environment needs on-prem systems to
+  resolve AWS private hosted zone names, and VPC-resident systems to resolve on-prem internal
+  domains, without manual `/etc/hosts` entries on either side. Route 53 Resolver inbound/outbound
+  endpoints bridge both directions over Direct Connect/VPN. Tradeoff vs. maintaining static hosts
+  files or a separate DNS sync process: Resolver endpoints keep resolution automatic and current,
+  but add Resolver endpoint cost and require correct forwarding rule configuration on both sides.
+- **Multi-Region active-passive disaster recovery.** A primary Region's ALB must automatically
+  hand off to a secondary Region's standby infrastructure if health checks detect failure, with
+  no manual intervention. Failover routing policy with health checks on the primary achieves this.
+  Tradeoff vs. an ALB/Global Accelerator-based failover: Route 53 failover is simpler and cheaper
+  to set up, but is bound by DNS TTL/resolver caching — failover isn't felt by every client
+  instantly the way a network-layer reroute would be.
+- **Global content delivery / lowest-latency routing.** A global application wants each user
+  routed to whichever Region genuinely responds fastest for them, not just the geographically
+  nearest one. Latency-based routing uses AWS's own measured network latency data per resolver
+  location. Tradeoff vs. geolocation routing: latency-based optimizes purely for speed and can
+  send users to a "farther" Region that's actually faster due to network topology, whereas
+  geolocation optimizes for a legal/content requirement regardless of which Region is fastest.
+- **Microservices mesh internal service discovery.** Internal microservices inside one VPC need
+  to find each other by name rather than hardcoded IPs. A Route 53 private hosted zone gives
+  simple internal DNS resolution scoped to the VPC. Tradeoff vs. AWS Cloud Map or ECS/EKS-native
+  service discovery: a private hosted zone is simpler to reason about and requires no extra
+  service, but lacks the health-aware, application-level service registration Cloud Map or
+  container-platform-native discovery provides for highly dynamic service fleets.
+- **Compliance-driven geolocation content restriction.** An application must serve different
+  legal content — or block access entirely — to EU users versus the rest of the world, enforced at
+  the DNS layer rather than in application code. Geolocation routing resolves differently based
+  on the resolver's geographic location. Tradeoff vs. enforcing this in application code instead:
+  DNS-layer enforcement is centralized and harder to accidentally bypass, but is coarser-grained
+  (based on resolver location, not precise user location) and adds a dependency on correctly
+  maintained geolocation record coverage for every relevant region.
+- **M&A account consolidation — merged hybrid DNS.** After a merger, both companies' on-premises
+  networks and AWS environments need to resolve each other's internal domain names. Route 53
+  Resolver with inbound/outbound endpoints on each side, plus forwarding rules for each other's
+  internal domains, is the standard cross-environment resolution pattern. Tradeoff vs. a slower
+  manual DNS record migration/consolidation project: Resolver-based bridging works immediately
+  without touching either side's existing DNS infrastructure, but leaves two separate DNS systems
+  running indefinitely rather than fully consolidating onto one.
+- **Weighted canary/blue-green deployments.** A team wants to shift a small percentage of
+  production traffic to a new application version and watch error rates before a full cutover.
+  Weighted routing records split traffic by percentage. Tradeoff vs. an ALB weighted target
+  group: Route 53 weighting works across entirely separate infrastructure stacks (even different
+  Regions or AWS accounts), but its granularity is per-resolver-cache, not per-request, so the
+  observed split can lag or deviate from the configured percentage until caches cycle through.
+- **Domain registration consolidation.** A company wants one place to manage both domain
+  registration and DNS hosting for dozens of domains across many teams. Route 53 as registrar plus
+  hosted zone keeps both functions under one API/console. Tradeoff vs. keeping an existing
+  third-party registrar and just using Route 53 for DNS hosting: consolidating onto Route 53 as
+  registrar simplifies billing/management, but migrating registrars has its own transfer lead
+  time and lock-in considerations to plan around.
+- **Multi-value answer for simple client-side load distribution.** A workload wants basic traffic
+  spreading across several healthy endpoints without the complexity of a load balancer in front.
+  Multi-value answer records return up to 8 healthy IPs and let the client pick one. Tradeoff vs.
+  deploying an actual load balancer: no load-balancer cost/hop at all, but no true server-side
+  load balancing logic (least-outstanding-requests, connection draining) — just basic, unweighted,
+  client-driven selection among healthy candidates.
 
 ## When NOT to Use It / Alternatives
 

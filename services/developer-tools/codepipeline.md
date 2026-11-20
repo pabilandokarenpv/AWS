@@ -289,15 +289,53 @@ don't share mutable state and where throughput matters more than ordering guaran
 
 ## Use Cases — When to Use It
 
-- Any team practicing CI/CD on AWS that wants the orchestration layer managed rather than hand-
-  rolled — connecting Source → Build → Test → Deploy with consistent artifact passing and audit
-  history.
-- Multi-environment release processes (dev → staging → prod) with approval gates between
-  environments.
-- ML pipelines needing automated retraining-and-redeploy flows (MLA-C02 Domain 3): a model
-  artifact change or scheduled trigger kicks off build → validate → deploy to a SageMaker/ECS
-  endpoint.
-- Multi-account or multi-region deployment orchestration from one central pipeline definition.
+Each scenario names the situation, why CodePipeline fits, and the tradeoff accepted versus an
+alternative orchestration approach.
+
+1. **Standard Source→Build→Test→Deploy orchestration.** Situation: a team wants a managed
+   orchestration layer instead of hand-rolled webhooks and cron glue. Why CodePipeline fits: the
+   Stages/Actions model is declarative and fully auditable from the console. Tradeoff: less
+   expressive than a general workflow engine (Step Functions) for complex conditional logic.
+2. **Multi-environment approval-gated promotion.** Situation: dev auto-deploys, staging needs one
+   approval, production needs two. Why CodePipeline fits: layering manual Approval actions per
+   stage enforces this directly, with no custom code. Tradeoff: adds real wait time (up to the
+   7-day action timeout) to the release cycle — by design, not a bug.
+3. **Monorepo CI/CD with parallel service pipelines.** Situation: a monorepo contains many
+   independently deployable services. Why CodePipeline fits: path-filtered EventBridge triggers
+   kick off only the affected pipeline(s). Tradeoff: pipeline sprawl (one pipeline per service)
+   needs naming/governance discipline as the repository grows.
+4. **Hotfix emergency deploys with a fast-path pipeline.** Situation: a critical patch must skip the
+   normal multi-day staging soak but still be auditable. Why CodePipeline fits: a `QUEUED`/
+   `PARALLEL` execution mode or a dedicated hotfix pipeline variant preserves the audit trail while
+   shortening the path. Tradeoff: bypassing normal gates for speed is itself a risk that needs its
+   own governance (who's allowed to trigger the hotfix path, and when).
+5. **Cross-account/multi-region fan-out deployment.** Situation: one build must deploy identically
+   to many accounts/regions. Why CodePipeline fits: parallel Deploy actions within one stage, each
+   assuming a different cross-account role, reuse the exact same build artifact. Tradeoff:
+   cross-account IAM trust setup is non-trivial and a common source of "access denied" debugging.
+6. **Pipeline-of-pipelines for platform/app team separation.** Situation: a platform team owns
+   shared infrastructure, application teams own their own deploys. Why CodePipeline fits:
+   EventBridge-triggered downstream pipelines ensure app deploys never race shared-infra updates.
+   Tradeoff: adds an indirection layer that can slow root-causing a failed app deploy (was it the
+   app, or the infra pipeline it depends on?).
+7. **ML retraining-and-redeploy automation.** Situation: a model needs to retrain on new data and
+   redeploy automatically if it beats the current benchmark. Why CodePipeline fits: an
+   EventBridge/S3-triggered pipeline with a custom Lambda validation action implements the full
+   MLOps loop declaratively. Tradeoff: the metric-comparison logic isn't built in — you write and
+   maintain that Lambda yourself.
+8. **Security/compliance-gated releases.** Situation: IaC templates and container images must pass
+   policy scans before any deploy. Why CodePipeline fits: a dedicated stage runs `cfn-nag`/Checkov
+   or Inspector results retrieval and fails the pipeline on policy violations. Tradeoff: another
+   stage adds latency to every single change, security-critical or not.
+9. **Blue/green and canary production releases.** Situation: a production release needs a safe
+   traffic-shifting strategy. Why CodePipeline fits: its Deploy stage invokes CodeDeploy, which
+   implements the actual blue/green/canary mechanics. Tradeoff: CodePipeline itself has no
+   deployment-strategy logic — all of that nuance lives one layer down in CodeDeploy, so
+   misconfiguring the Deploy action's provider settings is a common mistake.
+10. **Database DevOps orchestration.** Situation: database schema/release changes need the same
+    auditable pipeline rigor as application code. Why CodePipeline fits: its generic Stage/Action
+    model works for any release type, not just application deploys. Tradeoff: no database-specific
+    built-in actions — requires a custom action invoking your migration tool of choice.
 
 ## When NOT to Use It / Alternatives
 

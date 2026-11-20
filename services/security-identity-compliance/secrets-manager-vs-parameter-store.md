@@ -135,21 +135,78 @@ direct equivalent for (you'd fetch each secret individually or maintain your own
 ## Use Cases — When to Use It
 
 **Use Secrets Manager when:**
-- A database credential must rotate automatically on a schedule without any manual step or
-  application downtime.
-- You need the secret shared securely across multiple AWS accounts via resource policy.
-- You're storing anything a compliance framework explicitly calls a "secret" requiring
-  rotation evidence (PCI-DSS credential rotation requirements, for example).
+
+- **A database credential must rotate automatically.** Situation: a production RDS password
+  needs to rotate on a schedule with zero manual steps and zero application downtime. Why this
+  fits: Secrets Manager's built-in rotation Lambda templates (with alternating-users strategy)
+  are purpose-built for exactly this, something Parameter Store has no native equivalent for.
+  Tradeoff: ~$0.40/secret/month adds up fast if misapplied to secrets that don't actually need
+  rotation — this capability is specifically what you're paying for, so using it for static
+  config wastes the premium.
+- **A secret must be shared securely across AWS accounts.** Situation: a partner account needs
+  read access to one specific secret. Why this fits: Secrets Manager's native resource policies
+  make cross-account sharing a first-class, auditable grant. Tradeoff: cross-account sharing
+  still requires both sides (resource policy + the consuming account's own IAM policy) to agree,
+  the same dual-sided pattern as every other cross-account resource access in AWS — it's not a
+  one-sided "just grant it" operation.
+- **Compliance frameworks explicitly require rotation evidence.** Situation: PCI-DSS or an
+  internal security standard mandates demonstrable periodic credential rotation. Why this fits:
+  Secrets Manager's version staging labels and rotation history produce concrete, auditable
+  proof of rotation happening on schedule. Tradeoff: the audit value only holds if rotation is
+  actually configured and succeeding — a secret created in Secrets Manager but never wired up to
+  a rotation Lambda gives no rotation evidence at all, just storage.
 
 **Use Parameter Store when:**
-- You're storing a large volume of configuration values (hundreds to thousands) where Secrets
-  Manager's per-secret monthly fee would add up fast, and most of them are plain, non-rotating
-  config (feature flags, environment names, non-sensitive settings).
-- You want `SecureString` KMS encryption for the handful of values that are sensitive but don't
-  need automated rotation (e.g., a long-lived third-party API key you rotate manually once a
-  year).
-- You're already using other Systems Manager features (Run Command, Automation documents) and
-  want everything in one hierarchical namespace.
+
+- **Hundreds to thousands of config values, mostly non-rotating.** Situation: an application has
+  2,000+ feature flags and environment settings. Why this fits: Parameter Store Standard's free
+  tier (up to 10,000 parameters) makes this effectively zero-cost versus Secrets Manager's
+  per-secret fee at that volume. Tradeoff: Parameter Store has no native rotation — if even a
+  handful of these values later need automated rotation, you're building that pipeline yourself
+  or migrating those specific values to Secrets Manager.
+- **Sensitive values that don't need automated rotation.** Situation: a long-lived third-party
+  API key that's rotated manually once a year. Why this fits: `SecureString` gives the same KMS
+  encryption strength as Secrets Manager at a fraction of the cost, since rotation tooling isn't
+  needed here. Tradeoff: "manually rotated once a year" relies entirely on human process
+  discipline — there's no automated nagging or enforcement the way a Secrets Manager rotation
+  schedule would provide.
+- **Hierarchical configuration fetched in one call.** Situation: an application needs its entire
+  config tree under `/app/prod/` at startup. Why this fits: `GetParametersByPath --recursive`
+  fetches everything under a prefix in one round trip, a capability Secrets Manager has no
+  direct equivalent for. Tradeoff: paths beyond 10 parameters per call need pagination — a very
+  large config tree still requires looped calls, just fewer than fetching each value
+  individually.
+- **Already using other Systems Manager features.** Situation: a team already relies on Run
+  Command/Automation documents and wants one consistent namespace. Why this fits: keeping
+  config and secrets in the same SSM hierarchy avoids splitting operational tooling across two
+  separate services unnecessarily. Tradeoff: this is a convenience/consistency argument, not a
+  technical requirement — a team with genuinely rotation-heavy secrets shouldn't force them into
+  Parameter Store just for namespace consistency.
+
+**Cross-cutting scenarios (applies to both):**
+
+- **Zero-trust secret retrieval — fetch at runtime, never bake into an image.** Situation: a
+  container image or Lambda deployment package must never embed a credential directly. Why this
+  fits: both services let the running workload fetch the current value via an IAM-governed API
+  call at runtime, so the credential never exists in the build artifact at all. Tradeoff: this
+  adds a runtime dependency on the service being reachable and the IAM permission being correct
+  — a transient API throttling event or a missing `kms:Decrypt` permission becomes a startup
+  failure mode that a baked-in (but far less secure) value never would have had.
+- **Incident response — rotating a credential believed compromised.** Situation: a leaked
+  database password needs to be invalidated immediately. Why this fits: Secrets Manager's
+  `put-secret-value` (or triggering an out-of-band rotation) replaces the credential and, if the
+  application re-fetches rather than caches, propagates the change without a deployment.
+  Tradeoff: if the application *does* cache the secret at startup only, rotating it does nothing
+  until the app restarts — a common, frustrating gap between "we rotated it" and "it's actually
+  changed everywhere it's used."
+- **M&A — consolidating credential management after an acquisition.** Situation: an acquired
+  company's secrets are scattered across config files, environment variables, and a different
+  secrets tool entirely. Why this fits: migrating them into the parent company's existing
+  Secrets Manager/Parameter Store setup (sorted into "needs rotation" vs. "static config" per
+  the core decision rule) brings them under the same governance and audit trail as everything
+  else. Tradeoff: this migration is genuine, non-trivial work — each credential's consuming
+  application needs updating to fetch from the new location, and a rushed migration risks
+  missing a credential still hardcoded somewhere in the acquired codebase.
 
 ## When NOT to Use It / Alternatives
 

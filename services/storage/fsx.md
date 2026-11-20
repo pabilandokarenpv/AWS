@@ -104,6 +104,17 @@ flowchart LR
     Persistent -.durable, still very fast.-> Cost
 ```
 
+Walking through it: **Scratch** deployment has **no replication at all** — if the underlying hardware
+fails, the data on it is gone, full stop. That sounds alarming until you remember the typical Scratch
+use case: a short-lived HPC/ML job whose source data lives durably in S3 and whose output is exported
+back to S3 before the file system is deleted anyway, so a mid-job hardware failure just means re-running
+the job, not losing anything irreplaceable. **Persistent** deployment replicates data within the AZ and
+supports automated backups, trading a little extra cost for the durability a longer-running or
+production-facing workload actually needs. The decision point in the diagram — "cost vs. durability
+tradeoff" — is really a question about blast radius: how bad is it if this specific file system's
+contents disappear tonight? If the honest answer is "mildly annoying, re-run the job," Scratch is
+correct; if it's "we lose work we can't regenerate," Persistent is the only safe choice.
+
 ## Key Features / Components
 
 - **FSx for Windows File Server** — SMB protocol, Active Directory (self-managed or AWS Managed
@@ -128,16 +139,62 @@ flowchart LR
 
 ## Use Cases — When to Use It
 
-- **FSx for Windows File Server** — enterprise file shares for Windows users, Windows-based
-  applications (e.g., SharePoint, home directories, group shares) migrating from on-prem.
-- **FSx for Lustre** — machine learning training on large datasets, high-performance computing
-  (genomics, computational fluid dynamics), media rendering farms — anywhere "fastest possible
-  shared throughput tied to S3" is the requirement.
-- **FSx for NetApp ONTAP** — lift-and-shift of existing on-prem NetApp environments, workloads
-  needing both NFS and SMB access to the *same* data, database workloads wanting instant
-  clones for dev/test refreshes.
-- **FSx for OpenZFS** — Linux workloads wanting ZFS's snapshot/clone model without NetApp's
-  specific enterprise feature set or licensing.
+- **Windows enterprise file shares for a law firm migrating off on-prem.** Staff need SMB shares with
+  NTFS ACLs, DFS namespaces, and shadow-copy "previous versions" restore exactly as before. FSx for
+  Windows File Server runs the real Windows file-sharing stack, so no retraining is needed.
+  *Alternative cost:* EFS can't serve this at all (NFS-only); building it on EC2 instead means
+  patching and licensing Windows Server yourself.
+- **ML training for a large language model across hundreds of GPU nodes.** Training data in S3 must be
+  read at extreme concurrent throughput without S3 itself becoming the bottleneck. FSx for Lustre,
+  linked to the S3 bucket via a Data Repository Association, gives POSIX-file-speed parallel access.
+  *Alternative cost:* reading directly from S3 on every training step instead throttles at high
+  GPU-node concurrency — exactly the scenario Lustre is purpose-built to remove.
+- **Genomics/bioinformatics compute pipeline for a sequencing lab.** A pipeline needs extremely high
+  aggregate throughput across many compute nodes reading the same reference and sample data. FSx for
+  Lustre (persistent, with an optional HDD+SSD-cache tier) matches this access pattern at a fraction of
+  all-SSD cost. *Alternative cost:* EFS would work but tops out at lower aggregate throughput than
+  Lustre is purpose-built to sustain at this concurrency.
+- **Media rendering farm for a VFX studio needing S3-linked scratch.** Short-lived rendering jobs need
+  the fastest possible shared throughput for the job's duration, then can be discarded. A
+  scratch-deployment FSx for Lustre file system, pre-populated from S3, gives this without paying for
+  replication the ephemeral job doesn't need. *Alternative cost:* a persistent EFS file system instead
+  carries ongoing storage cost between jobs for data that doesn't need to survive them.
+- **Lift-and-shift of an existing on-prem NetApp environment for an enterprise.** The organization
+  relies on instant zero-copy clones for dev/test refreshes and SnapMirror DR replication today. FSx
+  for NetApp ONTAP is the only AWS option running real ONTAP software, preserving these exact
+  capabilities. *Alternative cost:* any other FSx flavor or EFS would force the team to re-architect
+  dev/test refresh and DR tooling from scratch.
+- **Multiprotocol database storage for a company running both Linux analytics and Windows reporting
+  against one dataset.** NFS, SMB, and iSCSI clients all need to touch the same underlying data
+  without three separate copies. FSx for NetApp ONTAP is the only AWS file storage service offering
+  genuine multiprotocol access to one dataset. *Alternative cost:* maintaining three separate storage
+  copies (one per protocol) triples storage cost and introduces data-consistency drift between copies.
+- **HPC computational fluid dynamics simulation for an aerospace company.** Thousands of compute cores
+  need extremely low-latency, high-IOPS shared storage for the duration of a simulation run. FSx for
+  Lustre (SSD, persistent) is purpose-built for exactly this HPC access pattern. *Alternative cost:*
+  EBS per-node (with manual result aggregation) forces the team to build their own distributed-
+  filesystem logic that Lustre already provides.
+- **Linux application wanting ZFS-style snapshots without NetApp licensing.** A team wants fast
+  point-in-time snapshots/clones on Linux NFS storage but has no NetApp-specific feature requirement
+  (no SnapMirror, no multiprotocol). FSx for OpenZFS gives this at a simpler/cheaper price point than
+  ONTAP. *Alternative cost:* choosing ONTAP here instead means paying for enterprise features
+  (multiprotocol, SnapMirror) the workload will never use.
+- **Branch-office Windows file share migration with regional caching.** Branch employees need
+  low-latency local access to a centrally-managed Windows share, not a full local file server. FSx for
+  Windows deployed per Region (or paired with FSx File Gateway, see `storage-gateway.md`) keeps one
+  authoritative copy while giving each location fast access. *Alternative cost:* an independent local
+  Windows file server per branch means N separate backup/patch/DR burdens instead of one.
+- **Compliance archival of departmental Windows shares with shadow-copy self-service recovery.** A
+  regulated company needs years of departmental file history retained, with end users able to
+  self-service "restore previous version" without IT involvement. FSx for Windows' native shadow-copy
+  feature gives this out of the box, exactly mirroring on-prem Windows Server behavior. *Alternative
+  cost:* an S3-backed File Gateway has no native shadow-copy concept — IT would need to build that
+  retrieval workflow itself.
+- **Database storage refresh for dev/test environments at a financial services firm.** QA needs a
+  full-fidelity, byte-for-byte production dataset copy refreshed frequently without waiting hours for
+  a restore. FSx for NetApp ONTAP's instant zero-copy clones deliver this in seconds. *Alternative
+  cost:* restoring from a database-native backup/snapshot for every refresh instead takes
+  disproportionately longer and consumes full storage for each copy rather than just the deltas.
 
 ## When NOT to Use It / Alternatives
 

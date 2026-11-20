@@ -355,16 +355,71 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- **Multi-step business processes with branching and compensation logic**: order processing,
-  loan approval pipelines, employee onboarding workflows.
-- **Orchestrating a sequence of Lambda functions** where you'd otherwise write custom
-  state-tracking and retry code inside the functions themselves.
-- **ETL/data processing pipelines**: coordinate Glue jobs, batch processing, and conditional
-  branches based on data validation results.
-- **High-volume, short-lived event processing at scale** (Express Workflows): e.g.,
-  transforming and routing millions of IoT telemetry events per day.
-- **Human-in-the-loop approval steps**: pause a workflow (via the "wait for callback" task
-  token pattern) until a person approves a request through a separate system.
+1. **Multi-step order processing with rollback** — an e-commerce order needs payment validation,
+   inventory reservation, and shipping scheduling, with a clean refund if any step fails
+   partway. Step Functions' Parallel/Task states with Catch routing to a compensating state are
+   the fit. **Tradeoff vs. one large Lambda with try/except blocks**: a single Lambda avoids
+   Step Functions' per-state-transition cost, but buries retry/rollback logic in nested
+   exception handling that's hard to audit after the fact — Step Functions makes every step and
+   its outcome visible in an execution history.
+2. **Loan approval pipelines with conditional branching** — a lending platform's approval
+   process branches differently based on credit score, requires a human underwriter's sign-off
+   above a certain loan amount, and must show auditors exactly which path a given application
+   took. Step Functions' Choice states plus task-token-based human approval are the fit.
+   **Tradeoff vs. a workflow engine built on a database status column + polling**: a status-
+   column approach is simple to start, but gives no native retry/timeout handling and no visual
+   execution history for audits.
+3. **Orchestrating a sequence of Lambda functions without custom glue code** — a data pipeline
+   needs to call Lambda A, then Lambda B only if A succeeds, then retry B up to 3 times on
+   transient errors. Step Functions' declarative Retry/Catch is the fit. **Tradeoff vs. Lambda A
+   invoking Lambda B directly at the end of its own code**: direct invocation chains are simpler
+   initially, but each Lambda ends up re-implementing its own retry/error logic, and there's no
+   single place to see the whole chain's execution state.
+4. **ETL pipeline coordination with data-dependent branching** — a pipeline must run a Glue job,
+   check whether the output passed a data-quality threshold, and only proceed to a downstream
+   SageMaker training job if it did. Step Functions' native Glue integration plus Choice state is
+   the fit. **Tradeoff vs. a Glue Workflow**: Glue Workflows are lighter-weight when orchestration
+   stays entirely inside Glue, but Step Functions is the better fit here because the pipeline also
+   needs to branch into SageMaker, which is outside Glue's own orchestration scope.
+5. **High-volume, short-lived event transformation at scale** — an IoT platform needs to
+   validate and route millions of telemetry events per day, each processed in well under 5
+   minutes, without needing the full execution-history overhead of Standard Workflows. Express
+   Workflows are the fit. **Tradeoff vs. Standard Workflows**: Standard gives exactly-once
+   semantics and full execution history, but its per-state-transition pricing and lower
+   throughput ceiling make it the wrong choice at this volume and duration.
+6. **Human-in-the-loop approval spanning hours or days** — a procurement workflow needs to pause
+   and wait for a manager's approval that might not arrive for two business days. The
+   `waitForTaskToken` pattern on a Standard Workflow is the fit. **Tradeoff vs. polling a database
+   for an "approved" flag from a separate scheduled job**: polling works but wastes invocations
+   checking a flag that rarely changes, and Step Functions' task token pauses the execution with
+   zero polling cost until the callback actually arrives.
+7. **Saga pattern for distributed transactions across services with no native rollback** — a
+   travel-booking system needs to reserve a flight, a hotel, and a rental car, and must release
+   whichever of those succeeded if any one of them fails. Step Functions' Parallel state with a
+   Catch routing to compensating Lambdas is the fit — there's no cross-service database
+   transaction to rely on. **Tradeoff vs. a two-phase-commit-style custom protocol**: 2PC-style
+   protocols exist in theory, but are notoriously hard to implement correctly across
+   independently-owned services — the saga/compensation pattern is the pragmatic, widely-used
+   alternative.
+8. **Processing millions of records with massive parallelism** — a data migration needs to
+   validate and transform every row in a 2-million-row manifest, far beyond what a single Lambda
+   invocation or even a modest Map state concurrency could handle economically. Distributed Map
+   mode, running each item as its own child execution, is the fit. **Tradeoff vs. an EMR Spark
+   job over the same manifest**: EMR gives more control over the actual transform logic at this
+   scale, but Step Functions' Distributed Map is simpler when the per-item logic is already a
+   simple Lambda call that just needs to run at very high fan-out.
+9. **EventBridge-triggered workflows with native service calls, no extra Lambda glue** — an
+   EventBridge rule needs to start a workflow that writes directly to DynamoDB and publishes to
+   SNS, without a Lambda wrapper around either call. Step Functions' native service integrations
+   are the fit. **Tradeoff vs. a Lambda function that itself calls DynamoDB and SNS**: the Lambda
+   approach is familiar, but adds an unnecessary compute layer (and its own cold-start/cost)
+   purely to make two calls Step Functions can make natively from a Task state.
+10. **Visualizing and debugging "where did this specific execution get stuck"** — a support team
+    fields complaints about a specific stuck order and needs to see exactly which step it's on,
+    with what input, right now. Step Functions' per-execution visual history is the fit.
+    **Tradeoff vs. grepping application logs across several Lambda functions**: log grepping
+    works but requires correlating timestamps and request IDs across services by hand — Step
+    Functions' console shows one execution's full path end-to-end without that correlation work.
 
 ## When NOT to Use It / Alternatives
 

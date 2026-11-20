@@ -215,15 +215,69 @@ already attached, instead of requiring a hybrid connection per VPC.
 
 ## Use Cases — When to Use It
 
-- **VPC Peering**: a small number of VPCs (2-5) that need to talk to each other, especially
-  across accounts for a specific, limited purpose (e.g., a shared services VPC peered with just
-  one consumer VPC) — simple, no extra hop, no extra hourly cost.
-- **Transit Gateway**: any organization with more than a handful of VPCs needing interconnect,
-  multi-account landing zones, centralizing hybrid (VPN/Direct Connect) connectivity, or needing
-  network segmentation between groups of VPCs (e.g., prod vs. non-prod isolation) via different
-  route tables on the same hub.
-- **Transit Gateway peering**: connecting Transit Gateways in different Regions for a global,
-  centrally managed backbone without a full mesh of cross-Region VPC peerings.
+- **Multi-tier application split across shared-services and app VPCs.** An application VPC needs
+  to reach a central shared-services VPC (logging, secrets, artifact repository) but nothing else.
+  A single, narrowly-scoped VPC Peering connection between just these two VPCs is the simplest
+  fit. Tradeoff vs. attaching both to a Transit Gateway: no hub fee and no extra hop for this
+  one relationship, but doesn't scale if a third or fourth VPC later needs the same shared
+  services — at that point Transit Gateway becomes the better answer.
+- **Hybrid cloud centralized entry point.** An enterprise has Direct Connect and/or multiple
+  Site-to-Site VPN connections and dozens of VPCs that all need hybrid reachability. Attaching
+  the Direct Connect Gateway and VPN connections once to a Transit Gateway lets every attached VPC
+  reach on-prem without a hybrid connection per VPC. Tradeoff vs. a VGW per VPC: dramatically less
+  connection sprawl as VPC count grows, but concentrates all hybrid traffic through the Transit
+  Gateway's shared bandwidth ceiling and adds its own per-GB processing charge.
+- **Multi-Region disaster recovery backbone.** A company operates Transit Gateways in two
+  Regions and needs every VPC attached to either hub to reach every VPC attached to the other,
+  without a mesh of inter-Region VPC peerings. Transit Gateway peering connects the two regional
+  hubs directly. Tradeoff vs. direct inter-Region VPC peering per pair: avoids the mesh-growth
+  problem as VPC count increases in either Region, but adds a cross-Region Transit Gateway hop
+  (and its own cost) to every inter-Region packet.
+- **Global content delivery origin network.** A media company's regional origin VPCs (one per
+  Region, each feeding a CloudFront origin group) need to replicate content between themselves for
+  redundancy. Transit Gateway peering between each Region's hub gives this without a point-to-
+  point mesh. Tradeoff vs. direct VPC peering between origin VPCs: scales cleanly as more Regions
+  are added, but every replication packet pays the Transit Gateway's per-GB processing fee on top
+  of standard inter-Region transfer.
+- **Microservices mesh hub-and-spoke segmentation.** A platform with many service-owning VPCs
+  needs full mesh connectivity between most of them, but strict isolation for a handful of
+  sensitive services. Transit Gateway route tables let most attachments share one route table
+  while sensitive services get a separate, restricted route table. Tradeoff vs. VPC Peering for
+  each pair that needs to talk: Transit Gateway collapses what would be dozens of peering
+  connections into one hub with centrally managed segmentation, at the cost of an hourly
+  attachment fee plus per-GB processing that peering's direct connections don't incur.
+- **Compliance-driven environment isolation (dev/prod segmentation).** A security requirement
+  states that development VPCs must never reach production VPCs, even though both need to reach a
+  shared services VPC. Separate Transit Gateway route tables for dev and prod attachments, both
+  with shared-services routes propagated in but not each other's, achieve this precisely.
+  Tradeoff vs. relying on IAM policy alone for this isolation: enforces it at the network layer
+  (can't be bypassed by an over-permissioned IAM role), but requires careful, ongoing discipline
+  about which attachments get associated/propagated into which route table.
+- **M&A account consolidation at scale.** Two merging organizations' combined VPC estate — now
+  15+ VPCs across 5+ accounts — faces the N² peering-connection-management problem immediately.
+  Migrating to a shared Transit Gateway collapses what would be up to 100+ individual peering
+  connections into one attachment per VPC. Tradeoff vs. continuing to add peering connections as
+  the two networks merge further: Transit Gateway requires an upfront migration effort (new
+  attachments, updated route tables) but avoids an unmanageable, ever-growing peering mesh that
+  gets harder to reason about with every additional VPC.
+- **Centralized egress architecture.** An enterprise with many spoke VPCs wants to avoid running
+  (and paying for) NAT Gateways in every single VPC. Routing all spokes' internet-bound traffic
+  through one central "egress VPC" attached to the same Transit Gateway centralizes NAT Gateway
+  management and cost. Tradeoff vs. per-VPC NAT Gateways: far fewer NAT Gateways to operate, but
+  concentrates all egress traffic through one VPC's NAT Gateways and the Transit Gateway hop,
+  creating a shared capacity/failure dependency across every spoke.
+- **Multicast workload connectivity.** A media or financial trading platform needs native
+  multicast routing between VPCs, which VPC Peering fundamentally cannot provide. Transit
+  Gateway's multicast support handles this directly. Tradeoff vs. redesigning the workload around
+  unicast-only peering: Transit Gateway is the only option that supports multicast at all here,
+  but it's a capability you pay the Transit Gateway attachment/processing fee for regardless of
+  whether you use any of its other segmentation features.
+- **Latency-sensitive point-to-point traffic between exactly two VPCs.** Two specific VPCs need
+  maximum throughput, minimum latency connectivity with no intermediate device at all, and no
+  other VPC will ever need to be part of this relationship. Direct VPC Peering avoids the shared,
+  metered Transit Gateway hop entirely. Tradeoff vs. Transit Gateway: potentially better raw
+  throughput/latency for this one pair, but zero built-in path to add a third VPC later without
+  provisioning a whole new peering connection.
 
 ## When NOT to Use It / Alternatives
 

@@ -246,15 +246,50 @@ leaks it to CloudWatch Logs regardless of which phase the stray command sits in.
 
 ## Use Cases — When to Use It
 
-- Any CI step that needs to compile code, run a test suite, or build a container image as part of
-  a pipeline.
-- Teams wanting to avoid maintaining Jenkins (or similar) build server infrastructure — no agents
-  to patch, no queue capacity to plan.
-- Building and pushing Docker images to ECR as part of a container deployment pipeline (DVA-C03
-  Domain 3's "ECR image build/tag/lifecycle" is literally this).
-- ML pipelines that need to build a custom training/inference container (MLA-C02 Domain 3).
-- Running security/static-analysis scans (SAST tools, dependency vulnerability checks) as a
-  dedicated buildspec phase before an image is even pushed to ECR.
+Each scenario names the situation, why CodeBuild fits, and the tradeoff accepted versus an
+alternative.
+
+1. **Container image build-and-push CI step.** Situation: a Docker image must be built, tested,
+   and pushed to ECR as part of deployment. Why CodeBuild fits: buildspec phases map directly onto
+   install/test/`docker build`/`docker push`. Tradeoff: a separate deploy action (CodeDeploy, ECS
+   deploy) is still needed — CodeBuild only produces the artifact, never releases it.
+2. **Replacing self-hosted Jenkins.** Situation: a team is tired of patching and scaling Jenkins
+   build agents. Why CodeBuild fits: pay-per-build-minute with zero agent fleet to manage.
+   Tradeoff: a smaller plugin ecosystem than Jenkins' long-established marketplace.
+3. **Monorepo CI with multiple CodeBuild projects.** Situation: a monorepo with many services, each
+   needing its own build. Why CodeBuild fits: separate projects per service/path keep builds
+   isolated and independently cacheable. Tradeoff: project sprawl needs governance (naming
+   conventions, shared buildspec templates) as service count grows.
+4. **VPC-connected integration testing.** Situation: tests need to reach a private RDS instance with
+   no public endpoint. Why CodeBuild fits: a project can be explicitly configured with VPC
+   connectivity (subnets, security groups). Tradeoff: adds NAT Gateway/security-group setup that a
+   public-only build doesn't need, and this is not the default configuration.
+5. **Security-gated builds (SAST/dependency scanning).** Situation: a shift-left security
+   requirement must block risky images before they reach ECR. Why CodeBuild fits: a dedicated
+   buildspec phase can fail the build when findings exceed a severity threshold. Tradeoff: adds
+   latency to every single build, even low-risk changes that would have passed anyway.
+6. **Matrix/batch builds for multi-architecture images.** Situation: both amd64 and Graviton/arm64
+   image variants are needed. Why CodeBuild fits: batch builds fan out in parallel, then a combine
+   stage merges into a multi-arch manifest. Tradeoff: meaningfully more complex buildspec/project
+   configuration than a single-architecture build.
+7. **Hotfix emergency builds.** Situation: a critical patch must be built and validated fast. Why
+   CodeBuild fits: it spins up an ephemeral build container in seconds, with no agent queue to wait
+   on. Tradeoff: the build cache (`node_modules`, Docker layers) may be cold if it's been a while
+   since the last build on that project, partially offsetting the "fast" hotfix turnaround.
+8. **ML custom training/inference container builds.** Situation: an MLA-C02-relevant pipeline needs
+   a custom image with a specific ML framework version. Why CodeBuild fits: `cache.paths` avoids
+   re-downloading large ML dependencies on every build. Tradeoff: large ML images still take
+   meaningfully longer to build and push than lightweight application images, even with caching.
+9. **Blue/green release artifact preparation.** Situation: the pipeline needs a uniquely-tagged,
+   traceable image per release for a downstream CodeDeploy blue/green action. Why CodeBuild fits:
+   tagging with `CODEBUILD_RESOLVED_SOURCE_VERSION` (the commit SHA) gives an unambiguous artifact
+   reference. Tradeoff: requires pipeline discipline to never fall back to a mutable `:latest` tag
+   under release-day time pressure.
+10. **Secretless handling of third-party registry/API credentials.** Situation: a build needs a
+    private npm/PyPI registry token during the `install` phase. Why CodeBuild fits:
+    `env.secrets-manager` injects the value without it ever touching the buildspec file in source
+    control. Tradeoff: a stray `echo` of that variable anywhere in the buildspec still leaks it to
+    CloudWatch Logs — CodeBuild does not redact arbitrary command output automatically.
 
 ## When NOT to Use It / Alternatives
 

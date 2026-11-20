@@ -131,6 +131,63 @@ the oplog to stay current.
   collection's change stream to trigger downstream processing (search index updates, cache
   invalidation, notifications) without polling.
 
+### Querying DocumentDB via pymongo (standard MongoDB driver)
+
+Because DocumentDB speaks the MongoDB wire protocol, the exact same driver code used against
+self-managed MongoDB works here — only the connection string changes.
+
+```python
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
+
+# tlsCAFile points at the Amazon RDS combined CA bundle — DocumentDB requires TLS by default,
+# and the driver needs to trust AWS's certificate chain to establish the connection.
+# replicaSet + readPreference let the driver route reads to secondaries automatically.
+client = MongoClient(
+    "mongodb://dbadmin:ChangeMe123!@study-docdb.cluster-xxxxx.us-east-1.docdb.amazonaws.com:27017/"
+    "?tls=true&tlsCAFile=global-bundle.pem&replicaSet=rs0&readPreference=secondaryPreferred",
+)
+db = client.catalog
+products = db.products
+
+# Insert documents with genuinely different shapes — the flexible-schema case DocumentDB targets.
+try:
+    products.insert_many([
+        {
+            "_id": "sku-widget-1",
+            "name": "Widget",
+            "category": "hardware",
+            "tags": ["sale", "new"],
+            "price": 9.99,
+        },
+        {
+            "_id": "sku-gadget-9",
+            "name": "Gadget",
+            "category": "electronics",
+            "specs": {"battery": "4h", "weight_g": 180},  # a field hardware items don't have at all
+            "price": 29.99,
+        },
+    ])
+except DuplicateKeyError:
+    pass  # idempotent retry — the documents already exist from a prior attempt
+
+# Index the field this query filters on — otherwise this becomes a full collection scan (COLLSCAN).
+products.create_index("category")
+
+# Query and aggregate — the same MongoDB aggregation pipeline syntax, no rewrite needed.
+electronics = list(products.find({"category": "electronics"}))
+
+pipeline = [
+    {"$group": {"_id": "$category", "avg_price": {"$avg": "$price"}, "count": {"$sum": 1}}},
+    {"$sort": {"avg_price": -1}},
+]
+category_summary = list(products.aggregate(pipeline))
+
+# Confirm the category index is actually being used, not silently falling back to a scan.
+plan = products.find({"category": "electronics"}).explain()
+assert plan["queryPlanner"]["winningPlan"]["inputStage"]["stage"] != "COLLSCAN"
+```
+
 ## Key Features / Components
 
 - **MongoDB API compatibility** — supports a large subset of MongoDB's query language,
@@ -203,14 +260,60 @@ throughput — the DocumentDB answer to "we've outgrown vertical scaling of a si
 
 ## Use Cases — When to Use It
 
-- Teams already running MongoDB (self-managed or Atlas) who want to migrate to a fully managed
-  AWS-native service without rewriting application queries/drivers.
-- Content management systems, catalogs, user profiles, or any workload where each record
-  naturally has a different, evolving shape (some fields present, some not) rather than a fixed
-  relational schema.
-- Applications needing deep nested document structures (arrays of sub-objects, flexible metadata)
-  that would require many JOINs or a sparse/wide table design in a relational database.
-- Real-time applications reacting to document changes via change streams.
+- **Lift-and-shift of an existing MongoDB-backed application.** An app with MongoDB driver code,
+  aggregation pipelines, and queries already written, moving to AWS without a rewrite. Tradeoff
+  vs DynamoDB: DynamoDB scales further and is cheaper at extreme scale, but requires redesigning
+  the data model around known access patterns — DocumentDB's entire value is specifically
+  "you already know/use MongoDB," not raw scalability.
+- **Content management system with per-content-type varying schema.** Articles, videos, and
+  product pages each have different metadata shapes, modeled as documents in one or a few
+  collections rather than many sparse relational tables. Tradeoff vs RDS/Aurora: a relational
+  schema would need either a wide sparse table (mostly-null columns) or many JOINed type-specific
+  tables; documents handle per-record shape variation natively, at the cost of weaker cross-record
+  referential integrity guarantees than foreign keys provide.
+- **User profile store with flexible, evolving preference/settings fields.** Different users have
+  different sets of preferences/settings added over time as features ship, without schema
+  migrations. Tradeoff vs a relational `user_settings` table: relational would require either a
+  new column per setting (migration-heavy) or an EAV (entity-attribute-value) anti-pattern;
+  documents naturally absorb new optional fields per user without either problem.
+- **Catalog with deeply nested product variants (size, color, bundled accessories).** A single
+  product document embeds its variants and specs as nested arrays/objects, read together in one
+  query. Tradeoff vs RDS: the equivalent relational model needs multiple JOINed tables (products,
+  variants, specs) for data that's always read together as one unit — embedding trades some
+  update-anomaly risk (duplicated nested data) for read simplicity and fewer round trips.
+- **Real-time application reacting to document changes via change streams.** A search index
+  (OpenSearch) or cache needs to stay in sync with document updates without polling. Tradeoff vs
+  DynamoDB Streams: functionally similar concept; choose DocumentDB specifically when the source
+  data is already MongoDB-shaped, not as a reason to pick DocumentDB over DynamoDB on its own.
+- **Multi-Region read scaling for a document-shaped application.** DocumentDB Global Clusters
+  serve local reads with low replication lag across Regions, promotable during a regional
+  failure. Tradeoff vs Aurora Global Database: same architecture family, different data model —
+  pick based on whether the application is relational or document-shaped, not on the multi-Region
+  feature itself, since both services offer an equivalent cross-Region story.
+- **Write-heavy workload outgrowing a single DocumentDB primary's throughput.** Elastic Clusters
+  shard writes across multiple underlying clusters. Tradeoff vs re-architecting onto DynamoDB:
+  Elastic Clusters preserve MongoDB query/aggregation capability while scaling writes further;
+  DynamoDB scales even further but requires abandoning MongoDB's richer query language entirely.
+- **Mobile app backend storing JSON payloads close to the app's native data shape.** Mobile
+  clients naturally serialize/deserialize JSON; storing documents avoids an ORM translation layer
+  between relational rows and the app's object model. Tradeoff vs DynamoDB: DocumentDB's
+  aggregation pipeline and richer query operators (regex, geospatial, array queries) support more
+  complex mobile-app query needs out of the box than DynamoDB's simpler key/index-based access.
+- **Internal tooling/admin panels built on a MongoDB-based framework or CMS.** Off-the-shelf tools
+  that assume a MongoDB backend (certain headless CMS platforms, some admin-panel generators) can
+  point directly at DocumentDB. Tradeoff vs building custom on DynamoDB: using DocumentDB avoids
+  forking or rewriting the third-party tool's data layer, at the cost of inheriting whatever
+  MongoDB-API compatibility gaps DocumentDB currently has versus the tool's expected feature set.
+- **Logging/event capture with per-event-type varying fields, queried by recent window.** Events
+  of different types (login, purchase, error) share a collection but have different attached
+  fields. Tradeoff vs Redshift: DocumentDB suits live, operational querying of recent events;
+  once the need shifts to heavy historical aggregation across all event types over years, that
+  workload belongs in Redshift instead, fed by change streams or a batch export.
+- **Migrating from MongoDB Atlas to reduce vendor lock-in or consolidate AWS billing.** A team
+  already on managed MongoDB (Atlas) wants a fully AWS-native managed alternative. Tradeoff vs
+  staying on Atlas: DocumentDB offers tighter AWS-native integration (IAM, VPC, CloudWatch) at the
+  cost of trailing upstream MongoDB's very latest features — verify specific feature parity needs
+  before committing to the migration, not after.
 
 ## When NOT to Use It / Alternatives
 

@@ -93,6 +93,49 @@ automated enforcement — attaching a restrictive IAM policy to a role, or even 
 further provisioning for certain resource types, when a budget is exceeded, turning a *warning*
 into an actual *guardrail*.
 
+### How It Works — Step by Step: Tracing a Cost Spike From Resource Usage to a Budget Alert
+
+The sequence diagram above shows the general alert flow; here's the same mechanics traced against
+one specific, realistic spike — a forgotten large training instance left running over a weekend.
+
+1. **Friday 18:00 — the resource starts generating usage.** An ML engineer launches an
+   `m5.4xlarge` instance for a training job and goes home for the weekend without an auto-shutdown
+   configured. The instance begins accruing hourly compute charges immediately.
+2. **Friday 18:00 → Monday 09:00 — usage accumulates in AWS's billing engine.** Every hour the
+   instance runs generates a billing record attributing cost to that specific resource, instance
+   type, and (if tags were applied and activated beforehand) the `Team=ML` cost allocation tag.
+   This is happening continuously and automatically — no action is needed to "start" cost tracking.
+3. **Saturday ~06:00 — Cost Anomaly Detection's model notices.** The anomaly monitor, which has
+   learned this account's normal weekend spend pattern (usually near zero for EC2 given this
+   team's typical schedule), flags the sustained, unusual `m5.4xlarge` usage as an anomaly roughly
+   a day after it starts — anomaly detection needs some sustained deviation to distinguish a real
+   anomaly from routine noise, so it isn't instantaneous.
+4. **Saturday ~06:05 — an anomaly alert fires.** `get-anomalies` (or the configured SNS/email
+   alert) surfaces the anomaly with its estimated dollar impact and affected service — but
+   critically, it does **not** say who launched the instance; that requires a second tool.
+5. **Monday 09:00 — the on-call engineer investigates.** Using the anomaly's time window and
+   service, they query CloudTrail for `RunInstances` calls in that window (see the Logs
+   Insights-style cross-reference below), identifying the specific principal and instance type —
+   now the "what" (Cost Anomaly Detection) and the "who" (CloudTrail) are both answered.
+6. **Monday 09:10 — AWS Budgets independently crosses its own threshold.** Separately, the
+   account's `ML-Team-Monthly` budget, tracking forecasted spend, had already crossed its 80%
+   warning threshold over the weekend (forecasts react faster than actuals, since they
+   extrapolate the trend) and fired its own SNS notification to the team's Slack channel —
+   arriving independently of, and often before, the anomaly detection alert, since the two systems
+   use different detection logic (threshold vs. ML-based pattern).
+7. **Monday 09:15 — remediation.** The engineer terminates the instance. Cost stops accruing
+   immediately; the already-incurred weekend charges remain on the bill (there's no retroactive
+   credit for "I didn't mean to leave this running" — AWS bills for actual usage).
+8. **Following week — Cost Explorer confirms the full picture.** A `get-cost-and-usage` query
+   grouped by tag for the affected billing period quantifies exactly how much the forgotten
+   instance cost in total dollars, closing the loop with a concrete number for the team's monthly
+   retro — distinct from the anomaly alert's *estimate*, which is directional, not the final
+   billed amount.
+9. **The preventive follow-up.** The team adds a CloudWatch alarm on EC2 instance age/idle time
+   for this instance type going forward, and/or an SCP restricting large instance types to a
+   shorter default TTL — Cost Anomaly Detection and Budgets both caught this *after* the fact;
+   neither tool prevents it from happening again without an additional guardrail.
+
 ## Worked Example: A Full Cost Explorer Investigation (Monthly Spend Spike)
 
 A realistic finance-review scenario: this month's bill is 35% higher than last month. Walk the
@@ -242,16 +285,107 @@ commitment — reducing the risk of over- or under-committing relative to actual
 
 ## Use Cases — When to Use It
 
-- Monthly/quarterly finance review: "what did we spend, by team/project, and why did it change?"
-  — Cost Explorer with tag-based grouping.
-- Preventing bill shock: setting a budget alert at 80% of a monthly cap so engineering gets
-  warned before finance does, with time to react.
-- Chargeback/showback to internal teams or external clients — tag-based cost allocation lets a
-  shared AWS account still produce per-team or per-client cost breakdowns.
-- Deep, custom cost analysis beyond what the console UI supports — exporting the CUR into
-  Athena/QuickSight for a bespoke dashboard or feeding a third-party FinOps platform.
-- Catching an unexpected cost spike quickly (a misconfigured auto-scaling policy, a forgotten
-  large instance) via Cost Anomaly Detection rather than waiting for the monthly invoice.
+1. **Monthly finance review attributed by team/project.** Finance asks "what did we spend, broken
+   down by team, and why did it change from last month?" **Why this fits:** Cost Explorer grouped
+   by an activated cost allocation tag turns one aggregate invoice number into an attributable
+   breakdown by owner. **Tradeoff:** attribution is only as good as tagging discipline — an
+   untagged resource silently lands in an "unattributed" bucket that distorts every team's
+   reported number unless tagging is enforced (SCP or Config rule) at creation time.
+
+2. **Cost anomaly investigation: a sudden, unexplained spike mid-month.** The bill is tracking 35%
+   above the prior month and nobody knows why yet. **Why this fits:** the total → by-service →
+   by-usage-type → by-tag drill-down pattern (shown in the worked example) systematically narrows
+   an abstract "something got more expensive" into a specific, attributable root cause.
+   **Tradeoff:** this drill-down only works if cost allocation tags were activated *before* the
+   spike — tags applied after the fact don't retroactively populate historical billing data, so an
+   investigation into a tag dimension that wasn't active yet simply returns nothing for that slice.
+
+3. **Proactive bill-shock prevention via threshold alerting.** A team wants to know at 80% of a
+   monthly cap, not at 100% on the invoice. **Why this fits:** AWS Budgets evaluates both actual
+   and *forecasted* spend continuously and alerts the moment either crosses the configured
+   threshold — forecasted alerts specifically give earlier warning than waiting for actual spend to
+   catch up. **Tradeoff:** forecasts extrapolate from recent trend; a genuinely new, large,
+   one-time cost (a planned migration) with no prior trend produces a forecast that's initially
+   inaccurate until enough new history accumulates, which can either cry wolf or under-warn in the
+   early days of a real, large change.
+
+4. **Chargeback/showback to internal teams or external clients sharing one AWS account.** A
+   managed services provider runs five clients' workloads in one shared account and needs an
+   accurate per-client invoice. **Why this fits:** tag-based cost allocation (`Client=Acme`)
+   produces a defensible, auditable per-client cost breakdown without needing five separate AWS
+   accounts. **Tradeoff:** shared-resource costs (a shared load balancer, a shared NAT Gateway)
+   don't naturally attribute to one tag — these need an explicit allocation methodology (even
+   split, usage-proportional) agreed on up front, or the chargeback numbers will be disputed.
+
+5. **Deep custom cost analysis beyond the console UI's native groupings.** A FinOps team wants to
+   blend AWS spend with internal project metadata in a single BI dashboard, something Cost
+   Explorer's UI doesn't support. **Why this fits:** the Cost and Usage Report delivered to S3,
+   queried via Athena, joined with an internal project table, supports arbitrary custom analysis
+   the built-in console can't. **Tradeoff:** this is a real data engineering effort (pipeline,
+   schema management, Athena query cost) — it only pays off at a scale where the console's native
+   views are genuinely insufficient, not for a small account where Cost Explorer already answers
+   the question.
+
+6. **Infra-as-code rollout cost comparison across environments.** A platform team wants to confirm
+   a new, cost-optimized CloudFormation template actually reduces spend after rolling it out to
+   staging before promoting to production. **Why this fits:** Cost Explorer filtered by the
+   relevant tag/usage-type, compared before/after the rollout date, gives actual dollar evidence —
+   not a theoretical pricing-calculator estimate. **Tradeoff:** billing data lags real-time by up
+   to roughly 24 hours, so this comparison can't validate a change's cost impact the same day it
+   ships; a team needing same-day confidence should instrument their own resource-count-based
+   proxy metric instead.
+
+7. **ML/GPU workload commitment sizing (Savings Plans decision).** An ML platform team runs
+   bursty, variable GPU training jobs and wants to know whether a 1-year Savings Plan commitment
+   would actually pay off given their specific usage pattern. **Why this fits:** Cost Explorer's
+   Savings Plans recommendation is based on actual trailing historical usage, not a guess.
+   **Tradeoff:** the recommendation is only as representative as the lookback window chosen (7,
+   30, or 60 days) — a team whose usage pattern just had an atypical quiet or busy stretch gets a
+   skewed recommendation until a longer, more representative window is used.
+
+8. **Catching a cost-driving misconfiguration before month-end (compliance drift's cost cousin).**
+   An Auto Scaling policy was misconfigured to never scale back in, quietly running far more
+   instances than needed for weeks. **Why this fits:** Cost Anomaly Detection's ML-based alerting
+   catches this kind of gradual, sustained deviation from normal spend even though no single static
+   threshold was crossed on any single day. **Tradeoff:** anomaly detection needs some history to
+   learn what "normal" looks like for this account — a brand-new account or workload with no
+   established baseline yet won't benefit from anomaly detection until enough history accumulates.
+
+9. **Multi-account governance: linked-account spend visibility for a central FinOps team.** A
+   platform team managing an AWS Organization's billing needs to see every member account's spend
+   from one place, not by logging into each account. **Why this fits:** the management account's
+   Cost Explorer/Budgets view spans every linked account by default. **Tradeoff:** an individual
+   member account's own users typically can't see sibling accounts' spend (by design, for
+   least-privilege reasons) — a member-account user asking "why can't I see the whole
+   organization's cost" isn't facing a bug, just restricted visibility that requires either
+   elevated management-account access or a report generated and shared by the team that has it.
+
+10. **Enforcing an automated hard stop when a cost ceiling is breached.** A sandbox/experimentation
+    account must never exceed a strict monthly cap, with enforcement, not just a notification that
+    might be missed. **Why this fits:** a Budget Action attaching a restrictive IAM policy (or
+    stopping specific resource types) the moment a hard threshold is crossed turns the budget from
+    a warning into an actual spend ceiling. **Tradeoff:** an automated restrictive action can also
+    disrupt a legitimate, time-sensitive workload mid-task if the cap is crossed unexpectedly —
+    Budget Actions need careful scoping (which roles/resources are restricted) to avoid the
+    enforcement itself causing an outage.
+
+11. **Post-incident cost reconciliation (incident post-mortem's financial counterpart).** After an
+    incident involving unplanned auto-scaling (a traffic spike or a retry storm), the team wants
+    to quantify the actual dollar cost of the incident itself, not just the operational impact.
+    **Why this fits:** filtering Cost Explorer to the affected service and the specific incident
+    window gives a precise, defensible dollar figure for the post-mortem report. **Tradeoff:**
+    billing data's ~24-hour lag means this reconciliation can't happen the same day as the
+    incident — it's a follow-up analysis, not a live-incident tool.
+
+12. **Validating a performance optimization actually reduced cost, not just changed the shape of
+    spend.** A developer increases a Lambda function's memory allocation to reduce duration,
+    theoretically lowering cost, but isn't certain the net effect is actually cheaper.
+    **Why this fits:** Cost Explorer filtered to the Lambda service and usage type, compared
+    before/after the change, gives the actual billed answer rather than relying on the Lambda
+    pricing calculator's theoretical estimate. **Tradeoff:** Lambda's cost/duration relationship
+    isn't always linear — a memory increase can sometimes raise cost despite faster execution, or
+    vice versa, so this validation step is necessary precisely because the theoretical direction
+    isn't always obvious in advance.
 
 ## When NOT to Use It / Alternatives
 

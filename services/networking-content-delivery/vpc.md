@@ -322,6 +322,14 @@ flowchart LR
     S3F --> Athena
 ```
 
+Reading this: Flow Logs capture at the **ENI** itself (or at the subnet/VPC level, which really
+just means "every ENI inside it"), and that capture point can stream to **CloudWatch Logs**,
+**S3**, or both simultaneously depending on what you configure. CloudWatch Logs is the natural
+choice for near-real-time alerting (CloudWatch metric filters/alarms on REJECT patterns); S3 is
+the natural choice for long-term, cost-efficient retention, and once logs land in S3 you can run
+ad hoc historical queries against months of traffic data using **Amazon Athena** without standing
+up any dedicated log-analysis infrastructure.
+
 ## IPv6 in a VPC — what's genuinely different
 
 IPv6 changes two VPC assumptions IPv4 users take for granted. First, **every IPv6 address is
@@ -424,17 +432,85 @@ to clash with an existing one.
 
 ## Use Cases — When to Use It
 
-- **Any workload on EC2, RDS, ElastiCache, EKS/ECS (non-Fargate-only), Lambda-in-VPC** — these
-  all require a VPC; there's no way to opt out of networking entirely.
-- **Multi-tier applications** — web tier in public subnets, app/database tier in private subnets,
-  the classic 3-tier architecture pattern tested throughout SAA-C03.
-  isolated environments.
-- **Regulatory/compliance isolation** — HIPAA, PCI-DSS workloads that must prove network
-  segmentation and no direct internet exposure for data-handling tiers.
-- **Hybrid cloud** — extending an on-prem data center's address space into AWS via VPN or
-  Direct Connect, with careful non-overlapping CIDR planning.
-- **Multi-account landing zones** — each AWS account (dev, prod, shared-services) gets its own
-  VPC(s), stitched together with Transit Gateway for a scalable enterprise network.
+- **Multi-tier web application.** A customer-facing e-commerce site needs its web, app, and
+  database tiers isolated from each other so a compromised web server can't reach the database
+  directly. A VPC's subnet/route-table model enforces this natively (public subnet for the web
+  tier, private subnets for app/data) with security-group chaining between tiers. Tradeoff vs. a
+  single flat network: much stronger blast-radius containment, at the cost of real upfront design
+  work (CIDR planning, per-tier subnets, SG rules) that a flat network skips entirely.
+- **Hybrid cloud connectivity.** An enterprise migrating workloads gradually from an on-prem data
+  center needs AWS resources to behave like a natural extension of their existing network. A VPC
+  with a deliberately chosen, non-overlapping CIDR plus VPN/Direct Connect lets on-prem and
+  AWS-side resources address each other by private IP directly. Tradeoff vs. treating AWS as a
+  fully separate, internet-facing environment: private connectivity requires careful CIDR
+  reservation across the whole hybrid estate up front — getting it wrong later means a painful
+  re-IP, whereas a public-API-only integration avoids that planning cost but loses low-latency
+  private reachability.
+- **Multi-Region disaster recovery.** A company needs a pilot-light or warm standby ready to take
+  over if its primary Region fails entirely. A second VPC in the DR Region, CIDR-planned not to
+  collide with the primary, lets you fail over via Route 53 or connect both VPCs via peering/
+  Transit Gateway for data replication. Tradeoff vs. a single-Region design: doubles ongoing
+  infrastructure commitment (even a minimal standby costs something every month) in exchange for
+  surviving a full Regional outage, which a single-Region VPC simply cannot do.
+- **Global content delivery with regional origins.** A media company serves CloudFront globally
+  but needs origin infrastructure (ALB + EC2/ECS) replicated per Region so origin fetches stay
+  fast and resilient. Each Region gets its own VPC hosting that Region's origin stack, with
+  CloudFront origin groups handling failover between them. Tradeoff vs. one centralized origin
+  VPC: more infrastructure to manage and pay for per Region, but a single-origin design means any
+  one Region's outage takes down the whole CDN's content source.
+- **Microservices / container platform networking.** A team running dozens of services on EKS
+  needs per-pod IP addressing at high density without exhausting the VPC's address space. VPC
+  secondary CIDR blocks (commonly from the `100.64.0.0/16` CGNAT range) solve the IP-per-pod
+  exhaustion the Amazon VPC CNI creates, and dedicated subnets isolate ingress, mesh control
+  plane, and data-store tiers from each other. Tradeoff vs. overlay networking (e.g., a CNI like
+  Calico that doesn't consume routable VPC IPs per pod): directly-routable pod IPs are simpler to
+  reason about and apply security groups/NACLs to, but burn through VPC address space far faster,
+  forcing deliberate secondary-CIDR planning sooner.
+- **Regulatory/compliance network isolation.** A healthcare or fintech company must prove to
+  auditors (HIPAA, PCI-DSS) that systems handling PHI or card data have zero direct internet
+  path. An isolated subnet — no IGW route, no NAT Gateway route, only VPC endpoints for the exact
+  AWS services needed — gives an architecturally enforced isolation boundary, not just a written
+  policy. Tradeoff vs. a subnet with general outbound internet access via NAT Gateway: any new
+  external dependency later requires a deliberate network change (a new VPC endpoint, if one
+  exists for that service) instead of just working, which slows iteration but is exactly the
+  point for this class of workload.
+- **M&A / account consolidation.** Two companies merge and need their AWS environments connected
+  or migrated into each other, often discovering both independently used the same default
+  `10.0.0.0/16` CIDR for their primary VPC. A disciplined, gap-reserved CIDR allocation plan
+  (the kind VPC design is meant to encourage from day one) avoids this entirely when done in
+  advance; when it wasn't, the fix is re-IP'ing one side or using NAT-based workarounds for
+  specific resource-level connectivity. Tradeoff vs. keeping both companies' networks fully
+  separate behind only public API integration: private connectivity is faster and cheaper per
+  request, but overlapping CIDRs block it outright until resolved, while a public-API-only
+  integration sidesteps the CIDR problem at the cost of higher latency and public exposure.
+- **Centralized shared-services VPC via Resource Access Manager (RAM).** A platform team wants to
+  own IP address planning and routing centrally while still letting application teams self-serve
+  EC2/RDS launches without waiting on network tickets. Subnet sharing via RAM lets participant
+  accounts launch directly into shared subnets they don't own. Tradeoff vs. each team owning its
+  own VPC: centralizes control and eliminates inter-team IP conflicts, but creates a single-team
+  dependency for any network-level change and a shared blast radius if the owning account's
+  config is ever wrong for everyone downstream.
+- **Air-gapped / fully isolated data-processing workload.** A government or financial workload
+  processes data so sensitive that it must never have *any* path to the public internet, even
+  outbound. A subnet with no IGW and no NAT Gateway route at all, reachable only via VPC
+  endpoints for specific AWS APIs, enforces this at the network layer rather than relying on
+  application-level promises. Tradeoff vs. a subnet with NAT-Gateway-based outbound access:
+  reaching any new external dependency later requires standing up a new endpoint or redesigning
+  the isolation boundary — much higher friction, deliberately.
+- **Lambda-in-VPC for private resource access.** A serverless application's Lambda functions need
+  to query an RDS instance or ElastiCache cluster that has no public endpoint. Placing the
+  function's ENI inside the VPC's private subnets gives it a route to those private resources
+  exactly like any other VPC-resident client. Tradeoff vs. a Lambda left outside the VPC: a
+  VPC-attached function depends on a NAT Gateway (or VPC endpoints) for any external call it still
+  needs to make, while a non-VPC Lambda gets instant internet access by default but cannot reach
+  the private database at all.
+- **Multi-account landing zone (enterprise AWS Organizations setup).** A large enterprise
+  standardizing dozens of AWS accounts — one per team/environment, for billing and blast-radius
+  isolation — needs consistent network connectivity across all of them. Each account gets its own
+  VPC(s) built from a standard CIDR allocation plan, stitched together via Transit Gateway for
+  centralized routing and segmentation. Tradeoff vs. one shared VPC for everyone: more initial
+  design and per-account overhead, but one misconfigured team's resources can't expose or break
+  every other team's network — the blast-radius isolation is the entire point of the design.
 
 ## When NOT to Use It / Alternatives
 
@@ -511,6 +587,14 @@ flowchart LR
     RT & SG & NACL --> Dest
     Dest --> Result
 ```
+
+Reading this: you give Reachability Analyzer a source ENI and a destination ENI, and it
+statically evaluates every **route table**, **security group**, and **NACL** rule that traffic
+between them would actually hit — the same three layers a human would otherwise have to check by
+hand, in order. The output is a definitive REACHABLE or NOT REACHABLE verdict, and critically, a
+NOT REACHABLE result names the **exact** blocking component (which security group, which NACL
+rule) rather than just saying "something blocks it," turning a multi-step manual investigation
+into a single API call.
 
 ## Limits & Quotas
 

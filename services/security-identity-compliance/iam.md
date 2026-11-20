@@ -456,17 +456,88 @@ framed as "the solution that scales without constantly editing IAM policies."
 
 ## Use Cases — When to Use It
 
-- Granting an EC2 instance permission to read from a specific S3 bucket (instance profile role)
-  — never hardcode access keys on the instance.
-- Letting a Lambda function write to DynamoDB and publish to SNS (Lambda execution role).
-- Giving a third-party SaaS vendor temporary, auditable access to a specific resource in your
-  account via a cross-account role instead of sharing credentials.
-- Enforcing that developers can only launch `t3.micro`/`t3.small` EC2 instances in
-  `us-east-1`, never delete production S3 buckets, and never touch billing — via a scoped
-  customer-managed policy.
-- Requiring MFA before anyone can delete a KMS key or modify IAM policies themselves.
-- Standing up a multi-tenant SaaS backend where ABAC-based policies isolate each tenant's data
-  using one shared set of roles instead of one role per tenant.
+- **EC2 instance reading from S3 (instance profile).** Situation: an application on EC2 needs
+  to read config/data files from one bucket. Why this fits: an instance profile role gives
+  auto-rotating temporary credentials scoped to exactly that bucket, with zero key management
+  in application code. Tradeoff: every instance using the profile shares the same permissions —
+  differentiated access per instance needs separate roles/launch templates, not one shared
+  profile for everything.
+- **Lambda execution role for an event-driven pipeline.** Situation: a function needs to write
+  to DynamoDB and publish to SNS. Why this fits: the execution role is scoped to exactly those
+  actions/ARNs and Lambda assumes it automatically on every invocation — no credential ever
+  touches the code or environment variables. Tradeoff: as the function's responsibilities grow,
+  the role must be edited and redeployed; a tight scope requires ongoing maintenance as the
+  function's needs evolve.
+- **Third-party vendor access without sharing credentials.** Situation: a monitoring SaaS vendor
+  needs read access to your CloudWatch metrics. Why this fits: a cross-account role with an
+  `ExternalId` condition lets the vendor assume in for exactly the scoped action, revocable
+  instantly by deleting the trust statement — no password or key ever exists for them to leak.
+  Tradeoff: you're now trusting the vendor's own account security; a compromised vendor account
+  paired with a too-permissive trust policy (missing the `ExternalId` check) lets an attacker
+  ride that relationship into your account.
+- **Scoped developer sandbox policy.** Situation: developers should self-serve EC2 test
+  instances without touching billing or deleting production resources. Why this fits: a
+  customer-managed policy with instance-type/Region conditions plus an explicit Deny on
+  production-tagged resources gives real autonomy inside a hard boundary. Tradeoff: every
+  legitimately-needed new instance type or Region requires a policy edit — overly narrow scoping
+  can become a recurring support-ticket bottleneck if not revisited.
+- **MFA required for destructive/sensitive actions.** Situation: prevent accidental or malicious
+  deletion of KMS keys or IAM policy changes even by authorized admins. Why this fits: a
+  `Condition` requiring `aws:MultiFactorAuthPresent: true` on just those actions adds a second
+  factor precisely where blast radius is highest, without slowing everyday work. Tradeoff: any
+  automation that legitimately needs those same actions now needs a human-in-the-loop step —
+  MFA conditions don't compose cleanly with fully unattended automation.
+- **Multi-tenant SaaS data isolation via ABAC.** Situation: a SaaS product serving hundreds of
+  tenants from shared infrastructure must guarantee tenant A's role can never read tenant B's
+  data. Why this fits: one shared role with a tag-matching condition scales to thousands of
+  tenants without a role-per-tenant explosion; onboarding a new tenant is just a tag. Tradeoff:
+  correctness now depends entirely on tagging discipline — a resource or principal missing the
+  right tag silently falls outside the intended isolation, a harder failure mode to catch in
+  testing than a hardcoded per-tenant ARN list.
+- **M&A cross-account access during due diligence and integration.** Situation: Company A
+  acquires Company B and needs to audit Company B's AWS accounts before a full migration,
+  without yet merging Organizations. Why this fits: a temporary, time-boxed cross-account
+  `ReadOnlyAuditRole` deployed into Company B's accounts lets Company A's team assume in and
+  gather what's needed, then be deleted once integration finishes — no lingering identities.
+  Tradeoff: until the accounts are actually consolidated under one Organization, there's no
+  SCP-level guardrail enforcing this access stays read-only — it relies purely on the role's
+  permissions policy being correctly scoped for the whole integration window.
+- **CI/CD pipeline credentials via execution roles, never static keys.** Situation: a deployment
+  pipeline needs to push images, update Lambda functions, and create IAM roles for services it
+  deploys. Why this fits: the pipeline runs under its own role (assumed via OIDC federation from
+  the CI provider, no stored AWS keys in config), and a permission boundary caps what any role
+  it creates can ever do. Tradeoff: OIDC federation trust-policy setup is more upfront work than
+  pasting an access key into a CI secret — under deadline pressure, teams are tempted to skip it,
+  which is exactly the shortcut that leads to leaked long-term keys in build logs.
+- **Compliance audit evidence for SOC 2 / PCI-DSS / HIPAA.** Situation: an auditor needs proof
+  that access to cardholder or health data is least-privilege and reviewed regularly. Why this
+  fits: Access Analyzer's unused-access findings, the Credential Report, and Access Advisor's
+  per-action usage history produce continuous, timestamped evidence instead of a manual
+  spreadsheet. Tradeoff: these tools report on what IAM *allows* and *has used*, not
+  business-logic authorization ("can this employee see this specific patient's record") —
+  satisfying the IAM-level requirement doesn't automatically satisfy app-layer authorization.
+- **Zero-trust architecture — never trust network location alone.** Situation: stop assuming
+  "inside the VPC" or "on the VPN" implies trustworthy; verify every request's identity and
+  context instead. Why this fits: IAM's default-deny posture plus condition keys
+  (`aws:SourceIp`, `aws:MultiFactorAuthPresent`, tag conditions) require identity- and
+  context-based verification on every call regardless of network path — the core zero-trust
+  principle applied at the API layer. Tradeoff: zero-trust policies are more verbose and harder
+  to reason about than a simple network-perimeter model; every resource needs explicit
+  conditions, and a missing one silently falls back to a less-restrictive default.
+- **Incident response — revoking a compromised identity's access.** Situation: GuardDuty flags
+  an IAM user's key being used from an unexpected geography, suggesting theft. Why this fits:
+  IAM lets you immediately deactivate the key, attach an explicit Deny-everything inline policy,
+  or delete the user — no coordination with other systems needed since the key is the entire
+  credential. Tradeoff: revoking access doesn't undo what the attacker already did; IAM is the
+  containment tool, not the forensics tool — CloudTrail history must still be walked to learn
+  what the credential was used for before revocation.
+- **Data science team with execution-role-scoped SageMaker access.** Situation: a data science
+  team needs to train models against production S3 datasets without reaching raw customer PII
+  or production infrastructure outside SageMaker. Why this fits: an execution role scoped to
+  specific S3 prefixes plus a permission boundary blocking IAM/EC2/VPC changes lets the team
+  self-serve training within a hard ceiling. Tradeoff: IAM scoping controls *which bucket/prefix*
+  the role can reach, not *what's inside* the data — a gap in an upstream redaction pipeline
+  isn't caught by IAM alone, which is why this is normally paired with Macie (`macie.md`).
 
 ## When NOT to Use It / Alternatives
 

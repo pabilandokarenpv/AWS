@@ -146,18 +146,75 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- Detecting a compromised EC2 instance that's been recruited into a botnet or is mining
-  cryptocurrency.
-- Catching a leaked/stolen IAM access key being used from an unexpected geography or at an
-  unusual time.
-- Flagging reconnaissance activity (port scanning, unusual API call patterns consistent with an
-  attacker mapping out an account) before a bigger breach happens.
-- Monitoring an EKS cluster for anomalous control-plane activity consistent with a container
-  escape or privilege escalation attempt.
-- Org-wide security monitoring from a single delegated security account across dozens of member
-  accounts.
-- Monitoring Bedrock/SageMaker invocation patterns for suspicious prompt injection or model
-  abuse attempts via AI Protection.
+- **Detecting a compromised EC2 instance recruited into a botnet.** Situation: an instance is
+  quietly mining cryptocurrency or participating in a DDoS botnet. Why this fits: GuardDuty's
+  DNS/VPC Flow Log analysis catches the behavioral signature (known mining-pool domains, C&C
+  traffic) automatically, with zero agent installation. Tradeoff: detection is based on traffic
+  patterns and threat intelligence, not a guarantee of catching every novel technique — a
+  sufficiently new, unlisted C&C domain won't trigger a finding until threat-intel feeds catch up.
+- **Catching a leaked/stolen IAM access key in use.** Situation: a developer accidentally
+  committed an access key to a public GitHub repo. Why this fits: GuardDuty's anomaly models flag
+  the key being used from an unexpected geography/time pattern relative to the user's normal
+  behavior, often faster than a human would notice. Tradeoff: anomaly detection needs an
+  established behavioral baseline — a brand-new IAM user with no usage history yet gives
+  GuardDuty nothing to compare against, so detection is weaker in the first days of a credential's
+  life.
+- **Reconnaissance detection before a bigger breach.** Situation: an attacker is port-scanning or
+  probing an account's API surface before attempting a real exploit. Why this fits: GuardDuty
+  flags this reconnaissance activity early, giving a response window before the attacker
+  escalates. Tradeoff: reconnaissance findings are often lower-severity/noisy (e.g., an internal
+  vulnerability scanner looks identical to a real attacker's scan) — tuning via suppression rules
+  is necessary or real signal gets lost in noise.
+- **EKS cluster anomaly monitoring for container escape attempts.** Situation: a Kubernetes
+  cluster needs monitoring for privilege escalation or unexpected `kubectl` activity. Why this
+  fits: EKS Protection analyzes audit logs for exactly this pattern without requiring a
+  sidecar agent in every pod. Tradeoff: audit-log-based detection sees control-plane activity,
+  not deep in-container process behavior — Runtime Monitoring's lightweight agent is needed for
+  that deeper visibility, a separate, additional protection plan.
+- **Org-wide monitoring from one delegated security account.** Situation: a security team needs
+  visibility across dozens of member accounts without touching the Organizations management
+  account. Why this fits: a delegated administrator account sees and manages findings
+  org-wide, keeping SCP-editing power concentrated separately in the management account.
+  Tradeoff: GuardDuty delegation is per-service — being the GuardDuty delegated admin doesn't
+  automatically make the same account the Macie or Security Hub admin, a common oversight when
+  wiring up multi-service security tooling.
+- **AI/GenAI workload monitoring for suspicious Bedrock/SageMaker invocation patterns.**
+  Situation: a team running a Bedrock-backed application wants to detect abuse (prompt injection
+  attempts, unusual invocation volume) against the model. Why this fits: AI Protection analyzes
+  CloudTrail data events specifically from Bedrock/SageMaker for this pattern, purpose-built for
+  GenAI threat models rather than generic API monitoring. Tradeoff: this is one of GuardDuty's
+  newest protection plans — its detection maturity and finding-type coverage is still younger
+  than the foundational CloudTrail/VPC Flow Log analysis that's been refined for years.
+- **Incident response — automated containment of a compromised instance.** Situation: a
+  `Backdoor:EC2/C&CActivity` finding fires and the team wants immediate, unattended containment
+  rather than waiting for a human to wake up and respond. Why this fits: routing the finding
+  through EventBridge to a remediation Lambda can isolate the instance's security groups,
+  snapshot its EBS volume for forensics, and revoke its role's active sessions within seconds.
+  Tradeoff: fully automated containment carries false-positive risk — isolating a
+  legitimately-behaving production instance because of a misclassified finding causes a
+  self-inflicted outage, so automated actions are usually scoped to only the highest-confidence
+  finding types.
+- **Compliance evidence of continuous threat monitoring (SOC 2/PCI-DSS).** Situation: an auditor
+  wants proof that the environment is actively monitored for threats, not just occasionally
+  reviewed. Why this fits: GuardDuty's always-on analysis and finding history provide exactly
+  the continuous, timestamped monitoring evidence these frameworks expect. Tradeoff: GuardDuty
+  being enabled doesn't itself prove findings are actually acted on — auditors increasingly also
+  want evidence of the remediation/response process around findings, not just that detection
+  exists.
+- **M&A — rapid security baseline for a newly acquired account.** Situation: a newly acquired
+  company's AWS account has unknown security posture and needs immediate visibility before deep
+  integration. Why this fits: enabling GuardDuty takes minutes and immediately starts surfacing
+  any active compromise or suspicious historical activity already present in the account, a fast
+  way to establish "is this account already compromised" before trusting it. Tradeoff: GuardDuty
+  only sees behavior from the moment it's enabled forward (plus a limited lookback on some
+  sources) — it can't retroactively analyze months of pre-acquisition activity that occurred
+  before CloudTrail/VPC Flow Logs existed or were retained.
+- **RDS brute-force login detection.** Situation: a database is targeted by repeated failed login
+  attempts, possibly from a Tor exit node. Why this fits: RDS Protection flags this pattern
+  specifically, distinct from generic network-level monitoring, directly on the database login
+  surface. Tradeoff: RDS Protection is a separately-enabled, separately-billed protection plan —
+  teams that enabled only the foundational tier get no coverage here until it's explicitly turned
+  on.
 
 ## When NOT to Use It / Alternatives
 

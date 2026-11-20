@@ -94,6 +94,43 @@ Trusted Advisor does not auto-fix findings (unlike AWS Config, which can); it on
 recommends; (5) the next scheduled scan picks up whether the fix actually resolved the
 finding, flipping the status back to green.
 
+### How It Works — Step by Step: Tracing a Finding From Scan to Resolution
+
+The sequence diagram above shows the general evaluate/remediate loop; here's one concrete check
+traced through a realistic timeline, including the part Trusted Advisor explicitly does *not* do.
+
+1. **Tuesday, scheduled scan.** Trusted Advisor's check engine runs its "Low Utilization Amazon
+   EC2 Instances" check against the account, as it does on its regular internal cadence — this
+   isn't triggered by a specific event, unlike a Config rule's on-change evaluation.
+2. **The check's own logic.** For each running EC2 instance, the check pulls CPU utilization data
+   over its own internal lookback window (commonly around 14 days) from CloudWatch and computes an
+   average. An instance named `batch-worker-07` averages 4% CPU over that window.
+3. **The finding is recorded.** `batch-worker-07` is flagged Red under Cost Optimization, with an
+   estimated monthly cost and a recommended action ("consider stopping or downsizing this
+   instance"). This finding, and every other check's results, populate the dashboard.
+4. **Wednesday — the weekly digest (Business/Enterprise support only).** A scheduled email
+   summarizing all current Red/Yellow findings lands in the account's registered inbox — on
+   Basic/Developer support, this step simply never happens, and the only way to see findings is
+   logging into the console directly.
+5. **Thursday — a human reviews the finding, and investigates rather than acting blindly.**
+   Recognizing `batch-worker-07`'s name suggests a scheduled job, an engineer cross-references
+   actual CloudWatch CPU data over a longer 30-day window (as shown in the worked example's Logs
+   Insights cross-reference) and discovers a once-a-month spike consistent with a real, legitimate
+   batch job — not genuinely idle.
+6. **Friday — the decision.** Rather than terminating the instance, the team decides to downsize
+   it to a smaller instance type that still comfortably handles the monthly spike, and documents
+   the decision (there's no native "accept this exception" flag in Trusted Advisor itself, so this
+   gets tracked in an external ticket).
+7. **The following Tuesday — re-scan.** The check re-runs on its normal cadence against the
+   now-downsized instance. If the new instance type's utilization during its monthly spike is still
+   comfortably low relative to its new, smaller capacity, the finding may still show Yellow/Red
+   depending on the check's specific thresholds — Trusted Advisor doesn't know about the team's
+   documented exception decision, it only re-evaluates the raw utilization numbers.
+8. **What Trusted Advisor never does.** At no point in this entire trace does Trusted Advisor
+   itself downsize, stop, or modify the instance — every action step (steps 5-7) was performed by
+   a human. This is the core mechanical distinction from AWS Config: Trusted Advisor identifies
+   and recommends; it has no remediation action of its own to trigger, automatic or manual.
+
 ## Worked Example: Reading and Prioritizing a Realistic Findings Set
 
 A Business-support account's Trusted Advisor dashboard after a quarter of organic growth might
@@ -240,17 +277,103 @@ gaps (no root MFA, a default VPC approaching its limit) before any real workload
 
 ## Use Cases — When to Use It
 
-- A quick, zero-setup health check across cost, security, performance, and resilience without
-  building any custom tooling.
-- Catching low-hanging-fruit cost waste: unattached EBS volumes, idle load balancers,
-  underutilized EC2 instances — classic Trusted Advisor findings.
-- Pre-emptively catching service quota exhaustion before it blocks a deployment (e.g., hitting
-  the default VPC-per-region limit).
-- A lightweight second opinion on security basics (root MFA enabled? any security group wide open
-  to the internet on a sensitive port?) alongside more specialized tools like GuardDuty/Security
-  Hub.
-- Organizations on Enterprise Support wanting one dashboard of best-practice adherence across
-  every member account.
+1. **Zero-setup health check spanning five categories at once.** A newly onboarded account has no
+   existing tooling and the team wants an immediate signal across cost, security, performance, and
+   resilience. **Why this fits:** no custom rules to write, no Lambda to deploy — Trusted Advisor
+   runs automatically the moment the account exists. **Tradeoff:** the breadth comes at the cost of
+   depth and customization; it catches generic AWS best-practice violations, not anything specific
+   to this company's own internal standards.
+
+2. **Low-hanging-fruit cost cleanup: idle resources nobody remembered.** An account accumulated
+   unattached EBS volumes, idle load balancers, and underutilized instances over years of organic
+   growth. **Why this fits:** the Cost Optimization category surfaces exactly this class of waste
+   with zero engineering effort beyond reading the report — often the highest-ROI-per-minute review
+   available. **Tradeoff:** this category requires Business/Enterprise support to see at all;
+   Basic/Developer support shows none of it, which is easy to forget when recommending Trusted
+   Advisor as a free-tier solution.
+
+3. **Pre-emptive service quota exhaustion detection.** A deployment is about to fail because the
+   account is approaching its default VPC-per-region limit, and nobody noticed until the deploy
+   actually failed. **Why this fits:** Service Limits checks are available on every support plan
+   including Basic, so this specific category of finding is genuinely free and universal.
+   **Tradeoff:** quota checks only flag *approaching* a limit based on current usage trend — a
+   sudden, unplanned spike in resource creation can still blow past a limit between scheduled
+   check runs, so it's not a substitute for actively monitoring a known upcoming large deployment.
+
+4. **A lightweight second opinion on security basics alongside specialized threat tools.** A team
+   already runs GuardDuty for active threat detection but wants a quick check that root MFA is
+   enabled and no security group is wide open. **Why this fits:** Trusted Advisor's Security
+   category checks these specific, well-known misconfigurations cheaply and continuously, as a
+   complement to (not a replacement for) GuardDuty's active threat detection. **Tradeoff:** Trusted
+   Advisor checks *configuration*, not *behavior* — it won't catch an attacker using legitimately
+   configured, MFA-protected credentials maliciously; that's squarely GuardDuty's job, not Trusted
+   Advisor's.
+
+5. **Organization-wide findings rollup for a central platform team (multi-account governance).** A
+   platform team responsible for 50 accounts in an Organization needs one view of best-practice
+   adherence instead of 50 separate console logins. **Why this fits:** Enterprise Support's
+   Organization view consolidates every member account's findings centrally.
+   **Tradeoff:** this requires Enterprise Support specifically (not just Business), which is the
+   highest, most expensive support tier — a real cost commitment to unlock this particular view.
+
+6. **Automated ticketing from the Trusted Advisor API.** A team wants new Red findings to
+   automatically create Jira tickets rather than relying on someone remembering to check the
+   console weekly. **Why this fits:** the Trusted Advisor API (Business support and above) exposes
+   findings programmatically, letting a scheduled job turn passive findings into an actively
+   tracked backlog. **Tradeoff:** building and maintaining this integration is extra engineering
+   work a team now owns — if the integration breaks silently, the team may believe findings are
+   being tracked when they actually aren't.
+
+7. **Incident post-mortem context: was this a known, previously-flagged risk?** After an incident
+   caused by an exposed security group, the team wants to know whether Trusted Advisor had already
+   flagged it before the incident happened. **Why this fits:** checking the finding's history
+   (via the API or console) answers "was this a known, unaddressed risk" versus "something nobody
+   could have predicted" — directly informing both the retrospective and future prioritization.
+   **Tradeoff:** Trusted Advisor itself doesn't retain a long historical timeline the way Config
+   does — confirming "was this flagged a month ago" may require cross-referencing with whatever
+   external tracking (tickets, exported reports) the team already had in place.
+
+8. **Catching an exposed access key before it's exploited.** A developer accidentally commits an
+   AWS access key to a public GitHub repository. **Why this fits:** the "Exposed Access Keys" check
+   is one of the few Security checks available even on Basic support, reflecting how seriously AWS
+   treats this specific risk — it's surfaced for free regardless of support tier. **Tradeoff:**
+   this check depends on AWS's own external scanning catching the exposure; it isn't instantaneous,
+   and the window between the commit and the check catching it is a real, non-zero exposure period
+   the team should also close by rotating the key immediately upon any suspicion, not waiting for
+   the finding.
+
+9. **New-account onboarding checklist baseline.** A freshly created AWS account needs a quick,
+   standardized first-day review before any real workload goes live. **Why this fits:** even on
+   Basic support, the free security and service-limit checks catch the most embarrassing possible
+   gaps (no root MFA) before anything of value is deployed. **Tradeoff:** Basic support's limited
+   check set means this baseline check is shallow — a team that wants the full review should budget
+   for Business support from day one rather than assuming the free checks are comprehensive.
+
+10. **Quantifying cost findings before prioritizing engineering time.** A team sees 14 "Low
+    Utilization" findings and needs to know whether fixing them is worth a sprint's effort.
+    **Why this fits:** cross-referencing the flagged instances against Cost Explorer's actual
+    dollar spend for those specific instance types turns a vague "14 findings" into a concrete
+    "$1,850/month at stake," justifying (or not) the engineering time to act. **Tradeoff:** this
+    cross-referencing is a manual step — Trusted Advisor's own dashboard doesn't natively show the
+    dollar value of its own findings, only the configuration fact.
+
+11. **Security Hub aggregation of Trusted Advisor's security findings alongside GuardDuty/Config.**
+    A SOC team is tired of checking five separate dashboards for security findings. **Why this
+    fits:** Trusted Advisor's Security category findings can feed into Security Hub as one
+    normalized input alongside GuardDuty and Config, unifying triage into one console.
+    **Tradeoff:** Security Hub normalization necessarily loses some of each source tool's
+    category-specific nuance (e.g., Trusted Advisor's non-security categories don't feed Security
+    Hub at all) — a team relying solely on Security Hub may miss Cost Optimization or Service Limit
+    findings that never appear there.
+
+12. **Supporting a Well-Architected Tool review with fast, automated evidence.** A team filling out
+    the Well-Architected Tool's Cost Optimization pillar questions wants concrete evidence rather
+    than an optimistic guess about whether idle resources exist. **Why this fits:** pulling current
+    Trusted Advisor Cost Optimization findings gives a factual basis for honestly answering "do you
+    identify and eliminate idle resources" in the slower, more structured Well-Architected review.
+    **Tradeoff:** Trusted Advisor's findings are a point-in-time snapshot at review time — the
+    Well-Architected Tool's own Milestone mechanism, not Trusted Advisor, is what tracks whether
+    this specific risk trend is actually improving release over release.
 
 ## When NOT to Use It / Alternatives
 

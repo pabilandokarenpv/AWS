@@ -201,20 +201,56 @@ actually correct.
 
 ## Use Cases — When to Use It
 
-- You want to deploy a known open-source model (e.g., a Llama variant, a Stable Diffusion model)
-  quickly, without manually configuring the serving container yourself.
-- You want to fine-tune a foundation model on your own data but want more infrastructure
-  control (instance type choice, VPC placement, custom training parameters) than Bedrock's
-  managed fine-tuning currently exposes.
-- You want a working, end-to-end reference architecture for a common ML problem to learn from
-  or adapt, rather than designing one from zero.
-- You need the deployed model to live inside your own SageMaker/VPC environment specifically
-  (rather than calling a fully external managed API), for architectural or compliance reasons.
-- You want to benchmark several candidate open models/instance configurations against your own
-  evaluation data before committing to one for production.
-- Your organization has already built custom models and wants an internal, governed catalog
-  (private JumpStart) so other teams can discover and reuse them, mirroring the problem Feature
-  Store solves for engineered features but applied to whole models instead.
+- **Deploying an open chatbot model inside a regulated VPC (financial services/healthcare):**
+  Problem — a company wants a RAG-style chatbot but a compliance rule forbids any inference
+  traffic touching a public internet-facing API. Why it fits — JumpStart deploys an open model to
+  a SageMaker endpoint entirely inside a private VPC subnet, with inference traffic that never
+  leaves the network boundary. Tradeoff vs. Bedrock — Bedrock is far less setup work and fully
+  managed, but its endpoint is still a managed public API surface (even if reachable only via
+  PrivateLink); JumpStart earns its extra setup cost specifically when an organization needs the
+  model to physically live inside their own SageMaker/VPC environment.
+- **Fine-tuning a document-classification model (insurance/legal triage):** Problem — classify
+  incoming claims/contracts into a company-specific taxonomy no general model was trained on. Why
+  it fits — fine-tune an open text-classification model on labeled examples via
+  `JumpStartEstimator`, with full control over instance type and training hyperparameters.
+  Tradeoff vs. Bedrock's managed fine-tuning — Bedrock trades some infrastructure control for
+  zero-ops simplicity; JumpStart is the better fit when you need a specific instance type, VPC
+  placement, or training configuration Bedrock's managed fine-tuning doesn't expose.
+- **Medical imaging model customization (healthcare):** Problem — adapt an open vision model to a
+  hospital's specific imaging protocol using the hospital's own labeled scans, inside a locked-down
+  network. Why it fits — JumpStart's fine-tuning launches a standard, VPC-isolated Training Job
+  against your own S3 dataset. Tradeoff vs. training entirely from scratch (see
+  `sagemaker-training-and-tuning.md`) — starting from an open pre-trained vision model needs far
+  less labeled data and compute to reach good accuracy than training an architecture from zero.
+- **Demand forecasting solution template (retail/CPG):** Problem — a team wants a working
+  reference architecture for demand forecasting to adapt, rather than designing the pipeline from
+  a blank page. Why it fits — JumpStart solution templates bundle a working notebook,
+  infrastructure-as-code, and sample data for exactly this kind of applied problem. Tradeoff vs.
+  Amazon Forecast — Forecast is the faster path if you just need forecasting output; a solution
+  template is the better choice when you specifically want to learn/adapt the full underlying
+  architecture rather than consume a managed black-box API.
+- **Recommendation engine prototyping (e-commerce):** Problem — benchmark several candidate open
+  embedding/ranking models against your own evaluation data before committing to one for
+  production. Why it fits — JumpStart's `Evaluate` action and `ModelBuilder` deployment-config
+  benchmarking let you compare real measured latency/cost across models and instance types.
+  Tradeoff vs. Amazon Personalize — Personalize's pre-built recipes need far less benchmarking
+  work; reach for JumpStart's benchmarking workflow when your use case needs a custom embedding
+  model Personalize's recipes don't cover.
+- **Internal model catalog for governed reuse (any large enterprise with multiple ML teams):**
+  Problem — different teams keep separately fine-tuning near-identical models for closely related
+  problems, duplicating effort. Why it fits — JumpStart's private catalog lets one team publish a
+  fine-tuned model for others to discover and reuse or further fine-tune. Tradeoff vs. each team
+  maintaining its own model independently — independent maintenance is simpler per-team initially
+  but guarantees duplicated fine-tuning cost and inconsistent quality across teams solving the
+  same underlying problem.
+- **Fraud-signal embedding generation (financial services):** Problem — a fraud-detection
+  pipeline needs text or transaction-sequence embeddings as input features for a downstream
+  tabular classifier, and the team wants an off-the-shelf embedding model rather than training one
+  from scratch. Why it fits — deploy a JumpStart embedding model as-is behind a real-time endpoint
+  feeding the downstream SageMaker training pipeline. Tradeoff vs. Bedrock's Titan Embeddings — 
+  Bedrock needs zero endpoint management and bills per token; JumpStart is preferable only when
+  the embedding step must run inside the same VPC/SageMaker infrastructure as the rest of the
+  fraud pipeline for latency or compliance reasons.
 
 ## When NOT to Use It / Alternatives
 

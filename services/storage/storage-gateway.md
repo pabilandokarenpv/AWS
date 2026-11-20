@@ -156,18 +156,60 @@ copy lives in FSx, not as flat S3 objects.
 
 ## Use Cases — When to Use It
 
-- **Backing up on-premises data to the cloud** without replacing existing backup software — Tape
-  Gateway slots in as a drop-in virtual tape library.
-- **Hybrid file shares** where some users/apps are on-prem and others are cloud-native, all needing
-  access to the same files — File Gateway.
-- **Disaster recovery of on-premises systems** — replicate critical volumes/files to AWS so you can
-  restore or spin up a DR environment in the cloud if the on-prem site fails.
-- **Reducing on-premises storage footprint** — Cached Volume Gateway lets you keep most data in the
-  cloud while retaining low-latency access to the active working set.
-- **Gradual, low-risk cloud migration** — move the storage layer first, keep the application
-  on-prem, re-architect later at your own pace.
-- **Low-latency access to a cloud-native Windows file share** — FSx File Gateway, for branch
-  offices needing fast local access to a centrally managed FSx for Windows File Server file system.
+- **Backup modernization for a company replacing physical tape with zero software changes.** The
+  existing Veeam/NetBackup environment already works and retraining staff isn't in the plan. Tape
+  Gateway presents a Virtual Tape Library the backup software already knows how to talk to.
+  *Alternative cost:* migrating to a cloud-native backup product instead means retraining operations
+  staff and re-validating every existing backup job and restore runbook.
+- **Hybrid file shares for a manufacturing company's shop-floor systems.** Legacy shop-floor machines
+  write sensor logs to a local file share and can't be reprogrammed to call an API. File Gateway
+  presents that familiar NFS share while every file lands as a real S3 object usable by Athena/Glue.
+  *Alternative cost:* rewriting the shop-floor software to call S3 directly isn't feasible without
+  touching embedded/legacy systems the company doesn't control.
+- **Disaster recovery staging for an on-premises database server at a regional bank.** The production
+  database must stay fully on-premises (regulatory data-residency requirement) but needs an off-site
+  recovery copy. Stored Volume Gateway keeps the full dataset local as primary while asynchronously
+  backing up to AWS as EBS snapshots. *Alternative cost:* replicating to a second physical data center
+  means the bank owns and maintains an entire second facility — the capital cost cloud DR is meant to
+  avoid.
+- **Reducing on-premises storage footprint for a branch office with limited server-room space.** A
+  branch has 20 TB of active data but only ~2 TB is genuinely "hot" day to day. Cached Volume Gateway
+  keeps the full dataset in AWS with just the working set cached locally. *Alternative cost:* buying
+  and racking a 20 TB SAN on-site instead means paying for capacity that mostly sits unused.
+- **Gradual, low-risk cloud migration for an insurance company's claims-processing app.** The app
+  can't be rewritten this quarter, but the company wants cloud durability benefits now. File/Volume
+  Gateway moves the storage layer to AWS while the application keeps running unmodified on-prem.
+  *Alternative cost:* a "big bang" full migration instead carries far higher project risk for a system
+  the company depends on daily.
+- **Low-latency Windows file share access for distributed retail store locations.** Store staff need
+  fast local access to a centrally-managed Windows file share with full NTFS ACLs, not flat S3 objects.
+  FSx File Gateway caches an FSx for Windows File Server file system locally at each store.
+  *Alternative cost:* plain S3 File Gateway can't preserve native Windows ACL/DFS semantics the stores'
+  existing tooling expects.
+- **Compliance archival replacing a physical offsite tape vault for a healthcare records company.**
+  Regulatory retention requires years of records kept accessible but rarely read, and the existing
+  courier/offsite-vault contract is expensive with real loss-in-transit risk. Tape Gateway writing into
+  S3 Glacier Deep Archive eliminates the courier and tape media cost entirely. *Alternative cost:*
+  continuing the physical vault contract means an ongoing five-figure annual cost for a slower, less
+  auditable process.
+- **Database/VM backup for a branch office running VMware without rearchitecting.** On-prem VMs need
+  their block volumes backed up without changing the hypervisor setup. Volume Gateway presents iSCSI
+  targets any VMware/backup tool already understands. *Alternative cost:* moving the VMs themselves to
+  AWS (e.g., EC2) instead is a much larger undertaking than simply protecting their existing storage.
+- **Centralized branch-office file analytics for a retail chain.** Head office wants to run Athena
+  queries across every branch's point-of-sale logs and inventory photos without touching each branch's
+  application. Each branch's File Gateway writes into the same central S3 bucket (different prefix per
+  branch), making every branch's files instantly queryable centrally. *Alternative cost:* building a
+  custom per-branch export/upload job instead means maintaining N separate integration points.
+- **DR staging for an on-prem financial ledger system tolerating async, not synchronous, replication.**
+  The ledger system can tolerate a small RPO (minutes) but must stay primarily on-premises for latency
+  reasons. Stored Volume Gateway's scheduled async snapshot-to-EBS model fits this tolerance exactly.
+  *Alternative cost:* a synchronous cross-site replication product instead would be over-engineering
+  (and over-cost) for a workload that explicitly tolerates asynchronous backup.
+- **Media archive ingestion for a broadcaster still running on-prem edit suites.** Finished segments
+  are exported from local editing systems onto a File Gateway share, landing as S3 objects a cloud-based
+  distribution pipeline picks up automatically. *Alternative cost:* manually uploading finished exports
+  via a separate tool instead adds a human step and a second place for files to get lost or duplicated.
 
 ## When NOT to Use It / Alternatives
 

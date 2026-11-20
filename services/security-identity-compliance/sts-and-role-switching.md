@@ -210,20 +210,71 @@ flowchart LR
 
 ## Use Cases — When to Use It
 
-- An EC2 instance needs to read from S3: the instance profile role is assumed automatically by
-  the EC2 service, and the application on the instance never touches a static key.
-- A central security-tooling account needs **read-only** access into 50 member accounts to run
-  compliance scans: one role per member account, each trusting the security account, assumed on
-  demand.
-- A third-party monitoring SaaS needs access to your CloudWatch metrics: you give them a role
-  ARN + ExternalId instead of an access key, and you can revoke access instantly by deleting
-  the role or its trust policy statement.
-- A developer needs to test an action that requires MFA (e.g., deleting a production resource):
-  `GetSessionToken` with an MFA device serial number and token code produces credentials that
-  satisfy the `aws:MultiFactorAuthPresent` condition.
-- A mobile app lets users upload photos directly to their own S3 folder:
-  `AssumeRoleWithWebIdentity` via a Cognito Identity Pool scopes the session to only that user's
-  prefix.
+- **EC2 instance reading from S3 with zero static keys.** Situation: an application on EC2
+  needs S3 access. Why this fits: the instance profile role is assumed automatically by the EC2
+  service and refreshed transparently — the application code never touches a credential at all.
+  Tradeoff: the instance metadata service (IMDS) itself becomes a sensitive target — an SSRF
+  vulnerability in the app can let an attacker steal the current session's temporary credentials,
+  which is why IMDSv2 (token-required) is the recommended default over IMDSv1.
+- **Central security-tooling account auditing 50 member accounts.** Situation: a security team
+  needs read-only access into every account in an Organization to run compliance scans. Why this
+  fits: one identical `ReadOnlyAuditRole` per member account, each trusting only the security
+  account, lets the team assume in on demand with no standing credentials anywhere. Tradeoff:
+  deploying and keeping that role consistent across every account requires StackSets/Control
+  Tower-style automation — hand-rolling it account by account invites drift and gaps.
+- **Third-party SaaS vendor access via ExternalId, not a shared key.** Situation: a monitoring
+  vendor needs to read your CloudWatch metrics. Why this fits: a role ARN + unique `ExternalId`
+  replaces handing over an access key, and access is revocable instantly by deleting the trust
+  statement. Tradeoff: if the vendor loses track of which `ExternalId` belongs to which customer
+  internally, legitimate calls can fail — the burden of correctly threading the ID through every
+  API call falls on the vendor's own application design.
+- **MFA-gated sensitive action without switching identity.** Situation: a developer needs to
+  delete a production resource that requires MFA. Why this fits: `GetSessionToken` with an MFA
+  device code produces credentials that satisfy `aws:MultiFactorAuthPresent` while the caller
+  stays the *same* identity — simpler than assuming a role just to prove MFA. Tradeoff: this
+  only re-authenticates the same user; it does nothing to narrow *which* actions that user can
+  take, so it's not a substitute for least-privilege scoping on the underlying identity policy.
+- **Mobile app uploading directly to a per-user S3 prefix.** Situation: users need to upload
+  photos straight from a mobile client without routing every byte through a backend server. Why
+  this fits: `AssumeRoleWithWebIdentity` via a Cognito Identity Pool scopes the session to only
+  that user's folder using `${cognito-identity.amazonaws.com:sub}`. Tradeoff: the client now
+  holds real (if scoped and short-lived) AWS credentials — a compromised device can still act
+  within that user's own prefix for the life of the session, so session duration should be kept
+  tight for this pattern.
+- **Zero-trust service-to-service auth inside a Kubernetes cluster (IRSA).** Situation: pods in
+  an EKS cluster need distinct AWS permissions per workload, not one shared node-level role. Why
+  this fits: `AssumeRoleWithWebIdentity` via the cluster's OIDC provider (IRSA) lets each
+  Kubernetes service account map to its own IAM role, with no broad node role shared across every
+  pod. Tradeoff: OIDC provider setup and per-service-account role mapping is more initial
+  configuration than attaching one instance-profile role to the whole node group.
+- **Incident response — immediately cutting off an active session.** Situation: a role's
+  credentials are suspected compromised mid-incident. Why this fits: because STS credentials are
+  short-lived by design, the practical "kill switch" is revoking the role's active sessions
+  (via a revocation policy or deleting/tightening the role) rather than hunting for one static
+  key to rotate. Tradeoff: any legitimate workload still relying on that role is cut off at the
+  same moment — a broad revocation during an incident can cause collateral outage for unrelated,
+  non-compromised uses of the same role if roles aren't scoped narrowly per workload already.
+- **Confused-deputy defense for a multi-tenant vendor integration.** Situation: a vendor serves
+  many customers from one shared application and must never let Customer B's session
+  accidentally touch Customer A's AWS resources. Why this fits: a unique `ExternalId` per
+  customer in the trust policy is the one piece of context that ties a specific `AssumeRole` call
+  to a specific trust relationship, closing the confused-deputy gap entirely at the IAM layer.
+  Tradeoff: this defense is only as strong as the vendor's own internal bookkeeping — if their
+  system passes the wrong `ExternalId` for the wrong customer, STS has no way to know that's a
+  mistake rather than a legitimate call.
+- **Federated enterprise SSO into a workload account (SAML).** Situation: employees need console
+  access to an AWS account without AWS ever issuing them a personal IAM user. Why this fits:
+  `AssumeRoleWithSAML` exchanges a SAML assertion from the corporate IdP directly for temporary
+  credentials, so offboarding in the corporate directory is the only access-removal step needed.
+  Tradeoff: this flow is entirely dependent on the IdP's own availability and correctness — an
+  IdP outage blocks legitimate access with no fallback unless a break-glass IAM user is
+  separately maintained.
+- **Chained role assumption across a three-account data pipeline.** Situation: a Lambda function
+  in Account A must read from S3 in Account B and write to Redshift in Account C. Why this fits:
+  each hop is a normal `AssumeRole` call, letting each account own and audit exactly what the
+  "next hop" role is permitted to do in its own territory. Tradeoff: role chaining hard-caps the
+  final session at 1 hour regardless of each role's own `MaxSessionDuration`, which can be a
+  surprising constraint for long-running batch jobs that need to span multiple hops.
 
 ## When NOT to Use It / Alternatives
 

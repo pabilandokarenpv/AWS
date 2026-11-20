@@ -189,20 +189,67 @@ multiple Regions for no architectural reason.
 
 ## Use Cases — When to Use It (i.e., when this model should shape your design)
 
-- **Choosing where to place replicas/read-replicas** — placing a database read replica in the
-  same AZ as its most frequent reader avoids the inter-AZ charge, at the cost of losing AZ-level
-  fault tolerance — a direct resiliency-vs-cost tradeoff this pricing model forces you to make.
-  consciously.
-- **Choosing CloudFront for internet-facing content** — because CloudFront egress is cheaper than
-  direct-from-origin egress at volume, high-traffic public content almost always benefits.
-- **Choosing VPC Endpoints over NAT Gateway for AWS-service traffic** — removes both the NAT
-  Gateway's data processing fee and, for S3/DynamoDB, removes any data transfer charge entirely.
-- **Architecting multi-Region DR with awareness of replication cost** — cross-Region replication
-  (S3 CRR, RDS cross-Region read replicas, DynamoDB Global Tables) has a real, ongoing inter-
-  Region data transfer cost that should be modeled into the DR strategy's running cost, not just
-  its RTO/RPO.
-- **Keeping chatty microservices in the same AZ** where latency AND cost both favor doing so, as
-  long as you accept the single-AZ exposure for that pair of services.
+- **Multi-tier application placement decisions.** A web app's app tier and its most frequently
+  queried database replica can be placed in the same AZ to avoid the inter-AZ per-GB charge on
+  that specific, high-volume path. Tradeoff vs. spreading every component across AZs purely for
+  resilience: saves real, recurring cost on chatty same-pair traffic, but concentrates that one
+  pair's availability risk into a single AZ — a conscious tradeoff, not a default.
+- **Hybrid cloud transfer path selection.** A company moving large, steady volumes between
+  on-prem and AWS compares standard internet egress, Direct Connect, and VPN purely on the data
+  transfer cost model. Direct Connect's lower per-GB rate becomes cheaper once volume justifies
+  its fixed port-hour cost. Tradeoff vs. internet egress: Direct Connect wins decisively at scale,
+  but carries a fixed cost that internet transfer doesn't, making it the wrong choice for
+  low/sporadic volume.
+- **Multi-Region DR replication cost modeling.** A company designing cross-Region DR (S3 CRR,
+  RDS cross-Region read replicas) must model the ongoing inter-Region data transfer cost as part
+  of the DR strategy's running cost, not just its RTO/RPO target. Tradeoff vs. ignoring this cost
+  until the first invoice: proactive modeling avoids an unpleasant billing surprise, but some
+  ongoing inter-Region cost is inherent to any meaningful cross-Region DR posture and can't be
+  optimized away entirely without reducing replication scope/frequency.
+- **Global content delivery cost optimization.** A company serving large files (video, software
+  downloads) worldwide directly from S3's public endpoint sees internet egress dominate its bill.
+  Routing through CloudFront instead lowers the effective per-GB rate and reduces origin hits via
+  caching. Tradeoff vs. direct S3 serving: CloudFront's egress discount plus caching compounds
+  into real savings at volume, but requires monitoring cache hit ratio — a low hit ratio means
+  most requests still reach the (more expensive) origin path anyway.
+- **Microservices mesh chatty-traffic awareness.** A mesh of many small services generates
+  constant small cross-AZ calls between services that, individually, look cheap but aggregate
+  into a meaningful line item at scale. Recognizing this pattern (rather than discovering it on
+  the bill) lets a team decide deliberately whether to co-locate specific chatty pairs per AZ.
+  Tradeoff vs. not thinking about placement at all: deliberate placement can meaningfully reduce
+  cost, but over-optimizing placement for cost alone risks concentrating failure domains the
+  mesh's resilience design was trying to spread out.
+- **Compliance-driven data residency with cost awareness.** A regulated workload must keep certain
+  data processing within one Region for compliance, which incidentally also avoids inter-Region
+  transfer charges entirely for that data. Tradeoff vs. a globally distributed processing design:
+  compliance constraints here happen to align with cost optimization, but this alignment is
+  coincidental — a compliance requirement to replicate across Regions for resilience would
+  reintroduce the inter-Region cost regardless of this cost-model awareness.
+- **M&A account consolidation data migration cost planning.** A one-time migration of a very
+  large dataset (hundreds of TB) between two merging companies' AWS accounts/Regions must choose
+  between network-based transfer (VPN, Direct Connect, standard internet) and physical transport
+  (AWS Snowball) purely on cost and time grounds. Tradeoff vs. assuming network transfer is always
+  right: at sufficiently large one-time volumes, physical transport can be both cheaper and faster
+  than any network path, a crossover point worth explicitly calculating rather than assuming away.
+- **VPC Endpoint adoption for cost reduction.** A workload running in private subnets calls
+  S3/DynamoDB heavily and currently pays NAT Gateway's per-GB processing fee for that traffic.
+  Adding a free Gateway VPC Endpoint removes both the NAT Gateway fee and any data transfer charge
+  for that specific traffic. Tradeoff vs. leaving the NAT Gateway path in place: this is close to
+  a pure win for S3/DynamoDB traffic, but doesn't address NAT Gateway cost for any other kind of
+  traffic still routing through it.
+- **Same-Region multi-service pipeline design.** A data pipeline (S3 → Lambda → DynamoDB →
+  analytics) built entirely within one Region captures the "same-Region, different-service, often
+  free" cost category for every internal hop. Tradeoff vs. spreading the same pipeline's stages
+  across multiple Regions for no architectural reason: same-Region design is strictly cheaper for
+  this access pattern, and multi-Region placement should be reserved for genuine resilience or
+  data-residency requirements, not applied by default.
+- **Cost-aware read replica placement strategy.** An application with a geographically
+  distributed read workload must decide whether to place read replicas per-Region (incurring
+  inter-Region replication cost but serving reads locally) or centrally (avoiding replication
+  cost but incurring cross-Region read latency and transfer cost per query). Tradeoff is explicit
+  either way: per-Region replicas front-load the cost into predictable, budgeted replication
+  traffic; central placement defers it into per-query cross-Region transfer that scales with read
+  volume and can be harder to forecast.
 
 ## When NOT to Use It / Alternatives
 

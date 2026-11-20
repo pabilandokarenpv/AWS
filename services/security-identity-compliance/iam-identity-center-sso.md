@@ -137,16 +137,73 @@ merely failing a future login attempt they never make.
 
 ## Use Cases — When to Use It
 
-- A company with 10+ AWS accounts under one AWS Organization needs engineers, SREs, and
-  auditors to each get the right access level in the right accounts without IAM user sprawl.
-- Offboarding an employee should remove their AWS access everywhere in one action (disable them
-  in the corporate IdP → SCIM syncs the removal into Identity Center → access revoked
-  org-wide instantly).
-- Enforcing MFA and session duration policy centrally instead of per-account.
-- Giving auditors/finance read-only access across every account without creating a single IAM
-  user anywhere.
-- Consolidating SSO for both AWS accounts and non-AWS SaaS business apps into one employee
-  portal.
+- **Workforce access across 10+ accounts without IAM user sprawl.** Situation: engineers, SREs,
+  and auditors each need different access levels across dozens of accounts. Why this fits: one
+  login plus Permission Set assignments replaces hand-creating and rotating IAM users in every
+  account. Tradeoff: Identity Center itself becomes a single point of failure for all workforce
+  access — an outage or misconfiguration there affects every account at once, which is why a
+  break-glass IAM user per critical account is still kept as a fallback.
+- **Instant, org-wide offboarding.** Situation: an employee leaves the company and must lose AWS
+  access everywhere immediately. Why this fits: disabling them in the corporate IdP, synced via
+  SCIM, revokes Identity Center access org-wide in one action instead of chasing down IAM users
+  in a dozen accounts individually. Tradeoff: this only works if SCIM provisioning is actually
+  wired up and healthy — a silently broken SCIM sync means the offboarding step does nothing,
+  a common and dangerous blind spot.
+- **Centralizing MFA and session policy instead of per-account sprawl.** Situation: a company
+  wants consistent MFA enforcement and session duration rules everywhere. Why this fits: one
+  central policy applies uniformly instead of each account team configuring (or forgetting to
+  configure) its own IAM password/MFA settings. Tradeoff: centralizing removes per-account
+  flexibility — a team with a genuine need for a different session duration must get a separate
+  Permission Set rather than tweaking one account's policy locally.
+- **Auditor/finance read-only access across the whole Organization.** Situation: auditors need
+  to review resources across every account for a compliance cycle. Why this fits: a single
+  read-only Permission Set assigned to every account gives exactly the access needed without
+  creating a single IAM user anywhere, and it disappears cleanly when the audit ends. Tradeoff:
+  broad read-only access across every account is itself a juicy target if the auditor's own
+  Identity Center login is compromised — time-boxing the assignment is worth doing even though
+  Identity Center doesn't enforce an expiry on it natively.
+- **Consolidating AWS and non-AWS SaaS SSO into one portal.** Situation: employees juggle
+  separate logins for AWS, Salesforce, Slack, and other business apps. Why this fits: Identity
+  Center's application assignments extend the same single-login portal to supported SaaS apps,
+  reducing both password fatigue and the number of places offboarding has to happen. Tradeoff:
+  this adds Identity Center as a dependency for non-AWS business continuity too — an Identity
+  Center issue now has a blast radius beyond just AWS account access.
+- **M&A integration — onboarding an acquired company's workforce.** Situation: an acquired
+  company's employees need AWS access to the parent company's accounts during integration,
+  without immediately merging identity directories. Why this fits: a dedicated external IdP
+  connection (or a temporary built-in directory) scoped to a narrow set of Permission Sets lets
+  the acquired team get working access fast, migrated later to the unified corporate IdP.
+  Tradeoff: running a second, temporary identity source alongside the main one is extra
+  operational surface to track and eventually decommission cleanly — a common real-world gap is
+  that temporary source outliving its intended lifespan.
+- **Delegated administration for a dedicated security account.** Situation: the platform team
+  wants to manage Permission Sets and assignments without granting that team the ability to
+  edit SCPs or touch the Organizations management account. Why this fits: delegated
+  administration hands off Identity Center's day-to-day operation to a non-management account
+  cleanly. Tradeoff: delegation is itself a privileged capability — the delegated account becomes
+  a high-value target, since compromising it grants control over who can access every other
+  account in the Organization.
+- **Zero standing IAM users for CI/CD human approvals.** Situation: a deployment pipeline
+  requires a human to manually approve a production push via the AWS console. Why this fits: the
+  approver authenticates through Identity Center with a Permission Set scoped only to the
+  specific approval action, rather than needing a standing IAM user with console access.
+  Tradeoff: this still requires the approver to be available and authenticated through the
+  corporate IdP at the moment of approval — it doesn't help an emergency approval scenario during
+  an IdP outage, which is exactly where break-glass access matters.
+- **Compliance evidence of centralized, revocable access (SOC 2 / ISO 27001).** Situation: an
+  auditor wants proof that workforce access to production AWS accounts is centrally managed and
+  instantly revocable. Why this fits: Identity Center's assignment history and SCIM-driven
+  deprovisioning produce exactly the centralized, timestamped evidence these frameworks expect,
+  versus a patchwork of per-account IAM user lists. Tradeoff: the evidence is only as strong as
+  SCIM's actual reliability — an auditor who digs into SCIM sync logs and finds gaps will treat
+  "we use Identity Center" as an incomplete answer, not a satisfying one.
+- **Multi-account break-glass design alongside day-to-day SSO.** Situation: the corporate IdP
+  has an outage and nobody can authenticate through Identity Center at all. Why this fits:
+  pre-provisioned, MFA-protected, heavily-alarmed IAM break-glass users in critical accounts are
+  the designed escape hatch for exactly this scenario. Tradeoff: a break-glass user is a
+  permanent, standing credential by definition — it must be tightly controlled, rarely used, and
+  closely monitored, or it becomes the exact kind of long-lived credential Identity Center was
+  adopted to eliminate in the first place.
 
 ## When NOT to Use It / Alternatives
 

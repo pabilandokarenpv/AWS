@@ -132,6 +132,76 @@ flowchart TB
   might repeat descriptive attributes that a normalized OLTP schema would split further, because
   analytical queries favor fewer joins over storage efficiency.
 
+### Querying Redshift via boto3 (Redshift Data API) and SQL
+
+The Data API lets Lambda, Step Functions, or any HTTPS-capable caller run SQL against Redshift
+without managing a persistent JDBC/ODBC connection — useful for scheduled reporting jobs that
+don't want to hold a database connection open between runs.
+
+```python
+import boto3
+import time
+
+redshift_data = boto3.client("redshift-data", region_name="us-east-1")
+
+CLUSTER_ID = "study-redshift"
+DATABASE = "analytics"
+DB_USER = "dbadmin"
+
+# A realistic star-schema aggregation query: total revenue by region and month,
+# joining a large fact table against two small dimension tables.
+sql = """
+    SELECT
+        s.region,
+        d.year,
+        d.month,
+        SUM(f.revenue) AS total_revenue,
+        COUNT(DISTINCT f.sale_id) AS num_sales
+    FROM fact_sales f
+    JOIN dim_store s  ON f.store_id = s.store_id
+    JOIN dim_date d   ON f.date_id  = d.date_id
+    WHERE d.year = 2026
+    GROUP BY s.region, d.year, d.month
+    ORDER BY d.month, total_revenue DESC;
+"""
+
+response = redshift_data.execute_statement(
+    ClusterIdentifier=CLUSTER_ID, Database=DATABASE, DbUser=DB_USER, Sql=sql,
+)
+statement_id = response["Id"]
+
+# The Data API is asynchronous — poll until the query finishes rather than blocking a connection.
+while True:
+    status = redshift_data.describe_statement(Id=statement_id)
+    if status["Status"] in ("FINISHED", "FAILED", "ABORTED"):
+        break
+    time.sleep(1)
+
+if status["Status"] == "FINISHED":
+    result = redshift_data.get_statement_result(Id=statement_id)
+    for record in result["Records"]:
+        region, year, month, revenue, num_sales = (f.get(k) for f, k in zip(
+            record, ("stringValue", "longValue", "longValue", "doubleValue", "longValue")))
+        print(region, year, month, revenue, num_sales)
+else:
+    raise RuntimeError(f"Query failed: {status.get('Error')}")
+```
+
+```sql
+-- Bulk-loading from S3: the standard ingestion path, run via psql/Data API, not row-by-row inserts.
+-- IAM_ROLE grants Redshift permission to read the S3 bucket without embedding credentials in SQL.
+COPY fact_sales
+FROM 's3://my-data-lake/curated/sales/2026/'
+IAM_ROLE 'arn:aws:iam::123456789012:role/RedshiftS3ReadRole'
+FORMAT AS PARQUET;  -- columnar source format minimizes both load time and scanned bytes later
+
+-- Confirm distribution/sort key choices are actually being used as expected for a known-slow query.
+SELECT query, segment, step, rows, bytes
+FROM svl_query_summary
+WHERE query = pg_last_query_id()
+ORDER BY segment, step;
+```
+
 ## Key Features / Components
 
 - **Columnar storage** — stores and compresses data column-by-column, dramatically reducing I/O
@@ -228,14 +298,65 @@ time-sensitive executive dashboard refresh running concurrently.
 
 ## Use Cases — When to Use It
 
-- Business intelligence dashboards aggregating sales, usage, or operational metrics across years
-  of historical data.
-- Centralizing data from many operational systems (multiple RDS databases, app logs, S3 data
-  lake) into one place analysts and data scientists can query with standard SQL.
-- Running the "big slow query" (quarterly revenue report, year-over-year cohort analysis) that
-  would otherwise tie up a production OLTP database.
-- Feeding ML feature engineering and data preparation pipelines that need SQL-based aggregation
-  across large historical datasets (relevant to MLA-C02's Domain 1).
+- **Executive BI dashboard aggregating years of sales/usage data.** A "revenue by region by
+  month for 3 years" query scans millions/billions of rows; columnar storage and MPP make this
+  fast. Tradeoff vs querying RDS/Aurora directly: running this against a live OLTP database would
+  compete with production traffic for I/O/CPU and still be slow, since row-store layout isn't
+  suited to wide-scan, few-column aggregation — Redshift's column layout is built for exactly this.
+- **Centralizing data from many operational systems into one queryable warehouse.** Multiple
+  regional RDS databases, application logs, and third-party feeds consolidated so analysts query
+  one place with standard SQL. Tradeoff vs querying each source system separately: a warehouse
+  avoids cross-database federated query complexity/latency, at the cost of an ETL/replication
+  pipeline keeping it in sync — a real operational component versus "just query the sources."
+- **Near-real-time analytics on live transactional data via zero-ETL.** An analytics team needs
+  recent Aurora/RDS data without a custom pipeline. Tradeoff vs batch ETL (Glue/EMR nightly jobs):
+  zero-ETL gives fresher data with less pipeline maintenance, but less control over
+  transformation/cleaning logic than a custom ETL step — fine for "recent data, standard shape."
+- **Lake House architecture querying both hot Redshift data and cold S3 data together.** Recent
+  data lives natively in Redshift; historical data stays in S3 and is queried via Spectrum without
+  duplicating storage. Tradeoff vs loading everything into Redshift: Spectrum avoids paying to
+  store (and keep loading) cold data twice, at the cost of per-TB-scanned billing and typically
+  slower query performance than native Redshift storage for the same data.
+- **Intermittent, bursty analytical workload (e.g., quarterly close reporting).** A finance team
+  runs heavy queries for two weeks a quarter, nothing in between. Redshift Serverless avoids
+  paying for a provisioned cluster sitting idle 11 weeks out of 13. Tradeoff vs a provisioned
+  cluster: Serverless is more expensive per-query at sustained, predictable high usage — the
+  right choice specifically tracks with how intermittent the actual usage pattern is.
+- **Feeding ML feature engineering pipelines with SQL-based aggregation over historical data.**
+  Features computed via GROUP BY/window functions across large historical datasets (relevant to
+  MLA-C02's Domain 1). Tradeoff vs computing features in a general-purpose compute framework
+  (Spark/EMR): Redshift is faster to get to a result when the feature logic is expressible in SQL;
+  EMR/Spark is the better fit for custom, non-SQL transformation logic.
+- **Multi-tenant BI serving several business units off one shared cluster.** Workload Management
+  (WLM) queues prioritize a time-sensitive executive dashboard over a long-running ad-hoc
+  analyst query sharing the same cluster. Tradeoff vs giving each business unit its own cluster:
+  one shared cluster is cheaper and simpler to operate, but requires deliberate WLM queue
+  configuration to prevent one team's workload from starving another's — not "just works" by default.
+- **Occasional, low-volume querying of data that lives entirely in S3.** A team wants to run SQL
+  against a data lake only a few times a month, without maintaining any warehouse infrastructure.
+  Tradeoff vs standing up a Redshift cluster/Serverless: Athena is simpler and cheaper for genuinely
+  infrequent, ad-hoc querying — Redshift (even Serverless) starts making sense once query volume,
+  complexity, or concurrent-user count grows enough to justify a dedicated engine.
+- **Historical log/clickstream analysis for product analytics.** Billions of event rows, queried
+  by time range and dimension (user segment, feature flag, geography) for product usage insights.
+  Tradeoff vs DynamoDB: DynamoDB could technically store the events, but Scans for aggregation are
+  slow/expensive at this volume — Redshift's columnar layout and sort keys on timestamp are
+  purpose-built for exactly this kind of wide, date-filtered aggregation.
+- **Regulatory/compliance reporting requiring auditable historical aggregates.** A compliance team
+  needs reproducible, point-in-time aggregate reports across years of transactional history.
+  Tradeoff vs ad-hoc queries against the OLTP source: Redshift's snapshot-based historical data and
+  stable schema give reproducible reporting that doesn't compete with (or get affected by) ongoing
+  changes to the live transactional system.
+- **Data science exploratory analysis across a consolidated, denormalized dataset.** A star schema
+  (fact + dimension tables) lets data scientists run exploratory aggregations without hand-joining
+  many normalized source tables. Tradeoff vs querying the normalized OLTP schema directly: the
+  denormalized warehouse schema trades storage efficiency for fewer, simpler joins — the right
+  trade for analytical query patterns, the wrong trade for a live transactional system.
+- **Cross-account data sharing of curated datasets to business-unit-specific clusters.** A central
+  data team shares live, query-able curated datasets without copying them to each business unit's
+  own cluster. Tradeoff vs exporting/copying data to each consumer: data sharing avoids the
+  staleness and storage duplication of copies, but needs deliberate grant scoping just like any
+  other cross-account access pattern — not a "share everything" default.
 
 ## When NOT to Use It / Alternatives
 

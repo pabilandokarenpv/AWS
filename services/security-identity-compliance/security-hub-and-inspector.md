@@ -152,17 +152,74 @@ sequenceDiagram
 
 ## Use Cases — When to Use It
 
-- Giving a security team one dashboard instead of five, across potentially hundreds of AWS
-  accounts in an Organization.
-- Continuously tracking compliance posture against PCI-DSS or CIS benchmarks ahead of an audit,
-  with concrete, prioritized remediation items instead of a point-in-time manual checklist.
-- Automatically rescanning container images in ECR so a previously "clean" image gets flagged
-  the day a new critical CVE affecting one of its packages is published — without rebuilding or
-  manually re-scanning anything.
-- Prioritizing patch work by combining vulnerability severity with actual internet exposure,
-  so the team fixes the critical-and-internet-facing issue before the critical-but-isolated one.
-- Catching a vulnerable dependency in a source code repository before it's even built into a
-  container image, via Inspector Code Security.
+- **One dashboard instead of five across a large Organization.** Situation: a security team
+  manages GuardDuty, Macie, Inspector, and IAM Access Analyzer across hundreds of accounts. Why
+  this fits: Security Hub's normalized ASFF/OCSF findings and cross-account aggregation replace
+  five separate consoles with one filterable view. Tradeoff: Security Hub generates nothing on
+  its own — enabling it with no source services actually turned on produces an empty dashboard,
+  a common first-time setup trap.
+- **Continuous compliance posture ahead of an audit.** Situation: a team wants ongoing PCI-DSS or
+  CIS benchmark compliance tracking rather than a point-in-time manual checklist before each
+  audit cycle. Why this fits: Security Hub's standards scoring produces a continuously-updated
+  percentage compliance score with specific, prioritized remediation items. Tradeoff: enabling
+  multiple standards simultaneously means each runs its own independent check suite — a resource
+  passing CIS can still fail PCI-DSS on the same underlying finding category, so scores aren't
+  interchangeable or additive across standards.
+- **Catching a previously-clean container image flagged by a new CVE.** Situation: a container
+  image that passed scanning six months ago needs to be re-evaluated the moment a new,
+  relevant CVE is published. Why this fits: Inspector automatically rescans existing ECR images
+  against new vulnerability intelligence with no rebuild or re-push required. Tradeoff: this
+  means an image genuinely unchanged for months can suddenly show CRITICAL findings — teams
+  unfamiliar with this behavior may assume Inspector made an error rather than recognizing new
+  CVE intelligence as the (correct) trigger.
+- **Prioritizing patch work by actual exposure, not raw CVSS alone.** Situation: a team has
+  dozens of CRITICAL vulnerability findings and limited patching bandwidth. Why this fits:
+  Inspector factors network reachability into its risk scoring, so an internet-reachable
+  critical CVE gets prioritized over an identical CVE on an isolated internal instance.
+  Tradeoff: network-reachability analysis depends on accurate VPC/security-group configuration
+  data — a misconfigured or recently-changed network path can cause Inspector's reachability
+  assessment to lag behind the actual current exposure.
+- **Gating CI/CD container promotion on vulnerability scan results.** Situation: a pipeline
+  should never promote a container image with unpatched critical vulnerabilities to production.
+  Why this fits: Inspector's scan-on-push findings can gate the promotion step automatically,
+  blocking deployment until the image is clean or an exception is explicitly approved.
+  Tradeoff: a hard gate on every CRITICAL/HIGH finding can block legitimate deployments over a
+  vulnerability with no practical exploit path in this specific context — teams typically need a
+  documented exception process, not a zero-tolerance absolute block.
+- **Correlating misconfiguration with vulnerability for true priority.** Situation: a resource
+  is both misconfigured (e.g., publicly reachable) and running vulnerable software — a far
+  higher-risk combination than either alone. Why this fits: Security Hub's exposure-finding
+  correlation combines posture-management and Inspector findings into one composite,
+  higher-ranked finding automatically. Tradeoff: this correlation capability is newer and depends
+  on both source signals (CSPM checks and Inspector) being enabled and properly delegated — a gap
+  in either source silently reduces the correlation's completeness.
+- **M&A — rapid security/vulnerability baseline for an acquired account's workloads.**
+  Situation: an acquired company's EC2 fleet and container images have unknown patch status.
+  Why this fits: enabling Inspector immediately surfaces existing vulnerabilities without
+  waiting for a manual asset inventory and patch audit, giving fast, concrete risk visibility
+  for integration planning. Tradeoff: Inspector requires SSM agent presence (for EC2) or ECR/
+  Lambda integration — an acquired company's instances not yet SSM-managed won't be covered
+  until that prerequisite is addressed first.
+- **Catching vulnerable dependencies before they're even built into an image.** Situation: a
+  team wants to catch a vulnerable library in source code before it's compiled into a container
+  and pushed. Why this fits: Inspector's Code Security extension scans source repositories
+  directly, shifting detection earlier in the pipeline than image-scan-on-push alone. Tradeoff:
+  this is one of Inspector's newer capabilities — coverage breadth across every language/package
+  ecosystem may lag behind more mature, specialized source-composition-analysis tools.
+- **Automated remediation of a common misconfiguration finding.** Situation: Security Hub
+  repeatedly flags the same type of misconfiguration (e.g., a publicly accessible S3 bucket)
+  across multiple accounts. Why this fits: routing the finding through EventBridge to a
+  remediation Lambda (or SSM Automation document) fixes it without waiting on human triage every
+  time. Tradeoff: automated remediation needs to be scoped very carefully — an overly aggressive
+  auto-remediation rule can "fix" a deliberately public resource (a legitimate public website
+  bucket) that was never actually misconfigured, causing a self-inflicted outage.
+- **Compliance evidence combining detection and vulnerability management (SOC 2/PCI-DSS).**
+  Situation: an auditor wants to see both active threat monitoring and systematic vulnerability
+  management in one coherent story. Why this fits: Security Hub's aggregated dashboard plus
+  Inspector's continuous scanning history together demonstrate both halves of a mature security
+  program without separate, disconnected evidence packages. Tradeoff: assembling this evidence
+  still requires someone to actually curate and present it coherently to the auditor — the raw
+  dashboard data isn't automatically formatted as an audit report.
 
 ## When NOT to Use It / Alternatives
 

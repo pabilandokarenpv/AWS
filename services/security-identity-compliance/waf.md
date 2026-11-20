@@ -128,18 +128,74 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- Blocking SQL injection and cross-site scripting attempts against a public web app or API
-  using AWS Managed Rule Groups, without writing custom detection logic yourself.
-- Rate-limiting a login or password-reset endpoint to stop credential-stuffing/brute-force
-  attacks.
-- Geo-blocking traffic from countries your application doesn't operate in or that account for
-  disproportionate fraud/abuse.
-- Blocking known bad bots/scrapers from hammering a content site while still allowing
-  legitimate search engine crawlers.
-- Testing a new security rule safely in **Count** mode in production before switching it to
-  **Block**, to confirm it doesn't accidentally reject legitimate traffic.
-- Using labels to build layered logic: tag suspicious-but-not-definitive traffic in one rule,
-  then make a final decision in a later rule that considers multiple signals together.
+- **Blocking SQL injection/XSS without custom detection logic.** Situation: a public API needs
+  protection against common web exploits without the team building its own pattern-matching
+  engine. Why this fits: AWS Managed Rule Groups give continuously-updated protection against the
+  OWASP Top 10 with zero custom rule authoring. Tradeoff: managed rule group updates can
+  occasionally start blocking previously-allowed legitimate traffic when AWS tunes patterns in
+  response to new threat intelligence — business-critical endpoints may need the update pinned
+  or run in parallel Count mode before trusting new versions blindly.
+- **Rate-limiting a login endpoint against credential stuffing.** Situation: attackers are
+  hammering a `/login` endpoint with stolen credential lists. Why this fits: a rate-based rule
+  scoped specifically to that path (via a `ScopeDownStatement`) blocks abusive IPs without
+  affecting normal browsing traffic elsewhere on the same site. Tradeoff: a rate limit set too
+  aggressively can lock out legitimate users sharing an IP (corporate NAT, campus network) —
+  tuning the threshold requires real traffic data, not a guess.
+- **Geo-blocking high-fraud or unsupported regions.** Situation: an application doesn't operate
+  in certain countries, or those countries account for disproportionate fraud/abuse. Why this
+  fits: a geo-match rule blocks that traffic outright with a simple country-code list, no custom
+  IP-range maintenance needed. Tradeoff: geo-blocking by IP geolocation isn't perfectly accurate
+  and can be bypassed by VPNs — it's a blunt, imperfect instrument, not a precise access control.
+- **Distinguishing good bots (search crawlers) from bad bots (scrapers).** Situation: a content
+  site wants to block scraping/competitive data harvesting while still allowing legitimate search
+  engine indexing. Why this fits: Bot Control classifies traffic sources and can block bad bots
+  while explicitly allowing known-good ones through, rather than a blunt "block everything that
+  looks automated" rule. Tradeoff: Bot Control's classification isn't infallible — a
+  sophisticated scraper mimicking browser behavior closely enough may evade classification, and
+  CAPTCHA/Challenge actions add real friction for ambiguous legitimate users too.
+- **Safe rollout of a new security rule in production.** Situation: a team wants to deploy a new
+  WAF rule without risking blocking legitimate traffic they didn't anticipate. Why this fits:
+  deploying in **Count** mode first lets the team observe match volume via CloudWatch before
+  switching to **Block**, catching false positives before they cause real user impact. Tradeoff:
+  running in Count mode means the threat the rule targets is *not yet actually blocked* during
+  the observation window — there's a real security/safety tradeoff in delaying enforcement to
+  reduce false-positive risk.
+- **Protecting a public ML inference endpoint from scraping and abuse.** Situation: a SageMaker
+  model exposed via API Gateway needs protection from both competitors harvesting model behavior
+  and malicious payloads probing the infrastructure. Why this fits: layering a Managed Rule Group
+  (payload protection), Bot Control (scraping), and a rate-based rule scoped to the inference
+  path (cost/extraction control) addresses three distinct risks at once. Tradeoff: each layer
+  adds its own WCU cost and potential for false positives — a legitimate high-volume API client
+  (a partner integration) needs an explicit allowlist carve-out or it gets rate-limited alongside
+  actual abusers.
+- **Compliance evidence of application-layer attack mitigation (PCI-DSS).** Situation: an
+  auditor wants proof that web application attacks (injection, XSS) are actively defended
+  against, not just assumed handled by the application's own code. Why this fits: WAF's
+  CloudWatch/S3/Kinesis logging gives a concrete, timestamped record of blocked/counted requests
+  as evidence of an active control. Tradeoff: logs showing blocked requests prove the control
+  exists and fires — they don't prove the application's own input handling is also correct;
+  WAF is a defense-in-depth layer, not a substitute for secure application code.
+- **Org-wide consistent WAF baseline via Firewall Manager.** Situation: an enterprise wants every
+  account's ALB/CloudFront to inherit the same baseline Web ACL rules, with teams free to add
+  more but not remove the baseline. Why this fits: Firewall Manager enforces this centrally
+  without each team's WAF configuration drifting independently. Tradeoff: a baseline that's too
+  broad/restrictive for one team's specific application creates friction — Firewall Manager
+  policies need to be genuinely "lowest common denominator safe" or they generate constant
+  exception requests.
+- **Zero-trust content inspection regardless of request origin.** Situation: a security team
+  wants every request inspected for malicious content, not just requests from "untrusted"
+  sources. Why this fits: WAF inspects every request to the protected resource uniformly —
+  there's no network-location-based bypass, aligning with the zero-trust principle of never
+  assuming origin implies safety. Tradeoff: uniform inspection of 100% of traffic has a real,
+  non-trivial per-request cost at high volume — a cost/coverage tradeoff that needs budgeting for
+  genuinely high-traffic applications.
+- **Multi-stage conditional logic using labels.** Situation: a security team wants to combine
+  multiple weak signals (suspicious user agent + unusual request pattern) into one confident
+  block decision, rather than each signal alone triggering action. Why this fits: labels let an
+  earlier rule tag matching requests (in Count mode) that a later rule can key its own decision
+  off of, building compound logic within one Web ACL. Tradeoff: label-based multi-stage logic is
+  more complex to reason about and debug than a single flat rule — troubleshooting why a request
+  was or wasn't blocked requires tracing through multiple rule evaluations, not just one.
 
 ## When NOT to Use It / Alternatives
 

@@ -233,16 +233,64 @@ A RAG knowledge base holds 500,000 document chunks, each embedded as a 1,536-dim
 
 ## Use Cases — When to Use It
 
-- **Centralized log analytics / observability** — aggregating application and infrastructure
-  logs for searching, alerting, and dashboarding (a very common pairing: CloudWatch Logs →
-  subscription filter → Kinesis Firehose → OpenSearch).
-- **Full-text and fuzzy search features in an application** — e.g., a product catalog search
-  box, document search, "did you mean" suggestions.
-- **Security analytics / SIEM-style workloads** — searching large volumes of security event
-  data for investigation and threat hunting.
-- **Clickstream and application performance monitoring** dashboards that need near-real-time
-  visibility rather than next-morning batch reports.
-- **Vector/semantic search backend** for RAG pipelines and similarity-search features.
+1. **Centralized log analytics for live ops visibility** — an SRE team needs to search and
+   dashboard application errors across dozens of services within seconds of them being logged.
+   CloudWatch Logs → Firehose → OpenSearch → Dashboards is the fit. **Tradeoff vs. CloudWatch
+   Logs Insights alone**: Insights needs no new infrastructure and is cheaper for occasional
+   queries, but lacks OpenSearch's relevance ranking, saved dashboards, and sustained
+   near-real-time indexing under heavy log volume.
+2. **Product search with relevance ranking and typo tolerance** — an e-commerce site needs a
+   search box that ranks results by relevance and tolerates misspellings, not an exact SQL match.
+   OpenSearch's full-text search is the fit. **Tradeoff vs. a SQL `LIKE` query against RDS**:
+   `LIKE` is simple and free of new infrastructure, but gives no relevance ranking, fuzzy matching,
+   or sub-second response at catalog scale.
+3. **Security analytics / SIEM-style threat hunting** — a security team needs to search large
+   volumes of GuardDuty findings, Security Hub events, and audit logs for patterns like "many
+   failed logins from one IP in a short window," in near-real-time. OpenSearch with alerting
+   rules is the fit. **Tradeoff vs. Athena over S3 logs**: Athena is cheaper for after-the-fact
+   investigation, but is batch/ad-hoc — it can't proactively alert the instant a suspicious
+   pattern starts.
+4. **Vector/semantic search backend for a RAG pipeline** — a company wants a chatbot that
+   retrieves the most semantically relevant passages from internal documents, not just
+   keyword-matching ones. OpenSearch's k-NN vector index is the fit, as an AWS-native vector
+   store. **Tradeoff vs. a dedicated third-party vector database**: a specialized vector DB may
+   offer deeper vector-specific tuning, but OpenSearch avoids adding an entirely new managed
+   service when the team is already running OpenSearch for logs/search.
+5. **Hybrid keyword + semantic search** — a support-ticket search tool needs to match both exact
+   product SKUs (keyword) and loosely-worded descriptions of the same issue (semantic). A single
+   OpenSearch query blending BM25 keyword scoring with k-NN similarity is the fit. **Tradeoff vs.
+   pure vector search alone**: pure vector search misses exact-term matches users expect to find
+   verbatim (like a SKU), so hybrid search trades a bit of complexity for covering both query
+   styles in one request.
+6. **Clickstream and application performance monitoring dashboards** — a product team wants a
+   live view of response-time percentiles and error rates as they happen, not next-morning
+   batch reports. OpenSearch Dashboards fed by a near-real-time pipeline is the fit. **Tradeoff
+   vs. QuickSight over Athena**: that pipeline is cheaper for daily/weekly reporting, but is
+   minutes-to-hours behind by design — unsuitable for a genuinely live ops view.
+7. **Hot-warm-cold log retention at scale** — a compliance-driven company must retain 365 days
+   of logs but only actively queries the last 2 days. Index State Management automating the
+   hot → UltraWarm → Cold → delete lifecycle is the fit. **Tradeoff vs. keeping everything on hot
+   nodes**: hot-only storage is simpler to reason about but costs dramatically more for data
+   that's rarely re-queried — tiering trades a small amount of query latency on old data for
+   large storage savings.
+8. **Cross-account/cross-cluster log aggregation for a security operations center** — a
+   multi-account organization wants one SOC team searching logs across many member accounts.
+   OpenSearch's cross-cluster search is the fit. **Tradeoff vs. copying every account's logs into
+   one central domain**: full centralization simplifies querying, but means re-ingesting and
+   paying for storage/indexing of the same data twice instead of searching it where it already
+   lives.
+9. **Full-text document search for an internal knowledge base** — an internal support team wants
+   employees to search thousands of help articles and get ranked, relevant results, not a flat
+   keyword match list. OpenSearch is the fit. **Tradeoff vs. Amazon Kendra**: Kendra is purpose-
+   built for natural-language enterprise search with less tuning effort, but OpenSearch is the
+   better fit if the team already operates OpenSearch and wants full control over relevance
+   tuning/mappings.
+10. **Operational "what's breaking right now" dashboards paired with Kinesis Firehose** — an
+    infrastructure team wants IoT telemetry anomalies visible on a dashboard within a second of
+    occurring. Kinesis Data Firehose → OpenSearch is the named, recurring pipeline shape for this.
+    **Tradeoff vs. routing the same Firehose stream only to S3**: S3-only is cheaper and simpler
+    for archival, but gives no live searchable view — the two destinations typically run in
+    parallel rather than as either/or.
 
 ## When NOT to Use It / Alternatives
 

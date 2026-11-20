@@ -58,6 +58,44 @@ it, entirely invisible to you. A load balancer in front of a service distributes
 the running tasks exactly like it would across EC2 instances; logs stream to CloudWatch
 automatically, same as Lambda.
 
+### How It Works — Step by Step: From Task Definition to a Running Container
+
+Tracing exactly what happens between registering a task definition and having a reachable
+container running ties Fargate's abstraction back to concepts covered elsewhere in this folder:
+
+1. **Task definition registered.** You register a task definition (image URI, CPU/memory, IAM
+   roles, networking mode) with ECS (or create a Kubernetes pod spec matched by an EKS Fargate
+   profile) — this is pure metadata at this point, no compute has been requested yet.
+2. **Scheduling decision.** When you run a task or create a service, the orchestrator (ECS or EKS)
+   decides *that* this task definition should run now, and hands the request to the Fargate launch
+   type instead of looking for EC2 capacity in a cluster.
+3. **Fargate provisions a microVM.** Behind the scenes, Fargate allocates an isolated
+   Firecracker-based microVM sized to exactly the task's requested CPU/memory — conceptually
+   similar to how Lambda provisions an execution environment, except sized explicitly by you
+   rather than inferred, and kept alive for the task's full lifetime rather than frozen between
+   invocations.
+4. **ENI attachment (`awsvpc` mode).** Fargate attaches a dedicated Elastic Network Interface to
+   the task, in the subnet specified by the task's network configuration, and associates the
+   task's own security group with that ENI — this is what gives every Fargate task its own private
+   IP and its own firewall boundary, isolated from every other task on the same underlying
+   hardware.
+5. **Image pull.** Using the task's **execution role**, Fargate authenticates to ECR (or another
+   configured registry) and pulls the container image over the ENI's network path — if the task
+   sits in a private subnet, this pull must route out through a NAT Gateway, which is why a
+   missing NAT route is one of the most common reasons a task gets stuck in `PROVISIONING`.
+6. **Container start.** The container runtime starts the container(s) defined in the task
+   definition, sharing the task's network namespace and (optionally) an ephemeral storage volume
+   between sidecar containers in the same task.
+7. **Health check and load balancer registration.** If the task is part of a service behind a load
+   balancer, the target group begins health-checking the task's container port; only once it
+   reports healthy does the load balancer start routing real traffic to it.
+8. **Logs streaming.** Container stdout/stderr is picked up by the configured log driver (commonly
+   `awslogs`) and streamed to CloudWatch Logs continuously for the task's entire lifetime.
+
+The practical payoff of knowing this sequence: nearly every real Fargate troubleshooting scenario
+(stuck in `PROVISIONING`, can't pull the image, can't reach the task) maps to one specific step
+above, almost always step 4 (networking/subnet routing) or step 5 (execution role/image access).
+
 ### Autoscaling async job queues with Fargate
 
 ```mermaid
@@ -71,6 +109,12 @@ flowchart LR
     ECSA --> DDB[(DynamoDB)]
     ECSB --> DDB
 ```
+
+*This diagram shows two independent job types, each with its own queue and its own ECS service,
+scaled by its own CloudWatch alarm on queue depth — the key design choice being that job type A's
+backlog growing never competes with job type B's for the same compute pool, since each service
+scales (and is billed) independently. The official reference architecture below shows the same
+shape at production scale.*
 
 ![Architecture diagram showing autoscaling asynchronous job queues using Amazon API Gateway, Amazon Simple Queue Service, Amazon CloudWatch, Amazon Elastic Container Service with AWS Fargate, and Amazon DynamoDB.](https://docs.aws.amazon.com/reference-architecture-diagrams/latest/autoscaling-async-job-queues/images/autoscaling-async-job-queues.png)
 
@@ -100,6 +144,14 @@ flowchart LR
     T1 -.no inbound internet access.-> X((blocked))
 ```
 
+*This diagram shows the specific routing distinction that trips up a lot of first-time Fargate
+deployments: a task in a private subnet has no route *to* the internet for inbound connections,
+but still needs a route *out* (through the NAT Gateway in a public subnet) to pull its container
+image from ECR or call any external API. Confusing "no inbound route" with "no outbound route" is
+exactly why a task that should be perfectly secure (no one can reach it directly) sometimes also
+fails to start at all — if the NAT Gateway or its route table entry is missing, the task can't pull
+its image either.*
+
 ![Diagram showing architecture of a private subnet connected to a NAT gateway.](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/images/private-network.png)
 
 *The official ECS networking documentation diagram showing the standard secure pattern: Fargate
@@ -121,6 +173,14 @@ flowchart TD
     RESCHED --> CE
     OD --> DONE[Task completes reliably]
 ```
+
+*This diagram shows a capacity provider strategy splitting traffic 70/30 between Fargate Spot and
+standard (On-Demand) Fargate — the weighting is a knob, not a fixed ratio, and teams tune it based
+on how much of the workload can tolerate interruption. The important behavior to notice: an
+interrupted Spot task isn't lost work, it's rescheduled back through the same capacity provider
+strategy, which might place the retry on Spot again or on guaranteed On-Demand capacity depending
+on what's available — this is why Fargate Spot is a reasonable default for batch/background work
+but a poor fit for anything that can't tolerate a mid-task restart without checkpointing.*
 
 ## Key Features / Components
 
@@ -194,18 +254,70 @@ containerized work.
 
 ## Use Cases — When to Use It
 
-- **Containerized microservices** where you want the portability and tooling benefits of
-  containers but want zero host management — the most common modern "default" choice for new
-  containerized applications on AWS.
-- **Variable or spiky container workloads** where right-sizing an EC2 fleet underneath ECS/EKS is
-  wasted effort — Fargate scales per-task without you pre-provisioning host capacity.
-- **Batch/ETL jobs packaged as containers** that exceed Lambda's 15-minute limit or need a full
-  custom OS environment/dependencies that don't fit a Lambda layer cleanly.
-- **Security-sensitive multi-tenant workloads** where task-level network isolation (`awsvpc`, its
-  own ENI/security group) is valuable compared to multiple containers sharing an EC2 host's
-  network namespace.
-- **Teams migrating from Lambda** when a workload grows past Lambda's constraints (duration,
-  package size, needing a full Linux environment) but still want a serverless operational model.
+- **E-commerce storefront API microservices (retail/e-commerce).** Situation: an online retailer
+  is breaking a monolithic storefront into containerized microservices (catalog, cart, checkout)
+  and wants portability without hiring a team to manage EC2 fleets per service. Why Fargate fits:
+  each microservice becomes its own ECS service on Fargate, scaling independently based on its own
+  traffic pattern with zero host provisioning. What the alternative would cost: running the same
+  microservices on EC2-backed ECS would require someone to right-size, patch, and bin-pack an EC2
+  fleet across a dozen services with very different resource profiles — real, ongoing operational
+  work Fargate eliminates.
+- **Fintech PCI-scoped payment processing containers (financial services).** Situation: a payments
+  company needs strict network isolation between services handling cardholder data and everything
+  else, to narrow PCI-DSS audit scope. Why Fargate fits: `awsvpc` mode gives every task its own
+  ENI and security group, so a payment-processing task's network boundary is enforced at the task
+  level, not shared with other containers on a host. What the alternative would cost: EC2-backed
+  containers sharing a host's network namespace would widen the PCI audit scope to the whole host,
+  increasing compliance review cost and risk.
+- **Media/streaming on-demand transcoding workers (media & entertainment).** Situation: a video
+  platform needs to transcode uploaded videos into multiple formats, with volume that varies
+  heavily by time of day and content type. Why Fargate fits: an ECS service scaling from (and back
+  to) zero based on an SQS queue's depth means compute is only paid for while there's an actual
+  backlog to process. What the alternative would cost: a fixed EC2-backed ECS cluster sized for
+  peak transcoding volume would sit mostly idle overnight, paying for capacity that goes unused.
+- **Healthcare clinical-data validation pipeline (healthcare).** Situation: a health-tech company
+  runs a containerized validation step (longer than Lambda's 15-minute limit for large batch
+  files) that checks incoming clinical records for schema and privacy-rule compliance before
+  ingestion. Why Fargate fits: it comfortably handles longer-running container tasks with a full
+  custom runtime, without needing to provision or patch an underlying EC2 fleet for compliance
+  reasons. What the alternative would cost: forcing this into Lambda would require fragile
+  chunking logic to fit under the 15-minute timeout; running it on EC2 directly would add a whole
+  fleet's worth of OS patching obligations under HIPAA-adjacent compliance scrutiny.
+- **Gaming backend matchmaking/session microservices (gaming).** Situation: a game studio runs
+  several backend services (matchmaking, session management, leaderboards) as containers, each
+  with different and unpredictable scaling needs tied to concurrent player counts. Why Fargate
+  fits: each service scales independently without the studio managing a shared EC2 capacity pool
+  sized for the union of all their peaks. What the alternative would cost: a single shared
+  EC2-backed ECS cluster would require careful capacity planning across services with different
+  load profiles, risking one service's traffic spike starving another's available capacity.
+- **SaaS multi-tenant background-job containers (SaaS).** Situation: a SaaS platform runs
+  per-tenant data-export jobs as containers, triggered on demand by customer requests, each
+  needing network isolation from other tenants' concurrent jobs. Why Fargate fits: task-level
+  `awsvpc` isolation plus an ECS service scaling per request keeps noisy or compromised tenant
+  jobs from affecting others. What the alternative would cost: a shared EC2 host running multiple
+  tenants' export jobs side-by-side increases blast radius if one tenant's job is compromised or
+  misbehaves.
+- **Batch analytics containerized ETL stage (data analytics).** Situation: a data engineering team
+  has containerized a data-transformation stage that needs a full Linux environment with specific
+  native library dependencies that don't fit cleanly into a Lambda layer. Why Fargate fits: it runs
+  the exact same container image used in CI/CD locally, with no separate Lambda-specific packaging
+  step. What the alternative would cost: adapting the same logic to fit Lambda's deployment package
+  size and dependency constraints would mean maintaining two different packaging pipelines for the
+  same underlying code.
+- **IoT edge-data aggregation services (IoT).** Situation: an IoT platform runs regional
+  aggregation services that buffer and pre-process device telemetry before forwarding it
+  centrally, with traffic that scales with the number of connected devices in each region. Why
+  Fargate fits: each regional service scales independently, and task-level network isolation keeps
+  one region's traffic spike from affecting another's compute. What the alternative would cost:
+  a shared EC2-backed cluster across regions would need careful capacity reservation per region to
+  avoid cross-region resource contention during a localized traffic surge.
+- **Teams migrating off Lambda as workloads mature (any industry).** Situation: a workload that
+  started as a Lambda function has grown past the 15-minute timeout or needs a dependency that
+  doesn't fit Lambda's package size limits, but the team still wants a serverless operational
+  model. Why Fargate fits: it's the natural next step up — same "no servers to manage" philosophy,
+  with a full container runtime and no duration limit. What the alternative would cost: jumping
+  straight to EC2-backed ECS to solve a duration/dependency problem would reintroduce host
+  management the team specifically wanted to avoid by starting on Lambda.
 
 ## When NOT to Use It / Alternatives
 
@@ -342,6 +454,11 @@ awslocal ecs describe-tasks --cluster fargate-lab-cluster --tasks <task-arn>
 awslocal ecs delete-service --cluster fargate-lab-cluster --service fargate-lab-service --force
 awslocal ecs delete-cluster --cluster fargate-lab-cluster
 ```
+
+This walks through the full realistic flow: a cluster to hold logical grouping, a task definition
+describing the container recipe, a one-off `run-task` to prove it works, then a `create-service`
+to keep it alive continuously — exactly the progression a real team follows from "does this
+container even start" to "this is a production service."
 
 ### Extra practice: capacity provider strategy (mixed Fargate + Fargate Spot)
 

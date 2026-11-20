@@ -119,6 +119,51 @@ land directly in a managed, SQL-queryable store with configurable retention up t
 matters for compliance regimes requiring multi-year audit retention far beyond the free 90-day
 Event History window.
 
+### How It Works — Step by Step: Tracing One API Call to Its S3 Log File
+
+The sequence diagram above shows the shape of the pipeline; here's the same `DeleteBucket` call
+traced with concrete timing, from the moment it's issued to the moment it's durably sitting in an
+S3 object a security team can later query.
+
+1. **09:14:02.331 — the call is made.** An engineer, authenticated as `arn:aws:sts::123456789012:
+   assumed-role/DevOpsRole/jdoe`, runs `aws s3api delete-bucket --bucket prod-backups` from their
+   laptop. The AWS CLI signs the request with the role's temporary credentials and sends it to the
+   S3 regional endpoint.
+2. **09:14:02.401 — S3 processes the request and reports it.** S3 denies the call (the bucket
+   isn't empty) or allows it (if it is) — either way, S3's control plane automatically emits an
+   event describing the call to CloudTrail's internal collection pipeline. This happens for
+   *every* API call against every AWS service, with no code the engineer or the service team
+   had to write to make it happen — CloudTrail's visibility is default, not opt-in instrumentation.
+3. **09:14:02.5ish — the event is captured with full context.** CloudTrail's collector attaches
+   the calling identity (`userIdentity`, including the `sessionContext.sessionIssuer` pointing back
+   to `DevOpsRole`), the source IP, the user agent string (`aws-cli/2.15.0`), the exact request
+   parameters (`{"bucketName": "prod-backups"}`), and the result (`errorCode: AccessDenied` if
+   denied, or a successful response if allowed).
+4. **Within seconds — Event History.** The event becomes searchable via `lookup-events` in the
+   console/API almost immediately — this is the free, no-trail-required 90-day view, and it's
+   already queryable well before the batch delivery step below completes.
+5. **~09:19:00 (roughly 5 minutes later) — batched delivery to S3.** If a trail is configured
+   (without one, this step and everything after it simply doesn't happen), CloudTrail batches this
+   event together with every other event from the same ~5-minute window, compresses the batch as
+   gzipped JSON, and calls S3's `PutObject` to deliver it to the trail's destination bucket at a
+   path like `s3://log-archive-bucket/AWSLogs/123456789012/CloudTrail/us-east-1/2026/11/18/
+   123456789012_CloudTrail_us-east-1_20260118T0915Z_AbCdEfGh.json.gz`.
+6. **09:19:05 — optional parallel delivery to CloudWatch Logs.** If the trail is also configured to
+   stream to CloudWatch Logs, the same event (not a copy derived from the S3 file — a parallel
+   delivery from CloudTrail itself) lands in a CloudTrail-dedicated log group within roughly the
+   same few-minute window, where a metric filter watching for `DeleteBucket`/`StopLogging`-style
+   events could immediately trigger an alarm — this is the only one of the two delivery paths fast
+   enough to support near-real-time alerting.
+7. **09:19:06 — log file integrity validation hash recorded.** CloudTrail computes and stores a
+   digest file referencing this log file's hash, so a later integrity check can cryptographically
+   prove the delivered file wasn't altered after the fact — the evidentiary property that
+   distinguishes an audit log from an ordinary application log.
+8. **Any time afterward — the investigation.** Months later, a security review runs
+   `lookup-events` (if within 90 days) or queries the S3-delivered files via Athena/CloudTrail Lake
+   (if beyond 90 days), finds this exact `DeleteBucket` record, reads `userIdentity.arn` and
+   `errorCode`, and has a complete, durable, provably-untampered answer to "did jdoe delete (or try
+   to delete) the production backups bucket, and did it succeed."
+
 ## Worked Example: Finding Who Disabled a Security Control
 
 A realistic investigation: GuardDuty findings stopped appearing three days ago. Did someone
@@ -276,15 +321,108 @@ zero additional infrastructure to operate.
 
 ## Use Cases — When to Use It
 
-- Security investigation: "who deleted this resource / changed this security group / disabled
-  this trail?" — always start with CloudTrail.
-- Compliance evidence: auditors asking for proof of who had administrative access and what they
-  did with it.
-- Detecting and alerting on suspicious activity in near-real-time (root account usage,
-  unauthorized API calls, disabling of security controls like GuardDuty or the trail itself).
-- Forensic reconstruction after an incident — exact sequence and timing of actions taken.
-- Governance baseline: an Organization Trail that can't be disabled by member accounts, ensuring
-  nobody can "go dark" and act without a record.
+1. **Incident post-mortem: reconstructing exactly what happened and when.** Production went down
+   at 14:30 and the on-call engineer needs a precise timeline of every administrative action taken
+   in the hour before. **Why this fits:** CloudTrail's Event History (or a trail's S3 logs) gives
+   an exact, timestamped, attributable sequence of API calls — not a guess based on who remembers
+   doing what. **Tradeoff:** this only reconstructs *API-driven* changes; a problem caused by
+   something outside AWS's API surface (a third-party integration misbehaving, a network issue
+   upstream) won't show up here at all, so CloudTrail is necessary but not sufficient for every
+   post-mortem.
+
+2. **Compliance drift/audit evidence: proving who had access and what they did with it.** An
+   auditor asks for proof that only approved personnel touched a regulated data store over the
+   last quarter. **Why this fits:** CloudTrail's immutable, tamper-evident log of every API call
+   against that resource is exactly the evidentiary artifact SOC 2/PCI-DSS auditors expect.
+   **Tradeoff:** the evidence is only as complete as the trail's configuration was *before* the
+   audit period — a trail created mid-quarter leaves a real, unfillable gap for the earlier weeks.
+
+3. **Multi-account governance via an unkillable Organization Trail.** A security team needs every
+   current and future account in an AWS Organization to log activity, with no member account able
+   to opt out. **Why this fits:** an Organization Trail, created at the management account level,
+   automatically covers every member account and can't be disabled from within a member account —
+   closing the "an attacker in a compromised account disables logging to cover their tracks" gap.
+   **Tradeoff:** this centralizes a single point of configuration risk at the management account —
+   if the Organization Trail itself is misconfigured or deleted at that level, every member account
+   loses coverage simultaneously, not just one.
+
+4. **Near-real-time detection of security control tampering.** A security team wants to know within
+   minutes, not days, if someone disables GuardDuty or stops the CloudTrail trail itself.
+   **Why this fits:** a metric filter on CloudTrail events delivered to CloudWatch Logs, watching
+   for `StopLogging`/`DeleteTrail`/`DeleteDetector`, triggers an alarm almost immediately — far
+   faster than the ~5-minute S3 batch delivery path alone would support. **Tradeoff:** this
+   detection path requires CloudWatch Logs delivery configured *in addition to* S3 — a trail
+   delivering only to S3 has no equivalent real-time alerting without extra tooling to poll/process
+   the S3 objects.
+
+5. **Cost anomaly investigation: finding who launched the expensive resource.** Cost Anomaly
+   Detection flags an unexpected spend spike but doesn't say who caused it. **Why this fits:**
+   searching CloudTrail for `RunInstances`/`CreateDBInstance` calls in the anomaly's time window,
+   cross-referenced by service and timestamp, identifies the exact principal and parameters
+   responsible. **Tradeoff:** this cross-referencing is a manual, two-tool investigation (Cost
+   Anomaly Detection for "what," CloudTrail for "who") — there's no single built-in view joining
+   both automatically, so the investigator has to do the correlation by hand or script it.
+
+6. **Infra-as-code rollout verification across environments.** A platform team wants proof that a
+   CloudFormation StackSet update actually executed identically (same parameters, same principal)
+   across every targeted account, not just that the console reported success. **Why this fits:**
+   searching CloudTrail for `UpdateStackSet`/`CreateStackInstances` events across the Organization
+   trail confirms the exact call parameters reached every account. **Tradeoff:** CloudTrail
+   confirms the *API call* was made identically; it doesn't independently verify the *resulting
+   resource state* matches across accounts — that's CloudFormation drift detection's or Config's
+   job, done separately.
+
+7. **Forensic reconstruction after a suspected credential compromise.** An access key appears in
+   a public GitHub commit and the security team needs to know everything it was used for before it
+   was revoked. **Why this fits:** filtering CloudTrail by the specific access key ID or principal
+   ARN across the exposure window surfaces every action taken with those credentials, successful
+   or denied. **Tradeoff:** if the exposure happened more than 90 days ago and no trail was ever
+   configured, the investigation is limited to whatever a trail/Lake captured — Event History alone
+   won't reach back far enough.
+
+8. **Pre-emptive governance baseline for new accounts.** A newly vended account under Control
+   Tower/Organizations must have logging active from the moment it's created, not after someone
+   remembers to set it up. **Why this fits:** pairing an Organization Trail with automatic StackSet
+   deployment means the new account is covered before any workload is even deployed into it.
+   **Tradeoff:** this baseline has to be established once, correctly, at the organizational level —
+   a gap in the baseline (an account created outside the automated vending process) silently
+   leaves that one account unlogged until discovered.
+
+9. **Investigating failed access attempts, not just successful changes.** A security team suspects
+   someone is probing for permissions they don't have. **Why this fits:** CloudTrail logs
+   `AccessDenied` events exactly like successful ones — a cluster of denied `s3:DeleteBucket` or
+   `iam:CreateUser` attempts from one principal is itself a security signal worth investigating,
+   even though nothing actually changed. **Tradeoff:** a high volume of normal, benign `AccessDenied`
+   events (a misconfigured but harmless automation retrying a call) can create noise that masks a
+   genuinely suspicious pattern unless the investigation specifically filters for anomalous volume
+   or an unexpected principal.
+
+10. **Scoped data-event auditing of one sensitive S3 bucket.** A compliance requirement mandates
+    logging every individual read of a bucket holding PII, without logging every object read
+    account-wide (which would be cost-prohibitive). **Why this fits:** an advanced event selector
+    scoped to exactly that bucket's ARN, write-and-read operations, satisfies the requirement at a
+    fraction of the cost of blanket data-event logging. **Tradeoff:** scoping requires getting the
+    ARN pattern exactly right — a typo'd prefix in the event selector silently captures nothing,
+    with no error raised, which is a dangerously quiet failure mode for a compliance control.
+
+11. **Cross-referencing CloudTrail with AWS Config for a complete "who changed what" picture.** A
+    resource's configuration clearly changed, but it isn't obvious whether that was an authorized
+    automated process or an unexpected manual edit. **Why this fits:** Config's configuration
+    timeline shows exactly *what* changed and when; CloudTrail, searched for the same resource ID
+    and timestamp, shows *who* (or what automation) made the underlying API call — together they
+    close a gap neither tool answers alone. **Tradeoff:** some configuration changes are made by
+    AWS-internal processes on your behalf (e.g., Auto Scaling launching an instance) — CloudTrail
+    shows the service principal, and tracing back to the human-authored policy that configured that
+    automation requires an extra step (`invokedBy`/`onBehalfOf` fields), not a single lookup.
+
+12. **Governance evidence for a partner/customer security questionnaire.** An enterprise customer's
+    security team asks, as part of a vendor review, "can you prove administrative access to our
+    data is logged and auditable?" **Why this fits:** pointing to an always-on Organization Trail
+    with log file integrity validation and a documented retention policy (via CloudTrail Lake) is
+    a concrete, checkable "yes," not a verbal assurance. **Tradeoff:** answering this convincingly
+    requires the trail to have existed and been correctly scoped for the entire period the
+    questionnaire asks about — a trail stood up the week before the audit doesn't retroactively
+    cover the history being asked about.
 
 ## When NOT to Use It / Alternatives
 

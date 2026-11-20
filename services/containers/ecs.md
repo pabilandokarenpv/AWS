@@ -337,20 +337,66 @@ ratios.
 
 ## Use Cases — When to Use It
 
-- You're already AWS-native (IAM, VPC, ALB, CloudWatch) and don't need Kubernetes's ecosystem of
-  third-party tools, operators, and Helm charts — ECS gets you running containers in production
-  with far less YAML and fewer moving parts.
-- Microservices architectures where each service is an independently deployable container
-  (an API service, a worker process consuming from SQS, a scheduled batch job as an ECS Task).
-- Lifting a legacy application into containers as a stepping stone toward serverless, without a
-  full rewrite.
-- Teams that want container orchestration but explicitly do NOT want to operate a Kubernetes
-  control plane themselves.
-- Batch/cron-style workloads using **ECS Scheduled Tasks** or one-off `RunTask` calls instead of
-  a long-running Service.
-- High-throughput, cost-sensitive data processing pipelines (ETL jobs, document processing) that
-  need to scale containers up and down fast without Kubernetes's control-plane overhead for
-  simple scheduling needs.
+Each scenario below names the situation, why ECS specifically fits it, and the tradeoff you accept
+by choosing it over an alternative.
+
+1. **Microservices migration off a monolith.** Situation: a team is decomposing a legacy monolith
+   into independently deployable services. Why ECS fits: each service becomes its own Task
+   Definition/Service pair, scaled and deployed independently without hand-building a scheduler.
+   Tradeoff: you now own service-boundary design and inter-service network latency that didn't
+   exist inside a single process.
+2. **Batch job orchestration via Scheduled Tasks.** Situation: nightly ETL, report generation, or
+   data-sync jobs that start, run, and exit. Why ECS fits: an EventBridge rule calling `RunTask` is
+   the ECS-native equivalent of cron, billed only for the minutes it runs. Tradeoff: no built-in
+   job queue, retry/backoff, or dependency graph — for that, pair it with Step Functions or use AWS
+   Batch instead.
+3. **Multi-tenant SaaS isolation via `awsvpc` networking.** Situation: a SaaS platform must isolate
+   each tenant's compute without standing up a separate account or VPC per customer. Why ECS fits:
+   `awsvpc` mode gives every task its own ENI and security group, so tenants can't reach each
+   other's network traffic even on shared cluster capacity. Tradeoff: tenants still share the same
+   underlying cluster and control plane — this is network isolation, not the hard compute isolation
+   a dedicated account/VPC per tenant would give.
+4. **Blue/green production rollouts via CodeDeploy.** Situation: a production release needs
+   zero-downtime cutover with instant rollback. Why ECS fits: CodeDeploy's native ECS integration
+   stands up a parallel task set and shifts ALB traffic to it, keeping the old set warm briefly.
+   Tradeoff: briefly doubles compute cost during the cutover window (see `codedeploy.md`).
+5. **Hotfix emergency deploys with the deployment circuit breaker.** Situation: a critical bug
+   needs an immediate patch, and nobody has time to babysit the rollout. Why ECS fits: the
+   deployment circuit breaker auto-detects a crash-looping new revision and rolls back with zero
+   alarm configuration required. Tradeoff: it only catches health-check failures — a hotfix that's
+   "healthy but functionally wrong" still needs a human watching metrics/logs.
+6. **Monorepo CI/CD with per-service builds.** Situation: one repository holds many services, each
+   needing independent deploys. Why ECS fits: each service maps cleanly to its own task
+   definition family and ECS Service, triggered by path-filtered pipeline rules. Tradeoff: service
+   count growth means task-definition and IAM-role sprawl that needs active naming/governance.
+7. **SQS-backed worker queue consumers.** Situation: background jobs arrive on an SQS queue at a
+   variable rate. Why ECS fits: Service Auto Scaling on queue-depth metrics grows/shrinks the
+   worker Service's desired count automatically. Tradeoff: scaling reacts on a metric-polling
+   cadence (seconds-to-minutes), slower to respond to a burst than a Lambda-per-message model.
+8. **Mixed EC2 + Fargate + Fargate Spot cost optimization.** Situation: steady baseline traffic
+   plus unpredictable bursts on the same platform. Why ECS fits: a Capacity Provider Strategy lets
+   one cluster place steady load on cheap Reserved EC2 and burst load on Fargate/Fargate Spot,
+   declaratively. Tradeoff: more moving parts to reason about during an incident (which capacity
+   provider placed the failing task?) than a single homogeneous fleet.
+9. **Hybrid on-premises workloads via ECS Anywhere.** Situation: an organization can't fully
+   migrate off its own data center yet. Why ECS fits: the same Task Definition/Service model runs
+   against customer-managed on-prem servers registered to an ECS cluster. Tradeoff: reduced feature
+   parity versus cloud-native ECS, and you still own patching/managing the on-prem hardware.
+10. **Internal service mesh via Service Connect.** Situation: many internal services need
+    name-based discovery and per-service traffic metrics without a full service mesh. Why ECS
+    fits: Service Connect gives built-in CloudWatch metrics and retry behavior between services
+    with far less setup than Istio/App Mesh. Tradeoff: no mTLS between hops — a genuine zero-trust
+    requirement between services needs a real mesh (more naturally built on EKS).
+11. **Lightweight ML inference serving.** Situation: a team needs to serve a custom inference
+    container at low cost without SageMaker endpoint overhead. Why ECS fits: an ECS/Fargate
+    Service behind an ALB, scaled on request count, is cheaper and simpler for basic serving needs.
+    Tradeoff: you lose SageMaker's model-specific MLOps tooling (multi-model endpoints, built-in
+    A/B testing, model registry integration).
+12. **Containerizing a legacy app as a modernization stepping stone.** Situation: a lift-and-shift
+    candidate needs to move off aging VMs without a full rewrite. Why ECS fits: the existing app
+    runs in a container largely unmodified, as a first step before later decomposition. Tradeoff:
+    this doesn't reduce architectural complexity by itself — it's a staging step, and the real
+    operational gains come only from the decomposition work that follows.
 
 ## When NOT to Use It / Alternatives
 

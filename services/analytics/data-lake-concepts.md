@@ -278,19 +278,66 @@ data asset.
 
 ## Use Cases — When to Use It
 
-- A company with data arriving in **many different shapes** (app logs, clickstream, exported
-  database tables, IoT sensor readings, images) that wants one unified place to land all of it
-  before deciding exactly how to use each piece.
-- **ML/AI data preparation** — training data for ML models is almost always assembled from a
-  data lake, since ML workflows need raw history, flexible reprocessing, and large-scale
-  feature engineering that a rigid warehouse schema would get in the way of.
-- Organizations wanting to **decouple storage growth from compute cost** — a lake's storage
-  (S3) scales and is billed independently from the query engines (Athena/EMR/Redshift) that
-  read it, unlike a traditional warehouse where storage and compute are often bundled.
-- **Long-term, cost-efficient retention of raw data** for compliance, auditing, or future
-  reprocessing needs that haven't been defined yet.
-- **Multi-team/multi-account organizations** that need governed, auditable data sharing without
-  every team managing its own copy of every other team's data.
+1. **Unifying wildly different data shapes under one roof** — a company has app logs (JSON),
+   clickstream events, exported database tables (CSV), and IoT sensor readings, and wants one
+   place to land all of it before deciding exactly how to use each piece. S3 as a schema-on-read
+   lake is the fit. **Tradeoff vs. a data warehouse from day one**: a warehouse forces a schema
+   decision up front, which is fast to query later but expensive/slow to change when new data
+   shapes show up that nobody modeled for.
+2. **ML/AI training data assembly** — a data science team needs large volumes of raw historical
+   events to engineer features from, replay through updated pipelines, and reprocess as modeling
+   needs evolve. A data lake is the fit because raw history is never discarded or summarized away.
+   **Tradeoff vs. pulling training data straight from production databases**: production
+   databases are the "current truth" but typically don't retain full history at the granularity
+   ML feature engineering needs, and querying them heavily for training risks impacting the live
+   application.
+3. **Decoupling storage growth from compute cost** — an analytics team's query volume is spiky
+   but their data volume grows steadily; they don't want to pay for warehouse compute sized for
+   peak load all the time. A lake's separately-billed S3 storage and Athena/EMR compute is the
+   fit. **Tradeoff vs. a traditional warehouse with bundled storage+compute**: bundled pricing is
+   simpler to budget for steady, predictable workloads, but wastes money when storage grows
+   faster than query volume (the common case).
+4. **Long-term, cost-efficient compliance retention** — a regulated company must retain seven
+   years of transaction records for audits it may never actually need to run. S3 lifecycle-tiered
+   raw zone storage is the fit. **Tradeoff vs. keeping everything in a warehouse**: a warehouse
+   charges warehouse-tier rates for data that's essentially never queried — the lake's
+   Glacier-tiering captures most of the savings since access, not just age, drives the real cost.
+5. **Multi-team, multi-account governed data sharing** — several business units each want
+   ownership and autonomy over their own data, with central governance only for cross-team
+   sharing. Lake Formation cross-account grants over a shared or federated catalog are the fit.
+   **Tradeoff vs. one shared bucket with one IAM policy**: a single shared bucket is simpler to
+   set up initially, but means every team's access changes ripple through one shared policy that
+   nobody fully owns.
+6. **Ad-hoc exploratory analytics without committing to a schema** — a new analytics hire wants
+   to poke around raw clickstream data to see what's even in it before anyone commits to a
+   curated table design. A sandbox zone over the raw lake is the fit. **Tradeoff vs. requiring
+   every dataset go through curation first**: mandatory curation protects the trusted layer's
+   integrity, but blocks genuinely exploratory, pre-decision analysis that a sandbox zone exists
+   specifically to allow.
+7. **Lake house ACID guarantees for concurrent pipelines** — a retailer has both a nightly batch
+   Glue job and a streaming Firehose delivery writing to the same logical orders table, and needs
+   every reader to see one consistent snapshot. Apache Iceberg on S3 is the fit. **Tradeoff vs.
+   plain Hive-style S3 tables**: Hive tables are simpler to reason about for single-writer
+   pipelines but risk a reader seeing a half-written file once more than one writer is involved.
+8. **Reprocessing history through corrected business logic** — a finance team discovers a bug in
+   last quarter's revenue-recognition logic and needs to re-run the original raw transactions
+   through the fix. A lake's immutable raw zone makes this possible because the original data was
+   never overwritten. **Tradeoff vs. a warehouse that only stores the already-transformed
+   result**: a warehouse-only approach has nothing to reprocess from — the original raw inputs
+   were discarded once the first transformation ran.
+9. **Feeding both batch and streaming ML feature pipelines from one source of truth** — an ML
+   platform team wants the same raw events to support both a nightly batch feature job and a
+   real-time streaming feature job without maintaining two separate copies of history. The lake's
+   raw zone serving both is the fit. **Tradeoff vs. separate, independently-ingested batch and
+   streaming stores**: separate stores are simpler to build individually but risk the batch and
+   streaming paths silently disagreeing about what "the data" actually was at a given point in time.
+10. **Cross-region disaster recovery for the organization's analytical/ML asset, not just
+    operational data** — a company's DR plan covers its live databases but has never considered
+    that its entire historical training/analytics data lives only in one region's S3 buckets.
+    Cross-Region Replication of the raw zone is the fit. **Tradeoff vs. relying on S3's 11 nines
+    of durability alone**: durability protects against losing data within a region, but says
+    nothing about a regional outage — replication is the separate guarantee that actually
+    addresses that risk.
 
 ## When NOT to Use It / Alternatives
 

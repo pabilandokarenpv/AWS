@@ -232,15 +232,53 @@ constraints to abstraction level on a per-component basis, as emphasized through
 
 ## Use Cases — When to Use It
 
-- **VMs**: legacy applications requiring a specific OS/kernel version, licensed software tied to
-  a machine, workloads needing full control over networking stack or kernel modules, lift-and-
-  shift migrations where re-architecting isn't yet feasible, GPU-heavy ML training.
-- **Containers**: microservices, anything you want to run consistently across dev/staging/prod,
-  workloads with moderate-to-long running times that still benefit from fast scaling and
-  portability, teams standardizing on Docker/Kubernetes tooling.
-- **Serverless**: event-driven, bursty, or unpredictable workloads; short-lived request/response
-  or processing jobs; anything where "pay nothing when idle" matters (e.g., infrequent batch
-  triggers, webhooks, glue code between services).
+Each scenario names the situation, which abstraction level fits, why, and the tradeoff accepted
+versus the other two levels.
+
+1. **Legacy software licensed to a specific machine identity.** Situation: software license
+   validation is tied to a specific kernel/hardware fingerprint. Why a VM fits: full OS/kernel
+   control preserves license validity in a way no container or function can. Tradeoff: the full
+   patch cadence and capacity-planning burden stays entirely on your team.
+2. **Microservices migration off a monolith.** Situation: a monolith is being decomposed into
+   independently deployable services. Why containers fit: consistent packaging across
+   dev/staging/prod and fast horizontal scaling per service. Tradeoff: adds an orchestration layer
+   (ECS/EKS) with its own operational surface area that a single VM fleet didn't have.
+3. **Event-driven webhook or glue code.** Situation: infrequent, bursty, short-lived processing
+   between two services. Why serverless fits: scales to zero and bills per invocation, with no
+   idle cost between triggers. Tradeoff: a hard 15-minute execution ceiling and cold-start latency
+   make it unsuitable for sustained high-frequency or long-running work.
+4. **Batch pipelines mixing short and long steps.** Situation: a pipeline has quick steps and at
+   least one step that might run over 15 minutes. Why a hybrid fits: Step Functions calls Lambda
+   for the fast steps and Fargate `RunTask` for the long one. Tradeoff: operating two compute
+   models (and debugging across both) is more complex than a single uniform compute layer.
+5. **Multi-tenant SaaS isolation boundary choice.** Situation: a SaaS platform must isolate
+   tenants' workloads. Why containers (Fargate) fit: per-tenant task/ENI isolation without
+   standing up separate VMs per tenant. Tradeoff: tenants still share the underlying Fargate fleet
+   and control plane — weaker isolation than fully separate accounts/VPCs would give.
+6. **Blue/green production rollouts across abstraction levels.** Situation: a production release
+   needs a safe cutover strategy. Why the comparison matters: blue/green exists at every level (a
+   second ASG for VMs, a second task set for containers, alias traffic-shifting for Lambda) but
+   costs and speed differ sharply. Tradeoff: VM-level blue/green is slowest and costliest to stand
+   up; Lambda's is cheapest and fastest; containers sit in between.
+7. **GPU-heavy ML training.** Situation: training needs specific GPU drivers and kernel modules.
+   Why a VM (EC2) fits: it's the only level with full, direct hardware access. Tradeoff: forgoes
+   all of the orchestration and auto-scaling convenience a container or serverless layer would add.
+8. **Monorepo CI/CD spanning all three compute layers.** Situation: one repository holds a
+   VM-deployed legacy component, a containerized API, and Lambda glue functions — a realistic
+   incremental-modernization snapshot. Why this matters: it's the normal shape of a mid-migration
+   system, not an edge case. Tradeoff: the pipeline must handle three different artifact types
+   (AMI, image, zip/layer) and three different deploy mechanisms in one release process.
+9. **Hotfix emergency deploys, picking the fastest-to-patch layer.** Situation: a critical
+   production bug needs an urgent fix. Why the comparison matters: serverless and container layers
+   redeploy in seconds-to-minutes; a VM-level fix (new AMI bake plus ASG rollout) is by far the
+   slowest path. Tradeoff: this is exactly why many teams deliberately push stateless logic down
+   to Lambda/Fargate — specifically to shorten future hotfix cycles, at the cost of re-architecting
+   earlier than they otherwise would have.
+10. **Cost optimization by traffic shape.** Situation: distinguishing 24/7 steady traffic from
+    spiky, intermittent bursts. Why the comparison matters: Reserved EC2 wins at steady, high,
+    predictable volume; Lambda/Fargate win at spiky, low-average volume. Tradeoff: picking the
+    wrong layer for the actual traffic shape is the single most common real-world (and exam) cost
+    mistake — "serverless is always cheaper" is false at high constant volume.
 
 ## When NOT to Use It / Alternatives
 

@@ -204,17 +204,61 @@ an analytics team would otherwise field one at a time.
 
 ## Use Cases — When to Use It
 
-- **Executive/operational dashboards** — sales trends, operational KPIs, cost dashboards built
-  on top of Athena/Redshift/S3 data, viewed by non-technical staff.
-- **Embedding analytics into a SaaS product** — giving your own customers a dashboard inside
-  your application without building charting infrastructure yourself.
-- **Ad-hoc self-service BI** — letting analysts/managers explore data themselves (drag-and-drop,
-  filter, drill down) instead of filing a request for every new report.
-- **Lightweight anomaly detection/forecasting** on business metrics, without standing up a
-  dedicated ML forecasting pipeline.
-- **Multi-tenant dashboards with per-user data restrictions** — one dashboard definition serving
-  many users/customers, each seeing only their own authorized rows/columns via row/column-level
-  security.
+1. **Executive KPI dashboards over a curated data lake** — leadership wants sales trends and
+   operational KPIs built on top of Athena/S3 data, viewed by non-technical staff. QuickSight
+   with SPICE caching is the fit. **Tradeoff vs. a custom React dashboard calling Athena
+   directly**: a custom app gives full design control, but means building and maintaining
+   auth, caching, and charting infrastructure QuickSight already provides.
+2. **Embedding analytics inside a SaaS product** — a startup wants to offer customers their own
+   usage dashboard inside the product, without building charting infrastructure in-house.
+   QuickSight's embedded analytics with row-level security is the fit. **Tradeoff vs. an
+   open-source charting library (e.g., Chart.js) on the frontend**: a charting library avoids
+   QuickSight licensing cost entirely, but means the engineering team owns the chart rendering,
+   filtering, and per-customer data isolation logic that QuickSight provides out of the box.
+3. **Ad-hoc self-service BI for business users** — managers want to explore sales data themselves
+   (filter, drill down) instead of filing a ticket for every new report, freeing up the analytics
+   team. QuickSight's drag-and-drop authoring is the fit. **Tradeoff vs. giving managers raw
+   Athena/SQL access**: SQL access is more flexible for power users, but most business
+   stakeholders can't write SQL — QuickSight's point-and-click UI is the accessible middle ground.
+4. **Lightweight anomaly detection on business metrics** — a retail ops team wants to be alerted
+   when daily returns spike unexpectedly, without a dedicated data science project. QuickSight ML
+   Insights is the fit — no model training required. **Tradeoff vs. a custom SageMaker anomaly
+   detection pipeline**: SageMaker gives far more modeling flexibility and can be tuned to the
+   business's specific seasonality, but is substantial overkill for a team that just wants
+   "flag outliers on this chart."
+5. **Multi-tenant dashboards with per-customer data restrictions** — a B2B platform wants one
+   dashboard definition serving hundreds of customers, each seeing only their own data. Row-level
+   security on a single shared dashboard is the fit. **Tradeoff vs. building N separate
+   dashboards**: separate dashboards per customer are simpler to reason about individually, but
+   become unmaintainable at any real customer count — every metric change means N edits instead
+   of one.
+6. **Natural-language self-service via QuickSight Q** — business users who can't write SQL or
+   navigate a complex pre-built dashboard want to type "what were sales in Q3 by region" and get
+   an answer. QuickSight Q is the fit. **Tradeoff vs. a pre-built, curated dashboard with fixed
+   filters**: a curated dashboard is more predictable and easier to validate, but can't answer a
+   question the dashboard's author didn't anticipate the way natural-language Q&A can.
+7. **Real-time-ish operational dashboards via direct query** — an ops team needs a dashboard
+   reflecting the absolute latest state of a frequently-changing Athena/Redshift source, even if
+   slightly slower to load. Direct query mode (not SPICE) is the fit. **Tradeoff vs. SPICE with a
+   frequent refresh schedule**: SPICE gives near-instant interactivity, but is only ever as fresh
+   as its last scheduled refresh — direct query trades that speed for guaranteed current data.
+8. **Warehouse-backed regional manager dashboards** — a retail chain's regional managers each
+   need to see only their own region's numbers from one shared Redshift-backed dashboard. Row-
+   level security tied to each manager's identity is the fit. **Tradeoff vs. a separate Redshift
+   view + separate dashboard per region**: separate views duplicate maintenance work every time a
+   metric definition changes across all regions.
+9. **Operational/compliance paginated reports** — a finance team needs a fixed-format, pixel-
+   perfect PDF report delivered on schedule to auditors, not an explorable dashboard. QuickSight
+   Paginated Reports is the fit. **Tradeoff vs. an interactive dashboard exported to PDF
+   manually**: manual export is quick for a one-off, but Paginated Reports automates the
+   recurring, exact-format delivery auditors expect.
+10. **Visualizing model evaluation metrics during ML development** — an ML team wants to build a
+    lightweight dashboard tracking model accuracy/drift over time without writing custom
+    visualization code. QuickSight over a metrics table in S3/Athena is a recognizable fit.
+    **Tradeoff vs. a SageMaker Model Monitor dashboard**: Model Monitor is purpose-built for ML-
+    specific drift/bias metrics with less setup for that narrow use, while QuickSight is the more
+    general-purpose choice when the team wants one consistent BI tool across both business and ML
+    metrics.
 
 ## When NOT to Use It / Alternatives
 

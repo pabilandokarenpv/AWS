@@ -258,13 +258,62 @@ together everything above into an actionable order of operations:
 
 ## Use Cases — When to Use Each (At a Glance)
 
-- **E-commerce order system, banking ledger** → RDS or Aurora (strict relational consistency, JOINs).
-- **Global SaaS app with spiky traffic, needs relational data** → Aurora Serverless v2.
-- **Shopping cart, gaming leaderboard, IoT device state at massive scale** → DynamoDB.
-- **Session store, product catalog cache, rate limiting** → ElastiCache.
-- **Quarterly revenue report across 3 years of sales data** → Redshift.
-- **Content management system already built on MongoDB** → DocumentDB.
-- **Fraud ring detection, "people you may know," recommendation engine** → Neptune.
+Each entry below follows the same situation + why-it-fits + tradeoff format used in every
+individual service doc, condensed to one line per service so this guide stays a fast lookup
+while still carrying the actual reasoning, not just a bare service name.
+
+- **E-commerce order system, banking ledger** → **RDS or Aurora**. Why: strict relational
+  consistency and multi-table JOINs are the default mode of operation, not an exception. Tradeoff:
+  you give up DynamoDB's near-unlimited horizontal write scale in exchange for ACID-by-default.
+- **Global SaaS app with spiky traffic, needs relational data** → **Aurora Serverless v2**. Why:
+  compute scales automatically within ACU bounds, avoiding both over-provisioning for peak and
+  manual resize operations. Tradeoff: a per-ACU premium over a fixed instance makes this the wrong
+  choice for flat, steady traffic, where provisioned Aurora/RDS is cheaper.
+- **Shopping cart, gaming leaderboard, IoT device state at massive scale** → **DynamoDB**. Why:
+  flat single-digit-millisecond latency regardless of table size, with known/simple access
+  patterns. Tradeoff: you lose ad-hoc querying and must redesign keys if access patterns change
+  significantly later — a real cost if requirements are still unstable.
+- **Session store, product catalog cache, rate limiting** → **ElastiCache**. Why: sub-millisecond
+  reads from RAM, with Redis's native data structures (Sorted Sets, atomic counters) matching
+  specific access patterns directly. Tradeoff: it's a second copy of the truth — every write path
+  must handle cache invalidation explicitly, which is real ongoing complexity, not a one-time cost.
+- **Quarterly revenue report across 3 years of sales data** → **Redshift**. Why: columnar storage
+  and MPP make wide, aggregate-heavy queries over billions of rows fast. Tradeoff: Redshift is not
+  built for high-frequency small transactional writes — don't route OLTP traffic through it.
+- **Content management system already built on MongoDB** → **DocumentDB**. Why: MongoDB wire
+  protocol compatibility means existing driver code/queries/aggregation pipelines work unchanged.
+  Tradeoff: DocumentDB trails upstream MongoDB's newest features — verify specific feature
+  support before committing to a migration if the app relies on very recent MongoDB capabilities.
+- **Fraud ring detection, "people you may know," recommendation engine** → **Neptune**. Why:
+  multi-hop traversal cost scales with actual graph connectivity, not combinatorial JOIN blowup,
+  making 3+ hop relationship queries tractable. Tradeoff: don't reach for Neptune on shallow
+  one-to-many relationships — that's unneeded operational complexity for no real traversal benefit.
+- **Startup MVP with unknown, evolving access patterns** → **RDS or Aurora, deliberately not
+  DynamoDB yet**. Why: SQL's ad-hoc query flexibility accommodates requirements that are still
+  shifting; DynamoDB punishes late access-pattern changes far more than relational does. Tradeoff:
+  you're accepting relational's eventual horizontal-scaling ceiling in exchange for near-term
+  flexibility — revisit DynamoDB once patterns stabilize and scale genuinely demands it.
+- **Financial feature store serving ML inference in real time** → **DynamoDB** (serving) **fed
+  by Redshift** (computation). Why: DynamoDB's GetItem is predictably fast for online serving;
+  Redshift is where the features get computed in batch over historical data. Tradeoff: this is
+  two services collaborating, not a single winner — don't try to force one service to do both jobs.
+- **Multi-Region active-active application needing writes accepted anywhere** → **DynamoDB
+  Global Tables** (key-value) or **Aurora Global Database** (relational, single write Region).
+  Why: match the data shape first, then pick the cross-Region feature that fits it. Tradeoff:
+  Aurora Global Database has one authoritative write Region (simpler conflict model, but all
+  writes funnel through it); DynamoDB Global Tables accept writes anywhere but require
+  understanding its last-writer-wins conflict resolution before relying on it.
+- **Mixed workload: structured metadata plus large binary files** → **split across services**:
+  metadata in RDS/DynamoDB, files in S3, database holds only a reference. Why: no database in this
+  family is built to store large binary blobs efficiently. Tradeoff: this adds one more moving
+  piece (S3) to the architecture, but the alternative — blobs inside the database — degrades
+  backup/restore time, replication bandwidth, and query performance for everyone using that table.
+- **Two genuinely separate needs bundled in one system (e.g., social graph + leaderboard)** →
+  **Neptune for the graph piece, ElastiCache for the leaderboard piece**, not one database forced
+  to do both. Why: recognizing a scenario as "two decisions, not one" is itself the skill being
+  tested, both on the exam and in real system design. Tradeoff: running two specialized services
+  costs more in operational surface area than one generalist database, but avoids a bad-fit
+  compromise on both access patterns.
 
 ## When NOT to Use (Cross-Service Anti-Patterns)
 

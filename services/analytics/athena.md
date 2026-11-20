@@ -234,16 +234,66 @@ concurrently against the same S3 location.
 
 ## Use Cases — When to Use It
 
-- **Ad-hoc analysis of log files or exported data** sitting in S3 — security teams querying
-  VPC Flow Logs or CloudTrail logs directly, for example.
-- **One-off or infrequent queries** where standing up a full data warehouse would be overkill —
-  pay only for the query you run, nothing when you're not querying.
-- **Querying a data lake** built on S3 as the final, user-facing SQL layer, especially paired
-  with partitioned Parquet data produced by Glue or EMR.
-- **BI dashboards** (via QuickSight) that need to query S3-resident data without first loading
-  it into a traditional database.
-- **Joining S3 data against a live operational source** without a separate ETL/copy step —
-  Federated Query.
+1. **Incident investigation over log files** — a security team needs to query VPC Flow Logs for
+   suspicious traffic during an active incident, right now, without provisioning anything. Athena
+   is the fit because it's serverless and queries S3 directly. **Tradeoff vs. OpenSearch**:
+   OpenSearch gives near-real-time indexing and relevance ranking for ongoing monitoring, but
+   costs money continuously whether or not anyone is investigating — Athena costs nothing between
+   incidents.
+2. **One-off or infrequent analytical queries** — a finance analyst needs to answer "what were
+   Q3 regional sales" exactly once this quarter, not build a standing report. Athena's pay-per-
+   query model is the fit. **Tradeoff vs. standing up Redshift**: Redshift is faster for frequent,
+   repeated queries at scale, but a provisioned (or even serverless) warehouse still costs more
+   than Athena for genuinely rare, ad-hoc questions.
+3. **SQL query layer on top of a curated data lake** — a company has partitioned Parquet in S3
+   from Glue/EMR and needs a SQL interface for both analysts and dashboards. Athena is the fit as
+   the default lake query engine. **Tradeoff vs. Redshift Spectrum**: Spectrum lets you join lake
+   data against warehouse tables in one query, useful if you already run Redshift — pure Athena is
+   simpler and cheaper if there's no warehouse in the picture at all.
+4. **BI dashboards without a database layer** — a QuickSight dashboard needs to query S3-resident
+   Parquet directly, without first loading it into a database. Athena as the QuickSight data
+   source is the fit. **Tradeoff vs. loading data into RDS first**: RDS gives transactional
+   guarantees and lower per-query latency at small scale, but means standing up and maintaining a
+   database purely to serve read-only dashboard queries Athena could answer directly from S3.
+5. **Joining a data lake against a live operational database** — an analyst needs to find "which
+   lake records don't exist yet in the operational RDS system," without a separate ETL/copy step.
+   Athena Federated Query is the fit. **Tradeoff vs. a nightly DMS export into the lake**: DMS
+   gives a stable, cataloged copy for repeated joins, but federated query avoids the latency and
+   operational cost of a copy step for a question asked only occasionally.
+6. **Cost and usage analysis on AWS's own billing data** — a FinOps team needs to query Cost and
+   Usage Reports delivered to S3, filtered by date-based partitions. Athena with partition
+   projection is the fit — one of AWS's own most common internal/customer Athena use cases.
+   **Tradeoff vs. Cost Explorer**: Cost Explorer is far easier for standard visualizations, but
+   Athena is the only option once the question needs a custom join or a shape Cost Explorer's UI
+   doesn't expose.
+7. **ML data profiling before training** — a data scientist needs to check null rates, outliers,
+   and row counts by category before deciding how to transform a dataset for a model. Athena is
+   the fit — fast, serverless, no new infrastructure for exploratory `SELECT COUNT(*) ... GROUP
+   BY` queries. **Tradeoff vs. spinning up an EMR cluster or SageMaker Processing job**: those
+   give more compute for heavy transforms, but are significant overkill just to look at
+   distributions in a dataset.
+8. **Lake house ACID writes for concurrent pipelines** — multiple Glue ETL jobs and ad-hoc Athena
+   INSERTs need to write to the same logical table without a reader ever seeing a half-written
+   file. Athena's Apache Iceberg support is the fit. **Tradeoff vs. plain Hive-style S3 tables**:
+   Hive tables are simpler and slightly cheaper to maintain, but offer no concurrent-write safety
+   — fine for single-writer pipelines, risky once several jobs write concurrently.
+9. **Fixing a slow, expensive unoptimized table in one step** — a team inherited a CSV-based
+   table that's painfully slow and expensive to query. A CTAS statement converting it to
+   partitioned Parquet in one shot is the fit. **Tradeoff vs. a dedicated Glue ETL job for the
+   same conversion**: a Glue job is more maintainable for an ongoing, scheduled conversion, but
+   CTAS is faster to reach for when it's a one-time fix for an existing table.
+10. **Federated queries across heterogeneous operational sources** — an analyst needs to combine
+    data from RDS, DynamoDB, and CloudWatch Logs in one query without copying any of it anywhere.
+    Athena's Lambda-based Query Federation connectors are the fit. **Tradeoff vs. writing
+    application code to fetch from each source and join in memory**: custom code gives full
+    control over caching/retry per source, but reimplements what the federation SDK's connectors
+    already do, including predicate pushdown.
+11. **Serverless analytics with unpredictable, spiky query volume** — a startup doesn't know how
+    many analytical queries it'll run next month and doesn't want to pay for idle warehouse
+    capacity in the meantime. Athena's zero-idle-cost pricing is the fit. **Tradeoff vs. Redshift
+    Serverless**: Redshift Serverless scales compute for complex, repeated BI queries better at
+    higher sustained volume, but Athena is strictly cheaper when query volume is genuinely sparse
+    and unpredictable.
 
 ## When NOT to Use It / Alternatives
 

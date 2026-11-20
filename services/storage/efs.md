@@ -128,16 +128,61 @@ data migration.
 
 ## Use Cases — When to Use It
 
-- **Content management systems / shared web content** — a fleet of web servers (behind a load
-  balancer) all serving (and sometimes writing) the same uploaded media or config.
-- **Container persistent storage** — ECS and EKS pods across multiple nodes/AZs needing a shared,
-  persistent volume that survives container restarts.
-- **Lambda shared file access** — functions needing to read/write large shared datasets or
-  dependencies beyond the `/tmp` ephemeral limit.
-- **Big data / analytics shared scratch space** — many compute nodes processing the same dataset
-  concurrently (EMR, genomics, media processing pipelines).
-- **Home directories / enterprise file shares** for Linux-based environments.
-- **Lift-and-shift of existing on-prem NFS workloads** with minimal application changes.
+- **Shared render farm storage for a VFX/animation studio.** Hundreds of render nodes across multiple
+  AZs need concurrent read/write access to the same scene files and output frames. EFS's Regional,
+  multi-AZ mount gives every node the identical view with POSIX locking semantics render software
+  expects. *Alternative cost:* giving each node its own EBS volume instead means manually syncing scene
+  data to every node before each job — operationally untenable at render-farm scale.
+- **WordPress/CMS fleet behind a load balancer.** Multiple EC2 instances serve the same site, and any
+  instance must be able to show media uploaded via a different instance. EFS mounted at
+  `wp-content/uploads` solves this without a database/object-storage rewrite. *Alternative cost:* local
+  disk per instance breaks the moment the load balancer routes a later request to a different instance
+  than the one that received the upload.
+- **Container persistent storage for a multi-tenant SaaS platform on EKS.** Pods are rescheduled across
+  nodes/AZs constantly, but tenant data must persist regardless of which node a pod lands on. EFS (via
+  the EFS CSI driver) gives a shared, durable volume that survives pod rescheduling. *Alternative
+  cost:* a local `emptyDir` or node-local volume loses data on every reschedule — unacceptable for
+  stateful tenant data.
+- **Lambda-based ML inference with shared model artifacts.** Many concurrent Lambda invocations across
+  every AZ need to read the same multi-gigabyte model file without re-downloading it from S3 on every
+  cold start. EFS Access Points mounted into Lambda give every invocation the same cached file
+  instantly. *Alternative cost:* re-fetching from S3 per invocation adds meaningful latency and GET
+  cost multiplied across every concurrent cold start.
+- **Genomics/bioinformatics shared scratch space for a research institute.** Dozens of EC2 compute
+  nodes process the same reference genome dataset concurrently, each needing to read and sometimes
+  write intermediate results others can see. EFS gives this shared view natively over NFS.
+  *Alternative cost:* copying the dataset to each node's local EBS volume instead wastes storage N
+  times over and requires manual synchronization of intermediate outputs.
+- **Enterprise Linux home directories for a university or engineering firm.** Hundreds of users need a
+  familiar, centrally-managed home-directory experience accessible from any login node. EFS replaces a
+  self-hosted NFS server the IT team would otherwise patch and scale by hand. *Alternative cost:*
+  running that NFS server on a single EC2 instance with an EBS volume reintroduces the
+  single-point-of-failure problem EFS was built to remove.
+- **Lift-and-shift of an on-premises NFS file server for a logistics company.** An existing application
+  already expects an NFS mount with minimal code-change tolerance. EFS speaks the identical NFSv4.1
+  protocol, so the migration is a mount-point change, not an application rewrite. *Alternative cost:*
+  forcing a rewrite onto S3's object API instead blows the migration's budget and timeline for no
+  immediate benefit.
+- **Shared configuration/metadata store across an application cluster.** Multiple application servers
+  need to read (and occasionally write) small shared config files consistently. EFS gives real-time
+  consistency across all mounts. *Alternative cost:* using S3 for this introduces read-after-write edge
+  cases for very hot, frequently-overwritten small files, and no file-locking semantics the application
+  may expect.
+- **Compliance archival of shared departmental file shares.** A regulated company keeps years of
+  departmental Linux file shares that must remain mountable (not just downloadable) for legacy tooling
+  during an audit. EFS Standard-IA with lifecycle management keeps cold data cheap while still fully
+  mountable at any time. *Alternative cost:* exporting everything to S3/Glacier instead requires
+  rebuilding whatever on-prem tooling expects a live mounted filesystem.
+- **Cross-Region DR for a shared file system backing a trading platform's reference data.** EFS
+  Replication keeps a read-only standby file system in a second Region, promotable to writable if the
+  primary Region fails. *Alternative cost:* application-level rsync/DataSync jobs scripted by hand
+  require the team to build and maintain their own replication monitoring that EFS Replication provides
+  natively.
+- **Big data / analytics shared scratch space for a media processing pipeline.** Many compute nodes
+  (EMR, custom batch workers) process the same dataset concurrently, writing intermediate results that
+  downstream stages must see immediately. EFS's shared, consistent view removes the need for a
+  staging/handoff step between stages. *Alternative cost:* routing every intermediate file through S3
+  instead adds PUT/GET latency and eventual-consistency considerations at every pipeline stage boundary.
 
 ## When NOT to Use It / Alternatives
 

@@ -133,17 +133,64 @@ flowchart LR
 
 ## Use Cases — When to Use It
 
-- Any public-facing website or API automatically benefits from Shield Standard with zero setup
-  — this is simply always on.
-- A business-critical, revenue-generating web application or API where even a short DDoS-caused
-  outage is expensive enough to justify Shield Advanced's cost for enhanced protection, 24/7
-  expert response, and the billing-spike safety net.
-- A gaming company or financial services firm that is a known, frequent DDoS target wants
-  Shield Advanced's proactive detection and DRT engagement during active incidents.
-- Combining Shield Advanced with WAF for layered defense against both volumetric (L3/L4) and
-  application-layer (L7) attacks simultaneously.
-- An enterprise with dozens of accounts wants Shield Advanced + WAF enforced consistently
-  everywhere via Firewall Manager, without each account team configuring it independently.
+- **Baseline DDoS coverage for every public-facing workload.** Situation: any public website or
+  API exists on AWS. Why this fits: Shield Standard is automatically active with zero
+  configuration and zero cost — there's no "should we enable basic DDoS protection" decision to
+  make, it's already there. Tradeoff: Standard only covers common L3/L4 attack patterns — a
+  sophisticated, large-scale, or application-layer attack against a business-critical workload
+  needs Advanced's enhanced detection, which isn't free.
+- **Revenue-critical application justifying enhanced protection.** Situation: an e-commerce site
+  or SaaS product where even a short DDoS-caused outage costs real revenue. Why this fits: Shield
+  Advanced's enhanced detection, 24/7 DRT access, and cost-protection guarantee directly address
+  the business risk of downtime during a high-value sales window or peak traffic period.
+  Tradeoff: Advanced requires a minimum 1-year subscription commitment — this isn't a toggle you
+  flip on only during a predictable high-risk window and off afterward.
+- **Known, frequent DDoS target (gaming, financial services).** Situation: an industry segment
+  that's a routine, repeated target for attackers. Why this fits: Shield Advanced's proactive
+  detection and DRT engagement give hands-on expert help during an active incident, not just
+  automated mitigation. Tradeoff: Proactive Engagement specifically requires a qualifying
+  Business/Enterprise support plan on top of Shield Advanced itself — the highest-touch response
+  tier isn't included by Shield Advanced alone.
+- **Layered L3/4 + L7 defense for a single application.** Situation: a web application needs
+  protection against both volumetric floods and application-layer attacks simultaneously. Why
+  this fits: Shield Advanced automatically creates/tunes WAF rate-based rules during a detected
+  L7 attack, combining both layers without manual intervention mid-incident. Tradeoff: this L7
+  benefit only activates if a WAF Web ACL is actually associated with the protected resource —
+  Shield Advanced alone, with no Web ACL, still only delivers enhanced L3/4 protection.
+- **Org-wide consistent DDoS posture via Firewall Manager.** Situation: an enterprise with dozens
+  of accounts wants Shield Advanced + WAF enforced everywhere without each team configuring it
+  independently. Why this fits: Firewall Manager centrally deploys and enforces the baseline
+  across every account/resource in the Organization. Tradeoff: centralizing enforcement also
+  centralizes risk — a misconfigured Firewall Manager policy can simultaneously affect every
+  account's protection posture at once, rather than the blast radius being contained to one team.
+- **M&A — extending DDoS protection to a newly acquired, internet-facing workload.** Situation:
+  an acquired company's public-facing application joins the parent's infrastructure and has no
+  existing Shield Advanced coverage. Why this fits: subscribing the newly-absorbed resources
+  (ALB/CloudFront/Route 53/EIPs) under the parent's existing Shield Advanced subscription and
+  Firewall Manager policy brings it to the same protection baseline immediately. Tradeoff:
+  Shield Advanced's cost protection guarantee only covers resources actually associated with the
+  subscription — a newly acquired resource not yet explicitly protected gets no retroactive
+  coverage for an attack that happened before onboarding.
+- **Latency-sensitive UDP workloads that can't be fronted by CloudFront.** Situation: a
+  real-time multiplayer game server needs direct UDP access with no added latency from an
+  HTTP-layer proxy. Why this fits: Shield Advanced can protect EC2 Elastic IPs directly, giving
+  DDoS mitigation without requiring a CloudFront/ALB layer that would break the UDP protocol
+  requirement. Tradeoff: direct EIP protection doesn't get WAF's L7 content inspection benefit —
+  that specific defense layer is structurally unavailable for non-HTTP(S) protocols regardless
+  of Shield tier.
+- **Compliance evidence of availability-protection controls (SOC 2).** Situation: an auditor
+  wants evidence that availability risk (not just confidentiality/integrity) is actively
+  managed. Why this fits: Shield's always-on Standard tier plus, where applicable, an Advanced
+  subscription with documented incident history give concrete evidence of an availability
+  control being in place. Tradeoff: Shield Standard being automatic doesn't itself demonstrate an
+  active incident-response *process* — auditors often want to see the runbook and DRT engagement
+  history too, not just that the underlying service exists.
+- **Cost-spike protection during a genuine attack.** Situation: a DDoS attack causes usage-based
+  services (EC2 autoscaling, CloudFront, Route 53) to scale up and inflate the bill. Why this
+  fits: Shield Advanced's cost protection guarantee credits back charges directly attributable to
+  a declared DDoS event on protected resources. Tradeoff: this strictly covers *protected*
+  resources during a *declared* event — a scaling cost spike on an unprotected resource in the
+  same account, or one not clearly tied to a declared attack, falls outside the guarantee.
 
 ## When NOT to Use It / Alternatives
 

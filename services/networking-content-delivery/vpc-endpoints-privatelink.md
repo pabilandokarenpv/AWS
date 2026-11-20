@@ -216,19 +216,73 @@ service-level access, not whole-network connectivity.
 
 ## Use Cases — When to Use It
 
-- **Private subnets needing S3/DynamoDB access without a NAT Gateway** — the single most common,
-  highest-value VPC Endpoint use case; removes NAT Gateway per-GB cost for this traffic entirely.
-- **Lambda-in-VPC calling other AWS services** — a classic DVA-C03-relevant scenario: a Lambda
-  function placed in a VPC (to reach RDS) now needs interface endpoints to reach services like
-  Secrets Manager or SQS, since it no longer has default internet access.
-- **Compliance requirements mandating AWS API traffic never cross the public internet** — a
-  common requirement in regulated industries (finance, healthcare), satisfied directly by using
-  interface/gateway endpoints for every AWS service the workload touches.
-- **SaaS vendors exposing a product privately to customer VPCs** — AWS PrivateLink lets a
-  provider publish one NLB-backed service and have many customer accounts connect to it privately
-  and securely, without VPC peering or exposing it to the public internet.
-- **Private API Gateway access** — interface endpoints are what make a Private API Gateway
-  reachable only from inside specified VPCs.
+- **Multi-tier application removing NAT Gateway from the critical path.** A private subnet's app
+  tier calls S3 for object storage and Secrets Manager for credentials, with no other internet
+  dependency. A Gateway Endpoint (S3) plus an Interface Endpoint (Secrets Manager) handle both,
+  with no NAT Gateway needed at all. Tradeoff vs. a NAT Gateway for all outbound traffic: removes
+  NAT Gateway's per-GB processing cost and widens the subnet's isolation, but any future, truly
+  external (non-AWS) dependency still needs a NAT Gateway or a redesign.
+- **Hybrid cloud API traffic staying inside AWS.** A workload split between on-prem and AWS calls
+  AWS service APIs (SQS, KMS) from EC2 instances in a private subnet connected to on-prem via
+  Direct Connect. Interface Endpoints keep that AWS-API traffic from ever routing out to the
+  internet, even though the instance also has hybrid connectivity for on-prem calls. Tradeoff vs.
+  letting AWS API calls go out through the same NAT Gateway/IGW path used for other internet
+  traffic: adds endpoint hourly cost, but shrinks the blast radius and keeps AWS-API traffic off
+  any path that could theoretically reach the public internet.
+- **Multi-Region compliance-consistent API access.** A regulated workload replicated across two
+  Regions for DR needs AWS API traffic to stay off the internet identically in both Regions. VPC
+  endpoints (Gateway + Interface, per-AZ) deployed consistently in each Region's VPC achieve this.
+  Tradeoff vs. configuring endpoints only in the primary Region: a failover to the secondary
+  Region without matching endpoint coverage there silently reintroduces internet-routed AWS API
+  calls (or outright breaks access if NAT Gateway isn't present either) — endpoints must be part
+  of the DR Region's standard build, not an afterthought.
+- **Global content delivery pipeline processing.** A media pipeline processes uploaded video in a
+  private subnet (Lambda/EC2) reading/writing large files to S3 before CloudFront distributes the
+  result. A Gateway Endpoint for S3 removes NAT Gateway cost entirely from this typically
+  high-volume read/write path. Tradeoff vs. routing this traffic through a NAT Gateway: free and
+  zero code changes for the S3 leg specifically, but doesn't help with any other, non-S3 external
+  dependency the pipeline might also have (e.g., a third-party transcoding API).
+- **Microservices mesh with Lambda calling multiple AWS services.** A Lambda function placed in a
+  VPC to reach RDS also needs to call Secrets Manager, SQS, and KMS as part of normal request
+  handling. Interface Endpoints for each of these services let the function operate with no
+  internet dependency at all. Tradeoff vs. adding a single NAT Gateway to cover all of them: one
+  NAT Gateway is simpler to set up initially, but endpoints are often cheaper at meaningful volume
+  and keep the function's blast radius limited to exactly the services it legitimately calls.
+- **Compliance requirement: AWS API traffic must never cross the public internet.** A finance or
+  healthcare workload under PCI-DSS/HIPAA must prove every AWS API call it makes — not just its
+  primary application traffic — stays within AWS's private network. Comprehensive Gateway +
+  Interface Endpoint coverage for every AWS service the workload touches satisfies this.
+  Tradeoff vs. a NAT-Gateway-based design with a compliance exception for AWS-API traffic:
+  endpoint-based design is the architecturally clean, auditable answer, but requires maintaining
+  an endpoint per service used, growing as the workload's AWS service footprint grows.
+- **M&A account consolidation — SaaS-style internal tool sharing.** After a merger, several
+  business units (now in different AWS accounts within the same Organization) need to consume a
+  centrally hosted internal tool without the platform team managing VPC peering to every one of
+  them. Exposing the tool as a VPC Endpoint Service (PrivateLink) lets each business unit create
+  its own interface endpoint instead. Tradeoff vs. VPC peering per business unit: scales to many
+  consuming accounts without peering-connection sprawl, but requires the provider to explicitly
+  approve each new connection request (unless auto-acceptance is configured), adding an
+  operational step peering doesn't have.
+- **SaaS vendor exposing a product privately to customer VPCs.** A software vendor sells an
+  analytics product to hundreds of customer AWS accounts and wants each customer's traffic to
+  stay entirely private, without managing individual VPC peering connections per customer.
+  PrivateLink's Endpoint Service model is purpose-built for exactly this. Tradeoff vs. VPC Peering
+  per customer: avoids unmanageable peering sprawl entirely as the customer base grows, but
+  requires standing up an NLB-fronted service architecture and an approval workflow the provider
+  must operate.
+- **Private API Gateway access enforcement.** An internal REST API must never be exposed to the
+  public internet, enforced at the API Gateway configuration level, not just by firewall rules.
+  A Private API type reachable only through an interface endpoint, with a resource policy naming
+  allowed endpoints, satisfies this. Tradeoff vs. a public API Gateway locked down by IAM/Cognito
+  auth alone: network-level isolation (nothing to even attempt authentication against from
+  outside) is a stronger guarantee, but every legitimate caller must now be inside an authorized
+  VPC, which complicates access for anyone outside that network.
+- **Cost optimization retrofit on an existing, running VPC.** An existing production VPC
+  generates a large NAT Gateway bill, and investigation shows most of the traffic is S3-bound.
+  Adding a free Gateway Endpoint for S3 to the existing route table removes that traffic's NAT
+  Gateway cost with zero application changes. Tradeoff vs. leaving the NAT Gateway path as-is:
+  this is close to a pure win (free, no code changes) for S3/DynamoDB traffic specifically, but
+  doesn't reduce NAT Gateway cost for any other kind of traffic still routing through it.
 
 ## When NOT to Use It / Alternatives
 

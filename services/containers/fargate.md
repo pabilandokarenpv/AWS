@@ -248,17 +248,58 @@ rolled out the same way any other deployment would be.
 
 ## Use Cases — When to Use It
 
-- Spiky or unpredictable workloads where keeping a fleet of EC2 instances warm (and paying for
-  idle capacity) doesn't make economic sense.
-- Teams that want containers in production with zero host-level operational burden — no patching
-  cadence, no AMI pipeline, no capacity planning meetings.
-- Multi-tenant or security-sensitive workloads where per-task isolation (vs. sharing a host across
-  many tasks) matters.
-- Batch jobs, scheduled tasks, and CI/CD build runners that spin up, do work, and disappear.
-- Startups/small teams without dedicated infrastructure/ops staff to manage an EC2 fleet.
-- Filling the gap between Lambda's 15-minute execution limit and a full EC2 fleet — e.g., longer
-  batch jobs, long-lived connection pools, or workloads needing more local disk/memory than Lambda
-  allows.
+Each scenario names the situation, why Fargate fits, and the tradeoff accepted versus EC2 launch
+type or Lambda.
+
+1. **Spiky, unpredictable traffic.** Situation: a workload bursts unpredictably with long idle gaps
+   between bursts. Why Fargate fits: per-second billing with zero idle cost means you never pay
+   for warm-but-unused EC2 capacity. Tradeoff: a per-task price premium versus a well-utilized
+   Reserved EC2 fleet at high, steady volume.
+2. **Teams with zero dedicated ops/platform staff.** Situation: a small team wants containers in
+   production without a patch cadence or AMI pipeline. Why Fargate fits: AWS owns all host-level
+   patching and capacity planning. Tradeoff: less low-level control — no custom AMI, kernel module,
+   or privileged-container access.
+3. **Multi-tenant SaaS isolation boundary.** Situation: a SaaS platform needs hard compute isolation
+   between tenants' workloads. Why Fargate fits: each task gets its own micro-VM and ENI, with no
+   shared host across tenants. Tradeoff: running many small, individually-billed tasks can cost
+   more at scale than densely-packed EC2 once tenant volume grows large and steady.
+4. **Batch jobs and scheduled tasks via `RunTask`.** Situation: nightly ETL, report generation, or
+   document-processing jobs that start, finish, and exit. Why Fargate fits: billed only for actual
+   run duration, with zero idle fleet cost between runs. Tradeoff: cold-start latency (tens of
+   seconds) versus placing onto already-warm EC2 capacity.
+5. **Self-hosted CI/CD build runners.** Situation: a team wants to avoid maintaining a permanently
+   running EC2 build fleet. Why Fargate fits: runner tasks start on-demand per CI job and
+   disappear afterward. Tradeoff: layer/dependency caching across builds is harder to keep warm
+   than with a persistent, always-on runner.
+6. **Filling the gap beyond Lambda's 15-minute ceiling.** Situation: a processing step (large file
+   transform, long external API polling loop) might exceed Lambda's duration limit. Why Fargate
+   fits: `RunTask` via Step Functions has no duration cap at all. Tradeoff: slower startup and
+   coarser per-task billing granularity than Lambda for genuinely short-lived work.
+7. **Scheduled scale-to-zero dev/test environments.** Situation: non-production environments sit
+   idle outside business hours. Why Fargate fits: `desiredCount: 0` truly costs nothing, unlike a
+   stopped EC2 instance that still bills for attached EBS volumes. Tradeoff: the environment takes
+   time to cold-start back up versus an always-on instance.
+8. **Lightweight ML inference behind an ALB.** Situation: bursty inference traffic where the team
+   doesn't want a SageMaker endpoint's always-on instance cost. Why Fargate fits: an ECS Service on
+   Fargate scaled on request count via Application Auto Scaling. Tradeoff: loses SageMaker's
+   model-specific MLOps tooling (multi-model endpoints, built-in A/B testing).
+9. **Hotfix emergency redeploys with circuit-breaker safety.** Situation: a critical fix must reach
+   production fast with an automatic safety net. Why Fargate fits: new tasks redeploy in
+   seconds-to-minutes, and ECS's deployment circuit breaker auto-rolls back a crash-looping
+   revision. Tradeoff: still bound by Fargate's fixed vCPU/memory combinations — a hotfix that
+   changes resource needs may require resizing the task definition first.
+10. **Monorepo microservices, each independently deployed.** Situation: many small services share
+    one repository. Why Fargate fits: each service gets its own task definition/Service with
+    independent per-second billing and no shared-host blast radius between services. Tradeoff:
+    per-service ENI and networking overhead adds up operationally as the number of services grows.
+11. **Blue/green production rollout via CodeDeploy.** Situation: a production release needs
+    zero-downtime cutover. Why Fargate fits: standing up a parallel task set only costs the brief
+    overlap window, with no EC2 capacity pre-planning required. Tradeoff: temporarily doubles the
+    per-second compute bill during the cutover.
+12. **Cost-tunable data processing with Graviton and ephemeral storage.** Situation: an ETL
+    pipeline has irregular, large-data processing jobs. Why Fargate fits: ARM64/Graviton pricing
+    plus configurable ephemeral storage let you tune cost precisely per job. Tradeoff: Fargate's
+    16 vCPU / 120 GB ceiling disqualifies genuinely large single-container jobs outright.
 
 ## When NOT to Use It / Alternatives
 

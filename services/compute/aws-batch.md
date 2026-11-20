@@ -60,6 +60,42 @@ finishes, Batch records success/failure, applies configured retry logic on failu
 is the last job keeping the compute environment busy — scales the environment back down, including
 to zero.
 
+### How It Works — Step by Step: From `submit-job` to a Completed Result
+
+Tracing one job from submission to completion connects the queue/scheduler/compute-environment
+pieces into a single concrete timeline:
+
+1. **Job submitted.** A `submit-job` call (or an array job submission covering thousands of
+   indices at once) places the job into the configured job queue, in `SUBMITTED` state.
+2. **Dependency and queue-position check.** Batch checks whether the job has unmet dependencies
+   (another job it must wait on); if so, it sits in `PENDING` until those complete. Once
+   dependency-free, it becomes `RUNNABLE` — eligible to run as soon as capacity exists.
+3. **Scheduler matches job to capacity.** The scheduler continuously compares `RUNNABLE` jobs
+   across all queues sharing a compute environment against currently available (or
+   can-be-provisioned) capacity, respecting queue priority and any fair-share scheduling policy
+   configured.
+4. **Compute environment provisions capacity.** If no existing capacity fits the job's resource
+   request, the compute environment provisions more — spinning up a new Fargate task or launching
+   new EC2 instances (including Spot, if configured) — bounded by the environment's configured
+   min/max vCPU range.
+5. **Container starts.** The job's container image is pulled (from ECR or another registry) and
+   started with the job definition's command, environment variables (including the array index
+   for array jobs), and resource limits — this step looks identical to a plain ECS task launch,
+   because under the hood, it is one.
+6. **Job runs to completion or failure.** The container runs until it exits. Batch records the
+   container's own exit code and transitions the job to `SUCCEEDED` or `FAILED` accordingly.
+7. **Retry logic applied (on failure).** If a retry strategy is configured and the exit code
+   matches a retryable condition, Batch resubmits the job (up to the configured attempt limit)
+   rather than leaving it permanently failed.
+8. **Compute scales down.** Once no more jobs need the capacity a compute environment provisioned,
+   it scales back toward its configured minimum — often zero — so you stop paying for compute the
+   moment there's genuinely nothing left to process.
+
+This sequence is also the fastest troubleshooting map: a job stuck in `RUNNABLE` almost always
+means step 3/4 can't find or provision matching capacity (check instance type availability and
+quotas); a job that fails immediately with no useful error almost always means step 5's container
+start failed (check the entrypoint command and CloudWatch Logs).
+
 ### The layered architecture AWS Batch actually sits on top of
 
 ![Showing the layers of AWS Batch for workloads, orchestration, and capacity.](https://docs.aws.amazon.com/batch/latest/userguide/images/batch-diagram.png)
@@ -87,6 +123,12 @@ flowchart TD
     RUN --> OUT[(Output data - S3 bucket)]
 ```
 
+*This diagram traces the full path from building a container image to a finished result: the
+image lands in ECR, a job definition references it, a submitted job joins the queue, the compute
+environment provisions capacity and pulls the image, and the running container reads its input
+and writes its output through S3 — never touching any persistent local state. The Well-Architected
+reference diagram below shows the same shape with the formal "loosely coupled" HPC terminology.*
+
 ![AWS Batch reference architecture.](https://docs.aws.amazon.com/wellarchitected/latest/high-performance-computing-lens/images/image1.png)
 
 *The AWS Well-Architected HPC Lens's reference architecture for a "loosely coupled" workload —
@@ -107,6 +149,13 @@ flowchart LR
     J3B --> J4
 ```
 
+*This diagram shows Batch's built-in job dependency feature modeling a small pipeline without any
+separate workflow orchestrator: Job 2 won't start until Job 1 succeeds, Jobs 3a/3b fan out in
+parallel once Job 2 finishes, and Job 4 waits for both before running. The practical limit worth
+knowing: this works well for a handful of dependent stages, but a pipeline with heavy branching
+logic, conditional paths, or human-approval steps outgrows Batch's dependency model and is better
+expressed in Step Functions, which can still call Batch to run the actual compute-heavy jobs.*
+
 ### Multi-queue priority routing to one compute environment
 
 ```mermaid
@@ -115,6 +164,14 @@ flowchart TD
     QLOW[Low-Priority Queue - priority 1] --> CE
     CE -->|high-priority jobs scheduled first\nwhen capacity is constrained| RUN[Running Jobs]
 ```
+
+*This diagram shows two job queues sharing one compute environment's capacity, distinguished only
+by a priority number. When capacity is plentiful, both queues' jobs run without contention; the
+priority only matters when capacity is constrained, at which point the scheduler drains the
+higher-priority queue first. This is the mechanism behind a common real-world pattern: a
+"production" queue (priority 10) for time-sensitive jobs and a "best-effort" queue (priority 1)
+for background work, sharing the same underlying Spot fleet so the organization doesn't pay for
+two separate compute environments.*
 
 ## Key Features / Components
 
@@ -183,20 +240,72 @@ task-hours of 0.25-vCPU work, or **104.2 vCPU-hours** total.
 
 ## Use Cases — When to Use It
 
-- **Large-scale parallel data processing**: transform/validate millions of files, each
-  independently, using an array job — classic ETL batch pattern.
-- **Scientific/financial simulations** that need to run many parameter combinations overnight and
-  report back, without anyone needing to babysit a job scheduler.
-- **Media processing at scale** — transcoding thousands of video files, where each is an
-  independent, container-packaged unit of work.
-- **ML training/batch inference jobs** that need GPU instances and don't fit Lambda's time/package
-  limits — a common MLA-C02-relevant pattern: train many models with different hyperparameters as
-  an array job.
-- **Tightly-coupled HPC workloads** (simulations requiring inter-node communication, like MPI jobs)
-  via multi-node parallel jobs, something array jobs alone (which assume independence between
-  units of work) can't model.
-- **Any workload shaped like "run this container N times, as cheaply as possible, whenever
-  capacity allows"** — the signature phrase pointing straight at AWS Batch on the exam.
+- **E-commerce catalog re-indexing at scale (retail/e-commerce).** Situation: a retailer with
+  millions of SKUs needs to rebuild its search index nightly, processing each product
+  independently. Why Batch fits: an array job processes every SKU as an independent unit,
+  automatically scaling compute to the backlog and scaling back to zero once the index finishes.
+  What the alternative would cost: submitting a million individual Lambda invocations would hit
+  concurrency limits and complicate tracking progress across such a large fan-out; a fixed EC2
+  fleet sized for the nightly peak would sit idle the other 23 hours of the day.
+- **Fintech risk-model backtesting sweep (financial services).** Situation: a quant team needs to
+  backtest a trading strategy against hundreds of historical parameter combinations before a
+  trading day opens. Why Batch fits: each parameter combination becomes one array job index,
+  running in parallel across a Spot-backed compute environment, with automatic retry if a
+  backtest run is interrupted. What the alternative would cost: running these sequentially on a
+  single EC2 instance would take far longer than the overnight window allows; manually managing a
+  fleet of parallel EC2 instances would require building the exact queue/retry logic Batch
+  provides for free.
+- **Media/streaming video transcoding at scale (media & entertainment).** Situation: a streaming
+  service needs to transcode a large backlog of archived content into a new codec, a one-time
+  bulk job spanning tens of thousands of files. Why Batch fits: Spot-backed compute environments
+  handle the bulk, interruption-tolerant workload at the lowest possible cost, with jobs simply
+  retrying if a Spot instance is reclaimed mid-transcode. What the alternative would cost: running
+  the same backlog through an always-on Fargate service would mean either over-provisioning for a
+  one-time burst or taking far longer by under-provisioning — Batch's elastic scaling is purpose
+  built for exactly this bursty, finite-but-large workload shape.
+- **Healthcare genomic variant-calling pipeline (healthcare/life sciences).** Situation: a
+  genomics lab processes thousands of patient genome sequencing files nightly, each requiring
+  significant CPU time and, for some analysis stages, GPU acceleration. Why Batch fits:
+  multi-stage job dependencies model the validate → align → call-variants → report pipeline
+  directly, with GPU-backed EC2 compute environments available for the accelerated stage. What the
+  alternative would cost: Lambda can't support the GPU requirement or the multi-hour-per-file
+  runtime some stages need; hand-building a job scheduler for this pipeline would duplicate work
+  Batch already provides.
+- **Gaming server-side replay analysis (gaming).** Situation: a game studio wants to analyze every
+  ranked match's replay data overnight to detect cheating patterns, processing potentially millions
+  of replays per night. Why Batch fits: an array job processes replays in parallel, with Spot
+  compute keeping the cost of this massive, naturally parallel, interruption-tolerant workload low.
+  What the alternative would cost: a dedicated always-on analysis fleet sized for the nightly peak
+  would be idle most of the day; doing this analysis synchronously during gameplay would add
+  unacceptable latency to match completion.
+- **SaaS tenant-wide data migration jobs (SaaS).** Situation: a SaaS platform needs to run a
+  one-time schema migration script across every customer tenant's isolated dataset during a
+  planned maintenance window. Why Batch fits: each tenant's migration becomes one job (or one
+  array index), with retry logic handling transient failures per tenant without blocking others.
+  What the alternative would cost: a single sequential migration script would take far longer to
+  complete across hundreds of tenants and offers no natural per-tenant retry/isolation if one
+  tenant's data has an edge case that fails.
+- **Batch analytics large-scale ETL validation (data analytics).** Situation: a data platform team
+  needs to validate and transform millions of incoming files daily, with volume that varies
+  significantly day to day based on upstream data volume. Why Batch fits: this is the signature
+  AWS Batch use case — large-scale parallel processing with automatic capacity scaling tied to
+  actual backlog size. What the alternative would cost: hand-rolling a custom job queue and worker
+  autoscaler on raw EC2/SQS would duplicate functionality Batch provides out of the box, adding
+  unnecessary engineering and maintenance burden.
+- **IoT bulk firmware-compatibility testing (IoT).** Situation: an IoT device manufacturer needs
+  to run a new firmware build against hundreds of device/hardware-revision combinations in an
+  emulated test harness before release. Why Batch fits: each hardware combination becomes an array
+  job index, running in parallel across a compute environment sized to the test matrix, with
+  results collected in S3 for a single consolidated report. What the alternative would cost:
+  manually orchestrating hundreds of parallel test runs on individually launched EC2 instances
+  would require building the exact scheduling and result-aggregation logic Batch already handles.
+- **ML training hyperparameter sweeps (MLOps).** Situation: a data science team wants to train
+  dozens of candidate models with different hyperparameter combinations overnight and compare
+  results the next morning. Why Batch fits: an array job (or Batch orchestrating individual
+  SageMaker training jobs, per the integration pattern below) runs every combination in parallel on
+  GPU-backed compute, scaling to zero once training finishes. What the alternative would cost:
+  running the sweep sequentially on a single GPU instance would take many times longer, likely
+  missing the morning deadline for reviewing results.
 
 ## When NOT to Use It / Alternatives
 
@@ -348,6 +457,12 @@ awslocal ecs list-tasks --cluster batch-lab-cluster
 awslocal ecs delete-cluster --cluster batch-lab-cluster
 ```
 
+This simulation demonstrates the same mental model AWS Batch uses internally — a cluster standing
+in for a compute environment, a task definition standing in for a job definition, and a loop of
+`run-task` calls standing in for an array job's fan-out — so the "many independent units of work,
+one shared definition, different index per unit" pattern is the thing to internalize, even though
+the real `awslocal batch` command surface isn't exercised directly here.
+
 If you need to practice the actual `awslocal batch` API surface (job queues, compute environment
 creation with vCPU bounds, job dependency chains), do so against real AWS in the Free Tier with
 budget alerts set — Batch itself adds no charge, only the underlying compute does, so a few short
@@ -431,6 +546,14 @@ flowchart LR
     SM1 --> ART[(S3 - model artifacts)]
     SM2 --> ART
 ```
+
+*This diagram shows Batch deliberately *not* running the training itself — each Batch job's
+container is a thin wrapper that starts and polls a SageMaker training job, while Batch's own
+queue/scheduling/dependency features coordinate how many training runs happen in parallel and in
+what order. The reason this split exists rather than running training directly inside a
+Batch-managed container: SageMaker brings training-specific tooling (managed Spot training,
+experiment tracking, built-in algorithms) that would otherwise have to be reimplemented by hand
+inside a plain Batch job.*
 
 ## Further Reading
 

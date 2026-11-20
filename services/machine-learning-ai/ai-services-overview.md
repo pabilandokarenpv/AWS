@@ -168,18 +168,71 @@ custom model (or a Bedrock prompt) to do the whole job end to end.
 
 ## Use Cases — When to Use It
 
-- You need a specific, well-defined intelligence capability (sentiment, OCR, translation, facial
-  comparison, recommendations, forecasting) and the AWS-trained general model is accurate enough
-  for your domain — just call the API.
-- Your team doesn't have ML expertise and needs AI capability fast, with no model lifecycle to
-  manage.
-- You need the specific regulatory/compliance posture these services offer for sensitive data
-  (e.g., Comprehend Medical/Transcribe Medical for healthcare contexts).
-- You want predictable per-request/per-unit pricing without worrying about hosting costs.
-- You need to chain several of these together into a composed pipeline (OCR → NLP → redaction,
-  as in the worked example above) rather than build each piece as a custom model.
-- You need content moderation at scale across user-generated images/video/text without staffing
-  a fully manual review team for every single upload.
+- **Call-center sentiment and topic analytics (any consumer business):** Problem — understand
+  what customers are frustrated about across thousands of support calls/tickets without a human
+  reading each one. Why it fits — Transcribe converts calls to text, Comprehend extracts sentiment
+  and topics/entities from the transcript. Tradeoff vs. a custom NLP model — Comprehend needs zero
+  labeled training data to get useful baseline results; a custom model would require months of
+  labeling effort to match what Comprehend already provides out of the box.
+- **Invoice/receipt digitization (accounting/finance back office):** Problem — extract vendor
+  name, totals, and line-item tables from thousands of scanned invoices with varying layouts. Why
+  it fits — Textract's `FORMS`/`TABLES` feature types extract structured key-value pairs and
+  tables with layout awareness. Tradeoff vs. a custom SageMaker document model — Textract needs no
+  training data and handles layout variation out of the box; a custom model is justified only if
+  Textract's general-purpose extraction genuinely underperforms on an unusual document type.
+- **Content moderation for user-generated video (social/UGC platforms):** Problem — automatically
+  flag explicit or violent content in uploaded video before it's published, at a volume no manual
+  review team can cover alone. Why it fits — Rekognition's content moderation labels score each
+  frame/scene against defined unsafe-content categories with per-category confidence thresholds.
+  Tradeoff vs. a fully custom-trained classifier — Rekognition needs no labeled training data and
+  covers general categories immediately; a custom model is only worth building for brand-specific
+  or jurisdiction-specific violation categories Rekognition's general categories don't cover.
+- **Medical record information extraction (healthcare):** Problem — extract conditions,
+  medications, and dosages from unstructured clinical notes for downstream analytics, under HIPAA
+  handling requirements. Why it fits — Comprehend Medical is purpose-built for exactly this
+  extraction task with HIPAA-eligible handling. Tradeoff vs. Bedrock — Bedrock's long-context
+  summarization is more flexible for open-ended clinical note synthesis, but Comprehend Medical is
+  more predictable, cheaper, and purpose-validated for discrete medical entity extraction
+  specifically.
+- **Retail demand forecasting (retail/CPG):** Problem — forecast next quarter's SKU-level demand
+  across hundreds of stores without standing up or managing any training infrastructure. Why it
+  fits — Forecast's AutoML-style algorithm selection (CNN-QR, DeepAR+, Prophet, ARIMA, ETS) picks
+  a fitting algorithm automatically from your historical data's characteristics. Tradeoff vs.
+  SageMaker DeepAR directly — DeepAR on SageMaker gives more control over custom feature
+  engineering inside a broader pipeline; Forecast is faster to ship when you just need accurate
+  forecasts without managing that infrastructure yourself.
+- **Product recommendation engine (e-commerce):** Problem — personalize product recommendations
+  and re-rank search results per user without building a recommendation model from scratch. Why it
+  fits — Personalize's pre-built recipes (user-personalization, similar-items, personalized-
+  ranking) train directly on your interaction history with no custom model architecture needed.
+  Tradeoff vs. SageMaker Factorization Machines — Personalize needs far less tuning expertise and
+  ships a managed real-time API; build on SageMaker directly only when you need custom feature
+  engineering Personalize's recipes don't expose.
+- **Fraud/PII redaction before analytics storage (financial services/any regulated industry):**
+  Problem — strip personally identifiable information (SSNs, account numbers) from support
+  transcripts and documents before they're stored for analytics, satisfying a data-minimization
+  requirement. Why it fits — Comprehend's `DetectPiiEntities` purpose-built PII detection handles
+  the varying real-world formatting PII can take. Tradeoff vs. a hand-rolled regex scanner — regex
+  patterns are brittle against formatting variation and easy to miss edge cases; Comprehend's
+  model-based detection is more robust at the cost of a small per-unit processing fee regex
+  scanning wouldn't incur.
+- **Cross-language customer support (global consumer products):** Problem — support agents and
+  customers speak different languages, and hiring multilingual staff for every market isn't
+  feasible. Why it fits — Translate converts tickets both directions around a human agent who
+  never needs to speak the customer's language. Tradeoff vs. Bedrock handling translation inline —
+  Bedrock can both translate and converse fluently in one model call, but Translate is cheaper,
+  faster, and fully deterministic for the narrower translation-only task.
+- **Accessibility read-aloud and IVR systems (any consumer product/call center):** Problem —
+  convert written content or menu prompts into natural-sounding speech for accessibility or phone
+  systems. Why it fits — Polly's lifelike voices and SSML control generate speech without any
+  model training. Tradeoff vs. a real conversational voice assistant — Polly only converts text to
+  speech; a genuinely conversational, reasoning voice assistant needs Polly paired with Lex/Bedrock
+  for the actual dialogue logic.
+- **Automated video/audio captioning (media/e-learning platforms):** Problem — generate captions
+  and searchable transcripts for a large video library without manual transcription. Why it fits —
+  Transcribe's speech-to-text with speaker diarization labels who said what automatically.
+  Tradeoff vs. manual transcription — manual transcription is more accurate on heavily accented or
+  overlapping speech but doesn't scale to a large back-catalog the way an automated API does.
 
 ## When NOT to Use It / Alternatives
 

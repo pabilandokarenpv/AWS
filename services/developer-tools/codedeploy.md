@@ -271,14 +271,54 @@ at CodeDeploy, not the ECS-native circuit breaker.
 
 ## Use Cases — When to Use It
 
-- Automating zero/low-downtime releases to EC2 Auto Scaling Groups, ECS services, or Lambda
-  functions with built-in health-check-driven rollback.
-- Teams that need auditable, repeatable deployment history (who deployed what, when, with what
-  rollback behavior).
-- ML model-serving endpoints on ECS/EC2 needing a safe canary rollout before 100% of inference
-  traffic hits a new model version.
-- Coordinating multi-step validation (pre-traffic Lambda checks, post-traffic smoke tests) as a
-  formal, auditable part of every release rather than an ad-hoc manual step.
+Each scenario names the situation, why CodeDeploy fits, and the tradeoff accepted versus an
+alternative deployment approach.
+
+1. **Blue/green production rollout for a critical service.** Situation: a service can't tolerate
+   downtime and needs instant rollback capability. Why CodeDeploy fits: its blue/green strategy
+   stands up a full parallel environment and swaps traffic atomically. Tradeoff: briefly doubles
+   infrastructure cost during the cutover window.
+2. **Canary rollout to minimize blast radius.** Situation: a risky change must be validated against
+   a small slice of real traffic before full exposure. Why CodeDeploy fits: Canary/Linear
+   deployment configs shift a small percentage first, watch alarms, then proceed. Tradeoff: a
+   slower full rollout than blue/green or all-at-once.
+3. **Cost-sensitive rolling deployment to an EC2 fleet.** Situation: a budget-conscious team wants
+   zero-downtime updates without duplicate infrastructure. Why CodeDeploy fits: rolling
+   (batch-by-batch) deployment configs update the same fleet in place. Tradeoff: rollback is slower
+   (re-deploying the old version batch by batch) than blue/green's near-instant traffic flip-back.
+4. **Lambda safe deployment with pre/post-traffic validation.** Situation: a Lambda change needs
+   automated smoke-testing before 100% of users see it. Why CodeDeploy fits: SAM's
+   `DeploymentPreference` wraps CodeDeploy with `PreTraffic`/`PostTraffic` hook Lambdas. Tradeoff:
+   hook functions add their own IAM/failure-mode surface — a hook that forgets to report status
+   hangs the whole deployment until timeout.
+5. **Hotfix emergency deploy with automatic alarm-based rollback.** Situation: a critical patch is
+   being rushed to production under time pressure. Why CodeDeploy fits: CloudWatch-alarm-triggered
+   automatic rollback catches a bad hotfix without requiring a human to notice first. Tradeoff:
+   requires alarms to already be correctly configured and attached beforehand — you cannot
+   improvise this safety net mid-incident.
+6. **Multi-region/multi-account coordinated rollout.** Situation: a global service must roll out
+   region-by-region with isolated blast radius. Why CodeDeploy fits: one CodePipeline fans out to
+   multiple CodeDeploy deployment groups, each with its own alarms/rollback. Tradeoff:
+   significantly more deployment groups and alarm configurations to maintain than a single-region
+   rollout.
+7. **ML model-serving canary rollout.** Situation: a new model version needs validation against a
+   small slice of inference traffic before a full cutover. Why CodeDeploy fits: its Lambda compute
+   platform can canary-shift traffic between SageMaker endpoint configurations behind a proxy.
+   Tradeoff: adds a Lambda proxy layer and CodeDeploy configuration that most simple SageMaker
+   deployments don't otherwise need.
+8. **Auditable, repeatable deployment history.** Situation: compliance requires a record of who
+   deployed what, when, and with what rollback behavior. Why CodeDeploy fits: deployment history is
+   a built-in audit trail with no extra tooling. Tradeoff: real-time alerting still requires wiring
+   SNS/EventBridge notifications yourself — the history alone isn't a live alert.
+9. **Database/non-application release orchestration.** Situation: a database schema change needs
+   the same safe-rollout discipline as an app deploy. Why CodeDeploy fits: its Deploy-stage concept
+   is generic enough to drive any release process, not just application code. Tradeoff: still
+   needs custom scripting, since CodeDeploy has no database-specific migration logic built in.
+10. **ECS blue/green via CloudFormation Hooks.** Situation: a team wants infrastructure (ALB,
+    target groups, ECS service) and the deployment strategy defined together in one template. Why
+    CodeDeploy fits: CloudFormation's native CodeDeploy Blue/Green Hook ties both together in a
+    single stack update. Tradeoff: that resource can't be used inside nested stacks — a documented
+    limitation that forces a flatter template structure.
 
 ## When NOT to Use It / Alternatives
 

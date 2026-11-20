@@ -241,16 +241,73 @@ list of individual private VIFs as the VPC count grows.
 
 ## Use Cases — When to Use It
 
-- **Large, consistent data transfer workloads** — bulk data migration, backup replication, media
-  workflows — where internet-based transfer is too slow, too variable, or too expensive at scale.
-- **Hybrid applications needing low, predictable latency** — trading systems, real-time
-  analytics pipelines split between on-prem and AWS.
-- **Regulatory requirements to avoid the public internet** — certain compliance frameworks or
-  internal security policies mandate private connectivity for specific data categories.
-- **Reducing data transfer costs at scale** — Direct Connect data transfer rates are typically
-  lower than standard internet egress for high-volume, steady-state transfer.
-- **Multi-Region, multi-VPC enterprise connectivity** — paired with a Direct Connect Gateway and
-  Transit Gateway for a single physical entry point reaching a whole AWS organization's network.
+- **Hybrid cloud connectivity for large, steady data volumes.** A company runs a mixed on-prem/
+  AWS environment and regularly transfers large backup/replication volumes between the two. Direct
+  Connect's dedicated physical link gives predictable bandwidth and lower per-GB rates at this
+  volume. Tradeoff vs. a Site-to-Site VPN: better cost and consistency at steady high volume, but
+  weeks-to-months of physical provisioning lead time versus a VPN's minutes-to-hours setup.
+- **Multi-tier application split across on-prem and AWS.** A trading system or real-time analytics
+  pipeline has latency-sensitive components on both sides of the hybrid boundary and cannot
+  tolerate the public internet's variable latency. Direct Connect's dedicated, non-internet path
+  gives predictable, low latency for this cross-boundary traffic. Tradeoff vs. keeping everything
+  in AWS: avoids a full migration, but the dedicated link itself needs its own resiliency design
+  (multiple connections/locations) to avoid becoming a new single point of failure.
+- **Multi-Region enterprise hybrid connectivity.** A large enterprise has one physical Direct
+  Connect connection and needs it to reach VPCs in multiple Regions, not just the Region where the
+  connection physically lands. A Direct Connect Gateway extends one connection's reach across
+  Regions. Tradeoff vs. a separate physical connection per Region: dramatically cheaper and
+  simpler (no new cross-connects needed), but all those Regions now share the fate of that one
+  physical connection unless additional resiliency is layered in.
+- **Global content delivery origin ingestion.** A media company ingests massive raw footage
+  uploads from an on-prem studio into S3 for processing and global CloudFront distribution.
+  Direct Connect with a public VIF reaches S3's public endpoint over the dedicated link instead of
+  the internet, reducing both cost and latency variability for the ingest leg. Tradeoff vs.
+  uploading over the internet (even with Transfer Acceleration): Direct Connect needs the physical
+  provisioning lead time and fixed port cost, but gives materially more predictable, often cheaper
+  throughput for sustained, large-volume ingest.
+- **Microservices mesh with on-prem dependencies.** A company's cloud-native microservices need
+  to call a handful of legacy on-prem services (e.g., a mainframe-fronting API) as part of normal
+  request handling, at latency low enough not to degrade the whole mesh's responsiveness. A
+  private VIF or transit VIF into the on-prem network satisfies this. Tradeoff vs. accepting
+  public-internet-mediated calls to the legacy service: Direct Connect removes the latency/
+  reliability variance of the public path, but adds a hybrid dependency that must be resiliency-
+  planned (multiple connections) since the whole mesh's responsiveness now depends on it.
+- **Compliance-driven no-internet-traversal requirement.** A regulated workload (finance,
+  government) must prove that specific data categories never traverse the public internet, even
+  encrypted. Direct Connect is the only connectivity option that satisfies "never touches the
+  internet" literally, since VPN by definition tunnels over it. Tradeoff vs. VPN: Direct Connect
+  alone still isn't encrypted by default (needs MACsec or a VPN layered on top for that separate
+  requirement), and it costs materially more in fixed port/circuit fees for a compliance property
+  a VPN plus encryption can't fully satisfy.
+- **M&A account consolidation — merging two companies' hybrid networks.** After a merger, one
+  company's on-prem data center needs a direct, high-bandwidth path into the other's (now shared)
+  AWS environment for ongoing data migration and system integration work spanning months. Direct
+  Connect's steady, predictable throughput suits this sustained, multi-month integration project
+  better than per-request internet transfer. Tradeoff vs. a temporary VPN for the migration
+  period: Direct Connect costs more to provision and takes longer to stand up, but pays for itself
+  if the migration (or the resulting steady-state hybrid operation) runs long enough at high
+  enough volume.
+- **Reducing data transfer costs at scale.** A company with a large, steady, ongoing on-prem-to-
+  AWS data flow (e.g., nightly batch uploads, continuous log shipping) finds standard internet
+  egress increasingly expensive as volume grows. Direct Connect's lower per-GB rate becomes
+  cheaper in aggregate once volume crosses a threshold. Tradeoff vs. standard internet transfer:
+  internet transfer has zero fixed cost and no provisioning lead time, making it better for
+  low/sporadic volume, while Direct Connect's fixed port-hour cost only pays off once the per-GB
+  savings outweigh it.
+- **Enterprise-scale multi-VPC hybrid entry point.** An organization's AWS footprint has grown to
+  dozens of VPCs across many accounts, all needing the same hybrid connectivity back to on-prem.
+  A Direct Connect Gateway associated with a Transit Gateway gives one physical entry point
+  reaching every attached VPC through the Transit Gateway's routing. Tradeoff vs. a private VIF
+  per VPC: massively reduces the connection-management burden as VPC count grows, but concentrates
+  the entire organization's hybrid traffic through one Transit Gateway's shared bandwidth/cost
+  profile.
+- **Direct Connect + VPN backup for automatic failover.** A company wants Direct Connect's
+  performance for normal operation but cannot accept total hybrid connectivity loss if the
+  dedicated link fails. A parallel Site-to-Site VPN, BGP-configured with lower route preference,
+  takes over automatically if Direct Connect's BGP session drops. Tradeoff vs. a second Direct
+  Connect connection for redundancy: VPN backup is far cheaper and faster to stand up, but caps
+  failover throughput/latency at VPN-over-internet levels rather than matching Direct Connect's
+  own performance during the outage.
 
 ## When NOT to Use It / Alternatives
 

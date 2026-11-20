@@ -202,20 +202,54 @@ types work purely from input/prediction data with no labels required at all.
 
 ## Use Cases — When to Use It
 
-- You have a live production model and need to know, automatically, when it starts seeing data
-  unlike what it was trained on (seasonal shift, new customer segment, upstream data bug).
-- You operate in a regulated industry and need an auditable record of every model version, its
-  metrics, and who approved it for production.
-- You want retraining to be triggered by actual evidence of drift rather than an arbitrary
-  calendar schedule (cheaper and more responsive than "retrain every Monday regardless").
-- You have multiple models or teams and need a shared catalog so nobody accidentally deploys an
-  unapproved or stale version.
-- You need to detect fairness/bias problems that only show up once the model meets real-world
-  traffic, not just the training set.
-- You need a documented, shareable summary of a model's intended use and limitations for
-  internal governance or external stakeholders — Model Cards.
-- You want to track model accuracy decay specifically (not just input drift), once ground truth
-  eventually becomes available for past predictions.
+- **Fraud detection drift monitoring (financial services):** Problem — fraud patterns genuinely
+  shift as new tactics emerge, and a model trained months ago can silently miss new fraud shapes.
+  Why it fits — Data Quality monitoring continuously compares live transaction statistics against
+  the training baseline, catching distribution shifts (a new transaction-size pattern) within
+  hours instead of discovering the problem from a business-metric drop weeks later. Tradeoff vs. a
+  fixed retraining calendar — a scheduled monthly retrain wastes compute when nothing's drifted
+  and reacts too slowly when something has; drift-triggered retraining is responsive to actual
+  evidence instead of an arbitrary date.
+- **Customer churn model governance (telecom/SaaS):** Problem — multiple data scientists each
+  produce "a churn model," and nobody has a clean record of which version is actually live or why
+  it was approved. Why it fits — Model Registry's versioned catalog plus approval workflow gives
+  one auditable source of truth. Tradeoff vs. informal file-naming conventions
+  ("final_v2_REAL.pkl") — informal naming is zero-setup but produces exactly the chaos and lost
+  audit trail Model Registry is built to prevent.
+- **Medical risk-model bias monitoring (healthcare):** Problem — a readmission-risk model can
+  develop a demographic bias in production even while its overall accuracy looks stable. Why it
+  fits — Bias Drift monitoring reruns Clarify-style fairness metrics continuously on live
+  predictions, independent of the aggregate accuracy metric that would otherwise mask the problem.
+  Tradeoff vs. relying on Model Quality monitoring alone — Model Quality tracks accuracy/precision
+  decay but has no concept of fairness across subgroups; a model can show perfectly healthy
+  accuracy while a specific group's outcomes worsen, which is exactly why Bias Drift exists as its
+  own distinct check.
+- **Credit scoring regulatory compliance (banking):** Problem — a regulator demands proof of
+  exactly which data, code, and approver produced the model currently making live credit
+  decisions. Why it fits — Model Registry's lineage tracking ties a specific version to its
+  originating training job, data, and the human who approved it. Tradeoff vs. ad hoc
+  documentation in a shared spreadsheet — a spreadsheet is faster to start but has no enforced
+  structure and is trivially easy to fall out of sync with what's actually deployed.
+- **Demand forecasting accuracy tracking (retail/CPG):** Problem — a forecasting model's accuracy
+  can decay gradually as market conditions shift, well before anyone would notice from inventory
+  reports alone. Why it fits — Model Quality monitoring compares predictions against eventual
+  ground truth (actual sales once known) to track accuracy decay directly. Tradeoff vs. Data
+  Quality monitoring alone — Data Quality only checks whether the *inputs* look different from
+  training, which wouldn't catch a case where inputs look stable but the demand-driving
+  relationship itself has genuinely changed (concept drift).
+- **Recommendation engine governance across teams (e-commerce):** Problem — a large organization
+  has dozens of recommendation model variants across different product surfaces, and compliance
+  needs to know which are currently approved for production at a glance. Why it fits — Model
+  Registry's Model Package Groups give a compliance reviewer one place to check every team's
+  approval status. Tradeoff vs. asking each team individually — asking around doesn't scale past
+  a handful of teams and provides no permanent audit record, unlike a centralized Registry.
+- **Content moderation model monitoring (social/UGC platforms):** Problem — a custom moderation
+  classifier's effectiveness can degrade as new slang/evasion patterns emerge among bad actors.
+  Why it fits — Feature Attribution Drift detects when which input signals the model relies on
+  has shifted, a subtler signal than raw accuracy alone catching an adversarial pattern shift
+  early. Tradeoff vs. waiting for accuracy to visibly drop — by the time aggregate accuracy
+  visibly drops, meaningful harmful content may have already slipped through; Feature Attribution
+  Drift can surface the underlying shift earlier.
 
 ## When NOT to Use It / Alternatives
 

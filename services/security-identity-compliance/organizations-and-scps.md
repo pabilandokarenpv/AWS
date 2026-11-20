@@ -174,16 +174,80 @@ otherwise expose data regardless of how tight SCPs are on the principal side.
 
 ## Use Cases — When to Use It
 
-- Enforcing "no account may operate outside approved regions" company-wide, so a compromised or
-  careless account can't spin up resources somewhere nobody's monitoring.
-- Preventing any account, including its own administrators, from disabling CloudTrail,
-  GuardDuty, or Config — security logging that must survive even a malicious insider with
-  account-admin rights.
-- Restricting an entire "sandbox" OU to only cheap, low-risk services, so experimentation
-  accounts can't accidentally run up large bills or touch production-grade services.
-- Blocking root-user API access org-wide, forcing all access through IAM Identity Center/roles.
-- Capping what any resource-based policy anywhere in the org can expose externally, via RCPs,
-  as a backstop against a single over-permissive bucket policy.
+- **Region-restriction guardrail company-wide.** Situation: a company wants to guarantee no
+  account ever creates resources outside approved Regions (cost control, data residency). Why
+  this fits: an SCP with a `NotAction`/region condition denies everything outside the approved
+  list account-wide, with no opt-out for any account admin. Tradeoff: the allowlist of
+  always-needed global services (IAM, Organizations, STS, Support) must be kept accurate and
+  complete, or a legitimate global-service call breaks unexpectedly the moment it's omitted.
+- **Tamper-proof security logging.** Situation: security logging (CloudTrail, GuardDuty, Config)
+  must survive even a malicious insider with account-admin rights. Why this fits: an SCP
+  explicitly denying `cloudtrail:StopLogging`/`DeleteTrail` and equivalents applies to the
+  account's own root user too — no in-account admin can disable it without first getting the SCP
+  itself changed at the Organizations level. Tradeoff: this also blocks *legitimate* emergency
+  needs to pause logging (e.g., a sensitive incident-response action nobody wants recorded) —
+  there's no account-level override, by design, which can itself become an operational friction
+  point.
+- **Cost-capped sandbox/experimentation OU.** Situation: a sandbox OU for developer
+  experimentation shouldn't be able to spin up expensive instance types or touch
+  production-grade services. Why this fits: an SCP restricting instance types/services for that
+  OU specifically lets experimentation stay cheap and low-risk without manually policing every
+  sandbox account. Tradeoff: an incomplete allow-list can block a legitimate, low-risk
+  experiment the team didn't anticipate, turning a safety guardrail into a recurring "please
+  widen the SCP" support request.
+- **Forcing all access through federated identity, never root/IAM users.** Situation: an
+  organization wants every human to access AWS only via IAM Identity Center, never a
+  standalone IAM user or the root account. Why this fits: an SCP denying root-user API actions
+  and `iam:CreateUser`/`CreateAccessKey` org-wide makes this a structural guarantee, not a policy
+  people can quietly ignore. Tradeoff: emergency/break-glass access patterns now need a
+  deliberate, documented exception (e.g., a carve-out for a specific pre-approved break-glass
+  user) — a flat denial with zero exceptions can lock everyone out during a genuine identity
+  source outage.
+- **Backstopping over-permissive resource policies with RCPs.** Situation: one engineer
+  accidentally writes an S3 bucket policy that's broader than intended, exposing data externally.
+  Why this fits: a Resource Control Policy caps the maximum permissions any resource-based policy
+  anywhere in the org can ever grant, closing the gap SCPs (principal-side only) don't cover.
+  Tradeoff: RCPs are a newer, more specialized control most teams haven't yet operationalized —
+  know they exist and when they're the right tool, but don't assume every org already has them
+  configured.
+- **M&A integration — applying parent-company guardrails to a newly acquired OU.** Situation: a
+  newly acquired company's accounts join the parent's Organization and must immediately inherit
+  baseline security guardrails (logging can't be disabled, approved regions only) before any
+  deeper integration work happens. Why this fits: placing the acquired accounts into an OU with
+  the parent's standard SCPs attached applies every existing guardrail instantly, with no
+  per-account configuration. Tradeoff: the acquired accounts' own existing workloads may rely on
+  regions/services the new SCPs don't allow — a pre-migration compatibility pass is needed, or
+  legitimate acquired workloads break the moment the OU move happens.
+- **Compliance-driven data residency enforcement (GDPR/PCI-DSS).** Situation: a regulation
+  requires certain data never leave specific geographic regions. Why this fits: an SCP is the one
+  control that can't be bypassed even by a well-meaning or malicious account-level admin, making
+  it the credible enforcement mechanism auditors expect for a hard data-residency requirement.
+  Tradeoff: SCPs operate at the API-call/Region level, not the data-content level — they stop
+  *creating resources* in the wrong Region but don't inspect whether data already in an allowed
+  Region somehow still violates the regulation's intent (e.g., via a cross-region replication
+  misconfiguration), so this must be paired with architecture review, not relied on alone.
+- **Delegated administration for org-wide security tooling.** Situation: a central security team
+  needs to administer GuardDuty/Security Hub/Macie across every account without holding
+  SCP-editing power themselves. Why this fits: delegated administration hands off day-to-day
+  security-tooling operation cleanly, keeping SCP authority concentrated in the management
+  account. Tradeoff: this delegation is per-service — delegating Security Hub doesn't
+  automatically delegate GuardDuty, so a gap in delegating just one service silently excludes it
+  from the security team's unified view.
+- **Preventing accidental organization departure.** Situation: a member account's admin should
+  never be able to self-service remove their account from the Organization. Why this fits: a
+  simple, unconditional SCP denying `organizations:LeaveOrganization` removes this as a
+  possibility entirely, closing a surprisingly easy way to accidentally (or maliciously) strand
+  an account outside all central governance. Tradeoff: legitimate account offboarding (e.g.,
+  divesting a business unit) now requires the SCP to be deliberately lifted first at the
+  Organizations level — there's no account-side self-service path even when leaving is the
+  correct, intended outcome.
+- **Standardized tagging for cost allocation and governance.** Situation: cost reports and
+  automated governance tooling need consistent `Environment`/`Project` tag values across every
+  account, not whatever each team happened to type. Why this fits: a tag policy enforces
+  acceptable tag keys/values org-wide, flagging non-compliant resources rather than silently
+  letting tag drift accumulate. Tradeoff: tag policies are detective/flagging, not preventive
+  like SCPs — a non-compliant tag doesn't block the resource from being created, it just shows up
+  as a compliance finding to clean up later.
 
 ## When NOT to Use It / Alternatives
 

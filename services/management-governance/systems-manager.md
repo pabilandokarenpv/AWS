@@ -98,6 +98,50 @@ audit transcript automatically, with no extra effort from the user; (5) ending t
 tears down the channel — there's no lingering open port or orphaned connection to clean up
 afterward, unlike a forgotten bastion host SSH session.
 
+### How It Works — Step by Step: Tracing a Patch Manager Run Across a Fleet
+
+Session Manager's trace above covers interactive access; patching is the higher-volume,
+scheduled counterpart, and it's worth tracing end to end since it touches the most machines at
+once of any SSM capability.
+
+1. **Sunday 02:00 — the maintenance window opens.** A maintenance window named
+   `prod-patch-window`, configured for a 2-hour Sunday 02:00 UTC slot, becomes active. Its
+   registered target is every instance tagged `Environment=prod, PatchGroup=web`.
+2. **02:00:05 — the patch baseline is consulted.** Patch Manager checks the patch baseline attached
+   to this patch group — say, "approve security patches 7 days after release, auto-approve
+   critical severity immediately." Only patches meeting that approval rule are eligible to install
+   tonight; a patch released 3 days ago at non-critical severity is correctly skipped this cycle.
+3. **02:00:10 — Run Command is invoked under the hood.** Patch Manager is not a separate execution
+   engine — it calls Run Command with the `AWS-RunPatchBaseline` document, targeted at every
+   instance in the patch group, exactly the same mechanism the manual `send-command` example above
+   uses for an ad hoc diagnostic.
+4. **02:00:12 — the command fans out to the fleet.** Each instance's SSM Agent, already polling
+   outbound, receives the command over its existing channel. With `MaxConcurrency` set to `25%`,
+   only a quarter of the fleet patches simultaneously — a deliberate throttle so a bad patch
+   doesn't take down the whole fleet's capacity at once mid-patch.
+5. **02:00:15–02:35:00 — each instance patches independently.** On each instance, the agent
+   downloads and applies the approved patches, then reports its own exit code and patch state back
+   to SSM centrally — a failure on one instance (a disk-space-full patch install, say) doesn't
+   block or roll back any other instance's patching.
+6. **02:35:05 — compliance is recomputed.** Once an instance finishes, Patch Manager re-scans its
+   installed packages against the baseline and marks it `COMPLIANT` or `NON_COMPLIANT` (if a patch
+   failed to apply, or a newly-released patch isn't yet installed because it's outside the
+   approval window).
+7. **02:40:00 — the maintenance window closes.** Any instance still mid-patch when the window ends
+   is left as-is (Patch Manager doesn't forcibly interrupt) — this is why maintenance windows need
+   a realistic duration buffer, not the bare minimum expected patch time.
+8. **Monday 09:00 — compliance reporting.** The platform team checks fleet-wide patch compliance
+   via Explorer or a direct `describe-instance-patch-states` call. Three instances show
+   `NON_COMPLIANT`, each for a different reason (one hit a dependency conflict, one was outside the
+   maintenance window's target scope due to a stale tag, one is a new instance launched after the
+   window started). Each gets triaged individually rather than assumed to share the same root
+   cause — patch failures across a fleet are rarely one uniform problem.
+9. **The same agent channel, the same IAM dependency.** Every one of the steps above depended on
+   the identical SSM Agent outbound channel and IAM instance profile described in the "Note on the
+   Shared Agent Architecture" section later in this document — a missing instance profile on the
+   third non-compliant instance, for example, would show up here as "never attempted," distinct
+   from "attempted and failed."
+
 ## Worked Example: Run Command at Fleet Scale With Output Aggregation
 
 ```bash
@@ -273,16 +317,107 @@ for a pure config change.
 
 ## Use Cases — When to Use It
 
-- Eliminating SSH keys and open port 22/3389 entirely — Session Manager for all interactive
-  access, governed purely by IAM policy.
-- Rolling out a configuration change or diagnostic command to hundreds of instances at once
-  (Run Command) instead of scripting your own SSH fan-out.
-- Centralizing application configuration and secrets that Lambda, ECS, EC2, and CI/CD pipelines
-  all read from one place (Parameter Store) instead of baking values into code or AMIs.
-- Keeping a large EC2 fleet's OS patch level compliant with a company security policy
-  automatically, on a schedule, with reporting (Patch Manager).
-- Feeding CloudFormation/CDK templates dynamic values (`{{resolve:ssm:/app/prod/db-host}}`)
-  without hardcoding environment-specific values into the template.
+1. **Eliminating SSH keys and open port 22/3389 entirely (zero-bastion-host architecture).** A
+   security review flags internet-facing SSH as the account's single largest attack surface.
+   **Why this fits:** Session Manager's outbound-only agent channel means IAM policy, not a
+   network rule, governs access, closing the exposure with no workflow downside since sessions are
+   still fully logged. **Tradeoff:** every engineer needing instance access must have the right
+   IAM permissions configured — a team used to sharing a single SSH key pair has to migrate to
+   per-person IAM access first, which is a real (if one-time) migration cost.
+
+2. **Fleet patch management with scheduled compliance reporting (patch management fleets).** A
+   200-instance production fleet must stay patched against known CVEs on a predictable cadence,
+   with proof for a security audit. **Why this fits:** Patch Manager's baseline + maintenance
+   window + compliance reporting gives exactly this without anyone manually SSHing into 200
+   machines. **Tradeoff:** patches can themselves introduce regressions — an aggressive baseline
+   approving patches immediately on release risks rolling out a bad patch fleet-wide before the
+   community has reported issues with it, which is why a delayed-approval baseline is the common
+   mitigation.
+
+3. **Fan-out diagnostic or remediation commands across a tagged fleet.** An incident requires
+   checking disk usage and a specific service's status across every instance tagged
+   `Role=web` simultaneously. **Why this fits:** Run Command targets by tag, not a static instance
+   list, so newly launched Auto Scaling instances are automatically included with no target-list
+   maintenance. **Tradeoff:** a command sent to hundreds of instances at once with no
+   `MaxConcurrency`/`MaxErrors` throttling can itself become a mini-incident if the command has an
+   unintended side effect — rate-limited rollout is a deliberate safety practice, not optional
+   polish.
+
+4. **Centralizing application configuration across Lambda, ECS, EC2, and CI/CD.** Five different
+   compute platforms in one application all need the same database connection string, currently
+   duplicated in five places. **Why this fits:** Parameter Store gives one canonical location any
+   service reads via API, eliminating drift between copies. **Tradeoff:** Parameter Store is
+   region-scoped — a multi-region application needs the same parameter replicated (or a
+   cross-region read pattern) rather than a single global source of truth.
+
+5. **Feeding dynamic, non-hardcoded values into CloudFormation/CDK templates (infra-as-code
+   rollout across environments).** A template needs the current environment's database host
+   without hardcoding it or committing it to Git. **Why this fits:** `{{resolve:ssm:/myapp/prod/
+   db/host:1}}` resolves at deploy time, keeping the literal value out of the versioned template
+   while still being usable in IaC. **Tradeoff:** a dynamic reference resolves to whatever the
+   parameter's *current* value is at deploy time — if someone updates the parameter without
+   intending to affect the next deploy, that deploy silently picks up the new value, which can
+   surprise a team expecting template changes to be the only thing that changes behavior.
+
+6. **Multi-step operational runbooks via Automation documents.** An operational procedure ("stop
+   instance → snapshot the volume → restart") needs to run identically every time, not depend on
+   someone remembering the exact sequence. **Why this fits:** an Automation document encodes the
+   steps once, runs consistently, and is the same engine AWS Config's auto-remediation uses under
+   the hood. **Tradeoff:** an Automation document with a bug executes that bug consistently and
+   fleet-wide too — the same consistency that makes it valuable also means a flawed runbook causes
+   uniform damage rather than a one-off mistake.
+
+7. **Incident post-mortem: auditing exactly what commands were run in a Session Manager
+   session.** After an incident, a team needs to confirm whether a specific engineer's shell
+   session included any destructive commands. **Why this fits:** session logging to CloudWatch
+   Logs/S3 produces a durable, centralized transcript no local shell-history file (which an
+   attacker with root could delete) can provide. **Tradeoff:** logging must be enabled
+   *before* the session happens — there's no retroactive way to recover a transcript for a session
+   that ran before logging was configured.
+
+8. **Compliance drift detection paired with Config's auto-remediation.** A Config rule flags a
+   security group as non-compliant and needs an actual fix applied, not just a notification.
+   **Why this fits:** the remediation action is an SSM Automation document — Systems Manager is the
+   execution layer underneath Config's detective capability, not a separate tool a team has to
+   additionally stand up. **Tradeoff:** the remediation document needs its own correctly-scoped IAM
+   role, separate from Config's; a misconfigured remediation role causes the fix to fail silently
+   while Config still correctly reports the finding, which can look like "Config isn't working" when
+   the actual gap is in the remediation role.
+
+9. **Promoting a build from staging to production via a config value, not a code change.** A
+   CI/CD pipeline needs "which image tag is live in prod" to change without triggering a full code
+   review cycle for what's really just a config change. **Why this fits:** reading
+   `{{resolve:ssm:/app/${Environment}/image-tag}}` means a Parameter Store update (or a pipeline
+   approval gate) is the promotion mechanism, decoupled from a template edit. **Tradeoff:** this
+   convenience means a config change can ship to production without going through the same code
+   review a template edit would — teams need a separate approval gate on the parameter update
+   itself if that change still needs sign-off.
+
+10. **Accessing fully private-subnet instances with no NAT Gateway budgeted.** A cost-conscious
+    architecture has no NAT Gateway, so instances have no outbound internet path at all — yet
+    engineers still need shell access. **Why this fits:** VPC interface endpoints for `ssm`,
+    `ssmmessages`, and `ec2messages` let the agent reach Systems Manager entirely within the VPC,
+    no internet route required. **Tradeoff:** three VPC endpoints carry their own hourly and
+    data-processing charges — for a very small fleet, this cost should be compared against simply
+    provisioning a (more expensive, but simpler) NAT Gateway if other services in the VPC also need
+    general outbound internet access anyway.
+
+11. **Inventory collection for a software license or vulnerability audit.** A security team needs
+    to know exactly which package versions are installed across the entire fleet, right now,
+    without manually checking each instance. **Why this fits:** Inventory collects this metadata
+    centrally and continuously, turning "what's installed where" into a query instead of a
+    multi-day manual survey. **Tradeoff:** Inventory reflects what's installed at collection time —
+    a vulnerability disclosed an hour ago won't be flagged as a problem until the next collection
+    cycle runs and someone cross-references the new CVE against the collected data manually.
+
+12. **OpsCenter-driven incident tracking from automated findings.** A CloudWatch alarm or Config
+    finding generates work that needs tracking to resolution, not just a one-time notification that
+    can get lost in a chat channel. **Why this fits:** OpsCenter turns an automated signal into a
+    tracked "OpsItem" with an assigned owner and a runbook-driven remediation path, giving
+    operational findings the same lifecycle discipline a ticketing system gives bugs.
+    **Tradeoff:** OpsCenter is one more operational surface a team has to actually check and
+    triage — if nobody owns reviewing the OpsItem backlog, findings accumulate there just as
+    silently as they would in an unread dashboard.
 
 ## When NOT to Use It / Alternatives
 

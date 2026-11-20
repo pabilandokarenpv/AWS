@@ -232,18 +232,79 @@ flowchart LR
     AuthRule -.->|"other subnets: DENIED"| Blocked["Other VPC resources"]
 ```
 
+Reading this: the employee's laptop authenticates to the **Client VPN Endpoint** using the
+AWS-provided OpenVPN-based client (via SAML, Active Directory, or mutual certificate auth, not
+shown as a separate step here). Once connected, every packet the employee sends is checked
+against the endpoint's **authorization rules** before it's allowed anywhere — a rule permitting
+only `10.0.20.0/24` means the employee's traffic reaches that one internal-tools subnet and
+nothing else in the VPC, even though the VPN connection itself is technically capable of routing
+anywhere. This is the mechanism that turns "connected to the VPN" into "scoped to exactly what
+this user is allowed to touch," rather than full network-wide access by default.
+
 ## Use Cases — When to Use It
 
-- **Fast-to-provision hybrid connectivity** — a VPN can be stood up in minutes to an hour,
-  versus weeks for Direct Connect — the default starting point for hybrid connectivity.
-- **Backup/failover path for Direct Connect** — a common resiliency pattern: Direct Connect as
-  primary, Site-to-Site VPN as an automatic encrypted fallback if the dedicated connection fails.
-- **Remote workforce access to private AWS resources** — Client VPN for employees needing to
-  reach internal dev/staging environments, internal admin tools, or VPC-only databases.
-- **Low-to-moderate, non-steady bandwidth hybrid workloads** — where Direct Connect's cost/lead
-  time isn't justified by the traffic volume.
-- **Connecting multiple branch offices to AWS and to each other** — VPN CloudHub pattern, or
-  (more commonly today) Transit Gateway with multiple VPN attachments.
+- **Fast-to-provision hybrid connectivity.** A startup or new project needs hybrid connectivity
+  to AWS within days, not the weeks-to-months Direct Connect requires. A Site-to-Site VPN can be
+  stood up in minutes to hours. Tradeoff vs. Direct Connect: much faster to deploy and cheaper at
+  low/moderate volume, but throughput is capped at 1.25 Gbps per tunnel and performance depends on
+  the unpredictable public internet path.
+- **Multi-tier hybrid application backup path.** A production hybrid application's primary
+  connectivity is Direct Connect, but the team needs an automatic fallback if the dedicated
+  connection fails. A parallel Site-to-Site VPN, BGP-configured with lower route preference, takes
+  over automatically. Tradeoff vs. a second Direct Connect connection: far cheaper and faster to
+  provision as a backup, but caps fallback-period throughput/latency well below Direct Connect's
+  own performance.
+- **Multi-Region DR connectivity to a standby environment.** A DR Region's standby VPC needs
+  hybrid connectivity back to on-prem systems for failover testing and eventual cutover traffic,
+  without waiting on a second Direct Connect circuit in that Region. A Site-to-Site VPN terminated
+  on a Transit Gateway reaches the DR VPC quickly. Tradeoff vs. a dedicated Direct Connect
+  connection to the DR Region: much faster to stand up and cheaper to keep provisioned for a
+  standby that (hopefully) rarely carries production volume, but throughput is capped well below
+  what a dedicated circuit could sustain if the DR Region ever becomes primary long-term.
+- **Global applications needing secure remote administrative access.** A globally distributed
+  engineering team needs to reach internal dev/staging environments and admin tools inside a VPC
+  from anywhere in the world. Client VPN provides managed, authenticated remote access without a
+  fixed office location requirement. Tradeoff vs. a bastion-host-only access model: Client VPN
+  scales to many simultaneous remote users with SAML/AD integration, but adds its own per-
+  association-hour and per-connection-hour billing that a single bastion host doesn't have.
+- **Microservices mesh hybrid extension via Transit Gateway.** An organization's cloud-native
+  microservices mesh needs a handful of on-prem legacy dependencies reachable from many VPCs
+  without wiring a separate VPN connection to each one. A single Site-to-Site VPN terminated on a
+  Transit Gateway reaches every attached VPC. Tradeoff vs. a VPN per VPC (via individual Virtual
+  Private Gateways): adding a new VPC to the mesh requires only a Transit Gateway attachment, not
+  a new VPN connection, but concentrates all that hybrid traffic through the Transit Gateway's
+  shared bandwidth and per-GB processing cost.
+- **Compliance-acceptable encrypted hybrid link (when full Direct Connect isn't justified).** A
+  moderate-volume regulated workload needs encrypted hybrid connectivity but doesn't have the
+  budget or steady volume to justify Direct Connect's fixed costs. Site-to-Site VPN's IPsec
+  encryption satisfies "must be encrypted in transit" on its own. Tradeoff vs. Direct Connect +
+  MACsec: VPN is far cheaper and faster for moderate volume, but cannot satisfy a stricter
+  "must never traverse the public internet" requirement the way Direct Connect can, since VPN by
+  definition tunnels over the internet even though the payload is encrypted.
+- **M&A account consolidation — bridging two networks quickly post-merger.** Immediately after a
+  merger closes, both companies' on-prem networks and AWS environments need basic connectivity for
+  initial integration work, well before a slower Direct Connect circuit could be provisioned for
+  the long-term architecture. Site-to-Site VPN bridges this gap in days. Tradeoff vs. waiting for
+  a proper Direct Connect-based design: gets integration work started immediately, but the team
+  should plan to migrate to Direct Connect (or keep VPN as a permanent backup) once volume and
+  latency requirements are better understood post-merger.
+- **Multi-branch office connectivity via VPN CloudHub.** Several smaller branch offices, each with
+  its own router, need to reach both AWS and each other, without direct site-to-site circuits
+  between the branches themselves. VPN CloudHub (or, more commonly today, Transit Gateway with
+  multiple VPN attachments) uses AWS as the hub. Tradeoff vs. a traditional branch MPLS/WAN mesh:
+  avoids provisioning direct links between every branch pair, but all inter-branch traffic now
+  depends on AWS connectivity being up, and per-tunnel throughput remains capped at 1.25 Gbps.
+- **Low-to-moderate, non-steady bandwidth hybrid workloads.** A workload has bursty, unpredictable
+  hybrid traffic that doesn't justify Direct Connect's fixed port-hour cost. VPN's pay-as-you-go,
+  no-fixed-circuit-cost model fits better. Tradeoff vs. Direct Connect: no wasted fixed cost during
+  quiet periods, but no guaranteed bandwidth ceiling above 1.25 Gbps per tunnel during bursts
+  either, without adding ECMP across multiple tunnels.
+- **Least-privilege remote access to a specific internal tool.** Remote employees need access to
+  one specific internal admin tool on a private subnet, and security wants to avoid granting
+  full network-level VPC access to achieve it. Client VPN's authorization rules scope access to
+  just that subnet/CIDR. Tradeoff vs. a blanket Site-to-Site VPN-style "connect the whole network"
+  model: meaningfully reduces blast radius per user, but requires maintaining granular
+  authorization rules per user group as access needs evolve.
 
 ## When NOT to Use It / Alternatives
 

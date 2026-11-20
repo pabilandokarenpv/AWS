@@ -352,18 +352,74 @@ telemetry to S3 for later ML feature engineering (a frequent MLA-C02 Domain 1 fr
 
 ## Use Cases — When to Use It
 
-- **Kinesis Data Streams**: real-time dashboards, fraud detection that needs custom logic per
-  record, multiple independent teams/systems needing to consume the *same* event stream
-  differently, or any case where you need to replay history to reprocess data.
-- **Kinesis Data Firehose**: "I just need this telemetry/log data to land in S3/Redshift/
-  OpenSearch reliably, as Parquet, compressed, without managing servers" — the default choice
-  when you don't need custom per-record logic.
-- **Managed Service for Apache Flink**: real-time anomaly detection, running aggregates/
-  windowed analytics (e.g., "alert if error rate crosses 5% in any 1-minute window"), streaming
-  ETL that needs stateful computation (joins across streams, sessionization).
-- Together: a very common pattern is producers → Data Streams → Flink app computes real-time
-  metrics AND a Firehose also archives the raw stream to S3 for later batch analysis — "hot
-  path" and "cold path" from the same source.
+1. **Clickstream analytics for real-time personalization** — an e-commerce site wants product
+   recommendations to react to what a shopper clicked *in this session*, not last night's batch.
+   Kinesis Data Streams fits because it preserves per-session ordering (partition key = session
+   ID) and lets a Flink app and a separate analytics consumer both read the same events
+   independently. **Tradeoff vs. SQS**: SQS has no ordering-within-a-key guarantee and no replay
+   — fine for "process this job once," wrong for "reconstruct an ordered session."
+2. **Centralized log aggregation across microservices** — an ops team wants every service's logs
+   searchable in one place within seconds of being written. Firehose → OpenSearch is the fit
+   because it's managed delivery with buffering/compression and zero custom code. **Tradeoff vs.
+   CloudWatch Logs Insights**: Logs Insights needs no new infrastructure and is cheaper for
+   occasional queries, but lacks OpenSearch's relevance ranking, dashboards, and sub-second
+   indexing at high log volume.
+3. **IoT telemetry from a connected device fleet** — a logistics company streams GPS/engine data
+   from thousands of trucks. Data Streams + Flink computes rolling per-vehicle health aggregates
+   (hot path) while Firehose archives raw telemetry to S3 (cold path) for later ML feature
+   engineering. **Tradeoff vs. IoT Core direct-to-S3 batch export**: batch export is simpler but
+   can't drive a live "engine overheating, alert now" dashboard.
+4. **Real-time fraud scoring** — a payments company must score each transaction against a rolling
+   window of the same card's recent activity within ~1 second. Managed Service for Apache Flink
+   fits because it maintains windowed, stateful joins in-flight. **Tradeoff vs. a Lambda consumer
+   per record**: Lambda can read the stream but has no native concept of a sliding time window —
+   you'd be re-implementing Flink's state management by hand, badly.
+5. **Change Data Capture (CDC) fan-out to independent reactive systems** — a database's change
+   stream must drive a search-index updater, a cache invalidator, and a notification service, each
+   independently, and each must be able to catch up from where it left off if it was down for
+   maintenance. Data Streams' replay window makes this safe. **Tradeoff vs. SNS fan-out**: SNS
+   delivers to all three in parallel too, but a subscriber that's down loses messages beyond SNS's
+   own retry window — there's no "replay the last six hours" option in SNS.
+6. **Streaming ETL into a lake house table** — continuous order events need to land in an Apache
+   Iceberg table with ACID guarantees so concurrent writers never produce a half-written read.
+   Firehose with dynamic partitioning and Parquet conversion is the fit. **Tradeoff vs. an hourly
+   batch Glue job**: the batch job is simpler to reason about but introduces up to an hour of
+   latency before new data is queryable — unacceptable if a dashboard needs near-real-time numbers.
+7. **Security/SIEM-style log analytics with alerting** — a security team needs failed-login
+   spikes flagged within seconds, not discovered in tomorrow's report. CloudWatch Logs
+   subscription filter → Firehose → OpenSearch with alerting rules fits directly. **Tradeoff vs.
+   Athena over S3 logs**: Athena is far cheaper per query and fine for after-the-fact
+   investigation, but it's batch/ad-hoc — it can't proactively page someone the moment an attack
+   pattern starts.
+8. **Live operational dashboards** — a ride-sharing company wants a map showing live driver
+   density per region, refreshing every few seconds. Data Streams + Flink computing rolling counts
+   per region is the fit. **Tradeoff vs. QuickSight over Athena**: that pipeline is cheaper and
+   simpler to build but is minutes-behind by design (SPICE refresh schedule, Athena's batch
+   nature) — it cannot deliver a genuinely live map.
+9. **Streaming feature engineering for real-time ML scoring** — a fraud model needs a feature
+   like "transaction count for this card in the last 10 minutes" computed before the model scores
+   the transaction, not after. A Flink app computing the rolling feature and emitting it to a
+   second stream is the fit. **Tradeoff vs. SageMaker Feature Store's online store fed by
+   Firehose**: the Feature Store path is simpler to build but introduces a small propagation
+   delay between "event happened" and "feature reflects it" — a real risk window for fraud
+   specifically.
+10. **Multi-tenant SaaS usage metering for billing** — a SaaS product must aggregate each
+    tenant's API call volume per minute to drive usage-based billing, and must be able to
+    reconstruct the exact numbers if a customer disputes an invoice. Data Streams' extended
+    retention plus Flink's windowed aggregation fits both needs. **Tradeoff vs. DynamoDB atomic
+    counters**: counters are simpler for a running total, but give you no natural way to
+    recompute "what were tenant X's calls between 2:00 and 2:05pm last Tuesday" after the fact.
+11. **Compliance-grade reprocessing of historical events** — a regulated financial system
+    occasionally needs to re-run last quarter's transaction stream through updated business rules
+    without re-querying every source system. Kinesis Data Streams' long-term retention (up to 365
+    days) makes the stream itself replayable through the same consumer code path used originally.
+    **Tradeoff vs. S3 archive + Athena**: S3/Athena is cheaper for querying historical data as
+    rows, but doesn't let you *replay* it through a stream-shaped consumer the way the original
+    real-time pipeline was built to process it.
+12. **Together, as a pair**: the single most common real pattern across all of the above is
+    producers → Data Streams → Flink computing real-time metrics **and** Firehose independently
+    archiving the raw stream to S3 — "hot path" and "cold path" from one source, so a bug in the
+    real-time scoring logic can never corrupt the permanent audit record.
 
 ## When NOT to Use It / Alternatives
 

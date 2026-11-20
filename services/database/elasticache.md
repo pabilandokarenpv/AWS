@@ -156,6 +156,70 @@ in-memory and with a fixed, known slot count rather than dynamic partition split
   eviction policy (`maxmemory-policy`), which is itself a decision worth making deliberately
   (e.g., `allkeys-lru` vs `volatile-ttl`) rather than leaving at the default.
 
+### Implementing Cache-Aside in Application Code (Python, redis-py)
+
+```python
+import json
+import redis
+import boto3
+
+# In production, discover the endpoint from an environment variable set at deploy time,
+# and point it at the Primary Endpoint of the replication group (writes), with reads
+# optionally split to the Reader Endpoint for read-heavy traffic.
+cache = redis.Redis(
+    host="my-cluster.xxxxx.cache.amazonaws.com",
+    port=6379,
+    ssl=True,              # in-transit encryption — don't leave this off in production
+    decode_responses=True,
+    socket_timeout=2,       # fail fast rather than hanging the request if the cache is unreachable
+)
+
+dynamodb = boto3.resource("dynamodb")
+products_table = dynamodb.Table("Products")
+
+
+def get_product(product_id: str) -> dict:
+    """Cache-aside read: check Redis first, fall back to DynamoDB, repopulate on miss."""
+    cache_key = f"product:{product_id}"
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return json.loads(cached)  # cache hit — sub-millisecond, database never touched
+
+    # Cache miss — fall through to the authoritative store.
+    response = products_table.get_item(Key={"ProductId": product_id})
+    product = response.get("Item")
+    if product is None:
+        return None
+
+    # Populate the cache for the next request, with a TTL so stale entries self-expire
+    # even if we forget to invalidate them explicitly on every write path.
+    cache.set(cache_key, json.dumps(product), ex=300)  # 5-minute TTL
+    return product
+
+
+def update_product_price(product_id: str, new_price: float) -> None:
+    """Write path: update the source of truth, then invalidate (don't just hope TTL catches it)."""
+    products_table.update_item(
+        Key={"ProductId": product_id},
+        UpdateExpression="SET Price = :p",
+        ExpressionAttributeValues={":p": new_price},
+    )
+    # Explicit invalidation — relying on the 5-minute TTL alone would mean customers could see
+    # a stale price for up to 5 minutes after a deliberate price change, which is a real bug.
+    cache.delete(f"product:{product_id}")
+
+
+def record_leaderboard_score(player_id: str, score: int) -> None:
+    """Sorted Set usage: ranking comes from the data structure itself, not application code."""
+    cache.zadd("leaderboard:global", {player_id: score})
+
+
+def get_top_players(n: int = 10) -> list:
+    # ZREVRANGE with scores — descending rank, O(log N) per call regardless of leaderboard size.
+    return cache.zrevrange("leaderboard:global", 0, n - 1, withscores=True)
+```
+
 ## Key Features / Components
 
 - **Redis/Valkey engine** — supports rich data structures (lists, sets, sorted sets, hashes,
@@ -219,15 +283,71 @@ flowchart LR
 
 ## Use Cases — When to Use It
 
-- Reducing database load and latency for frequently-read, rarely-changed data: product catalogs,
-  configuration data, leaderboards, trending content.
-- Session storage for web applications — fast reads/writes, natural TTL expiration for
-  logged-out/expired sessions.
-- Real-time analytics and counters (Redis `INCR`, sorted sets for leaderboards) where sub-ms
-  updates matter.
-- Pub/Sub messaging for lightweight real-time features (chat presence, live notifications) via Redis.
-- Rate limiting and throttling logic that needs atomic, extremely fast counters.
-- Semantic caching for generative AI applications to reduce redundant model inference cost.
+- **Product catalog cache for a high-traffic e-commerce site.** Product details are read millions
+  of times for every one time they change (a price update, a restock). Cache-aside with a TTL
+  serves the overwhelming majority of reads from memory. Tradeoff vs reading RDS/Aurora directly:
+  a read replica still runs the full query against disk-backed storage; a cache serves from RAM
+  with no query processing at all — meaningfully faster, but now every write path must remember
+  to invalidate the cached entry, a real ongoing maintenance cost a replica doesn't impose.
+- **Session store for a web/mobile application.** User sessions read/written on nearly every
+  request, with Multi-AZ Redis failover meaning a node failure doesn't force mass re-login.
+  Tradeoff vs DynamoDB as the session store: DynamoDB is itself durable (no separate invalidation
+  logic needed since there's no second copy of the truth), while Redis is faster but asynchronous
+  replication means a failover can lose the very latest writes — pick based on whether "every user
+  stays logged in, no exceptions" or "sub-millisecond session reads" matters more for this app.
+- **Real-time gaming leaderboard with atomic rank updates.** Redis Sorted Sets (`ZADD`/`ZREVRANGE`)
+  give ranking natively, without the application sorting scores itself. Tradeoff vs DynamoDB +
+  DAX: DAX is purpose-built for DynamoDB and needs no custom cache-invalidation code, but lacks
+  Redis's native ranked-data-structure semantics — ElastiCache wins specifically when the
+  *data structure* (sorted sets), not just raw read speed, is the actual requirement.
+- **API rate limiting / request throttling.** A sliding-window or token-bucket limiter built on
+  Redis's atomic `INCR` + `EXPIRE` — the atomicity is what makes this safe under concurrent
+  requests without a separate distributed lock. Tradeoff vs API Gateway's built-in throttling:
+  API Gateway handles simple global/per-key rate limits declaratively; a Redis-based limiter is
+  the right tool when limiting logic needs custom business rules (e.g., tiered limits per plan).
+- **Pub/Sub for lightweight real-time features (chat presence, live notifications).** Redis
+  Pub/Sub delivers messages to subscribed clients with minimal latency and no infrastructure to
+  provision beyond the cache itself. Tradeoff vs a dedicated messaging service (SNS/EventBridge):
+  Pub/Sub is fire-and-forget (no persistence, no replay, no durability guarantee) — fine for
+  ephemeral presence/notification data, wrong choice if a lost message is a real business problem.
+- **Semantic caching in front of an LLM inference endpoint.** Caching responses to semantically
+  similar (not just identical) prompts cuts both latency and expensive model inference calls.
+  Tradeoff vs always calling the model: the cache trades a small risk of returning a
+  near-but-not-exact-match response for meaningfully lower cost/latency on repeated or similar
+  queries — appropriate when slight response variation is acceptable, not for deterministic needs.
+- **Database read-load offloading for a reporting dashboard that's still too chatty for a
+  replica.** Frequently-recomputed aggregate values (e.g., "today's order count") cached with a
+  short TTL instead of recalculated on every dashboard refresh. Tradeoff vs a materialized view in
+  the database itself: a materialized view stays inside the database's consistency model, while a
+  cache adds a second copy of the truth — appropriate when the read frequency vastly exceeds what
+  even a materialized view's refresh cadence can economically support.
+- **Distributed locking for coordination across multiple app instances.** Redis's `SET key value
+  NX EX ttl` pattern implements a simple distributed lock (e.g., "only one instance processes this
+  batch job at a time"). Tradeoff vs a dedicated coordination service (DynamoDB conditional writes,
+  or Step Functions for workflow coordination): Redis locking is fast and simple for short-lived
+  locks, but isn't as battle-tested for complex distributed-consensus scenarios as a purpose-built
+  coordination primitive.
+- **Caching computed ML inference results for repeated identical requests.** A recommendation or
+  scoring result cached by input hash so an identical downstream request doesn't re-invoke a
+  (slower, costlier) model endpoint. Tradeoff vs DAX (if the backing store is DynamoDB): DAX is
+  the better fit specifically when DynamoDB is the source of truth; ElastiCache fits when the
+  computed result itself (not a DynamoDB read) is what's expensive and worth caching.
+- **Multiplayer game ephemeral match state needing the fastest possible read/write latency.**
+  Active match state updated many times per second during gameplay. Tradeoff vs DynamoDB: Redis
+  is faster for this specific access pattern, but a cache node failure before replication catches
+  up can lose the most recent state — acceptable for ephemeral match data where the match itself
+  can restart, less acceptable for data that must never be lost.
+- **Geospatial queries for "nearby" features (ride-hailing, store locator).** Redis's geospatial
+  commands (`GEOADD`/`GEOSEARCH`) answer "what's within 5km of this point" natively. Tradeoff vs
+  PostGIS in RDS/Aurora PostgreSQL: PostGIS supports much richer spatial queries and stays inside
+  the relational consistency model; Redis's geo commands are faster for simple proximity lookups
+  at high read volume but offer far less spatial query sophistication.
+- **Reducing cold-start latency for serverless functions needing shared, fast-access state.** A
+  Lambda function reads shared configuration or computed state from ElastiCache instead of
+  recomputing it or re-reading a slower source on every invocation. Tradeoff vs Lambda's own
+  execution-environment reuse/caching: in-memory caching within a single warm Lambda instance is
+  even faster but isn't shared across concurrent invocations — ElastiCache is needed when many
+  concurrent Lambda executions must share the same cached state consistently.
 
 ## When NOT to Use It / Alternatives
 

@@ -129,20 +129,65 @@ still-archived original, for the number of days you specify.
 
 ## Use Cases — When to Use It
 
-- **Standard** — your application's live, actively-served content (product images, active app data).
-- **Intelligent-Tiering** — you genuinely don't know (or it varies) how often an object will be
-  accessed — e.g., a shared data lake where some files get hot and others go cold unpredictably.
-- **Standard-IA** — monthly reports, older backups you might still need to pull quickly.
-- **One Zone-IA** — a *second* copy of something you can regenerate or that already lives
-  redundantly elsewhere (e.g., a secondary replica of on-prem backups).
-- **Glacier Instant Retrieval** — medical images or old user data you must produce instantly if
-  requested, but rarely do.
-- **Glacier Flexible Retrieval** — annual backups, disaster-recovery data, media archives where a
-  few hours' wait is fine.
-- **Glacier Deep Archive** — regulatory records (7–10 year retention), legal holds, data you are
-  contractually required to keep but essentially never read.
-- **S3 Express One Zone** — feature stores and training-checkpoint storage for ML workloads running
-  in the same AZ, or interactive SQL query engines needing the lowest possible S3 latency.
+- **Live application images/content on S3 Standard for an e-commerce site.** Product photos are
+  requested constantly and need millisecond latency with full multi-AZ resilience. Standard is the
+  only class engineered for genuinely hot, highly available data. *Alternative cost:* any IA or
+  Glacier class instead adds a retrieval fee and/or latency to every single customer page load — the
+  wrong tradeoff for hot data.
+- **Shared data lake with unpredictable per-team access via Intelligent-Tiering.** Different teams
+  query different prefixes with access patterns that vary and change over time as projects start and
+  end. Intelligent-Tiering's automatic access monitoring removes the burden of hand-tuning a lifecycle
+  rule per team/prefix. *Alternative cost:* a manually-maintained lifecycle rule requires someone to
+  predict (and constantly re-tune) every team's access pattern — a losing proposition at
+  multi-tenant scale.
+- **Monthly financial reports on Standard-IA for an accounting firm.** Reports are generated monthly
+  and occasionally pulled for a client review, needing millisecond access when they are accessed.
+  Standard-IA's lower storage rate fits this "infrequent but instant" profile exactly. *Alternative
+  cost:* Standard would overpay for data accessed only occasionally; Glacier Instant Retrieval is also
+  viable but Standard-IA's lower retrieval fee wins at monthly-ish access frequency.
+- **Secondary DR copy on One Zone-IA for a backup-of-a-backup pattern.** A primary dataset already
+  lives redundantly on-premises; a secondary cloud copy exists purely as a cheap "just in case"
+  fallback, not the only copy. One Zone-IA accepts single-AZ risk specifically because this copy is
+  recreatable/non-authoritative. *Alternative cost:* Standard-IA (multi-AZ) here instead pays for
+  resilience the architecture doesn't actually need, since the real primary copy lives elsewhere.
+- **Medical imaging archive needing instant access on Glacier Instant Retrieval for a hospital
+  network.** Images are rarely reopened but when a clinician needs one, it must load immediately — no
+  restore wait tolerated. Glacier Instant Retrieval reads at millisecond latency like Standard, just
+  at a fraction of the storage cost. *Alternative cost:* Flexible Retrieval or Deep Archive instead
+  would force every clinician request through a multi-hour restore wait, which is clinically
+  unacceptable.
+- **Annual DR/media backup on Glacier Flexible Retrieval for a broadcast archive.** Full-year backup
+  sets are taken once and essentially never touched again except for an occasional audit or recovery
+  drill. A multi-hour-to-day restore wait is genuinely acceptable here. *Alternative cost:* keeping the
+  same data on Standard-IA instead costs multiples more per GB-month for data this cold.
+- **Regulatory records (7–10 year retention) on Glacier Deep Archive for an insurance company.**
+  Records must be kept but are essentially never read, with no retrieval-time requirement. Deep
+  Archive's ~$0.00099/GB-month rate is the cheapest fit by a wide margin. *Alternative cost:* any
+  warmer tier instead pays a meaningful ongoing premium purely for faster access the company will
+  likely never use.
+- **Feature-store/training-checkpoint storage on S3 Express One Zone for an ML platform.** Training
+  jobs running in a single AZ need the lowest possible S3 read/write latency for interactive
+  checkpointing. S3 Express One Zone, co-located with compute, cuts request latency to single digits of
+  milliseconds. *Alternative cost:* Standard in the same AZ adds latency overhead the training loop
+  would feel directly as wasted GPU idle time.
+- **Log retention pipeline spanning Standard → Standard-IA → Glacier for a SaaS company.**
+  Application logs are hot for debugging in the first 30 days, occasionally checked for 90 days after,
+  then essentially archival. A lifecycle rule ages logs through each tier automatically, matching cost
+  to declining access probability. *Alternative cost:* leaving every log on Standard indefinitely
+  means paying hot-tier rates for data that's realistically cold after the first month.
+- **IoT telemetry with split hot/cold device fleets on Intelligent-Tiering for a connected-vehicle
+  company.** Active vehicle fleets are queried daily by a live dashboard; decommissioned fleets go
+  cold, and which fleet is which changes as products launch and retire. Intelligent-Tiering (with
+  archive tiers opted in) automatically archives fleets that go fully cold without anyone re-tuning
+  rules. *Alternative cost:* a static age-based lifecycle rule instead needs constant manual
+  adjustment as the fleet composition changes.
+- **Compliance archival of mixed-size backup datasets for a government contractor.** A mandated
+  retention period applies to datasets of wildly varying object sizes and counts. Running the
+  object-size/count break-even analysis before choosing between Standard-IA, Glacier Flexible
+  Retrieval, and Deep Archive avoids the per-object overhead trap on datasets with many small files.
+  *Alternative cost:* blindly moving everything to the cheapest storage-rate class regardless of
+  object size can make the bill *higher*, not lower, once the ~40 KB metadata overhead per object is
+  counted on a small-object dataset.
 
 ## When NOT to Use It / Alternatives
 

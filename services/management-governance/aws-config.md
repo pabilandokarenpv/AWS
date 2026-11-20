@@ -101,6 +101,53 @@ remediation step itself is optional and separate from detection, meaning you can
 detect-only mode broadly and add auto-fix only for the specific rules you trust to self-heal
 safely.
 
+### How It Works — Step by Step: Tracing a Misconfiguration From Change to Fix
+
+The sequence diagram above shows the general shape; here's one concrete security group change
+traced through the full detect-evaluate-remediate cycle with timestamps.
+
+1. **11:02:17 — the change happens.** An engineer, mid-incident, adds a temporary ingress rule to
+   `sg-0abc123456789def0` opening port 22 to `0.0.0.0/0` "just to debug this quickly," fully
+   intending to remove it afterward (a very common, very real way this specific misconfiguration
+   enters an account).
+2. **11:02:19 — the Configuration Recorder captures it.** Config's recorder, already subscribed to
+   `AWS::EC2::SecurityGroup` changes, detects the new ingress rule within seconds and writes a new
+   timestamped configuration item to the resource's history — this snapshot now permanently exists
+   regardless of what happens next, including if the rule is later manually removed without anyone
+   telling Config about it explicitly.
+3. **11:02:20 — the attached rule re-evaluates on-change.** The AWS-managed rule
+   `restricted-ssh` (source identifier `INCOMING_SSH_DISABLED`), scoped to this security group,
+   triggers immediately rather than waiting for its next scheduled run, because it's configured
+   for on-change evaluation.
+4. **11:02:21 — the verdict.** The rule's internal logic inspects the configuration item, finds an
+   ingress rule matching port 22 from `0.0.0.0/0`, and calls `PutEvaluations` with
+   `ComplianceType: NON_COMPLIANT`. This result is itself timestamped and stored, building a
+   compliance history alongside the configuration history from step 2.
+5. **11:02:22 — notification fires.** An EventBridge rule watching for Config compliance-change
+   events matches this evaluation and publishes to an SNS topic — a security Slack channel receives
+   a message within seconds of the rule change being made, far faster than a scheduled security
+   review would have caught it.
+6. **11:02:23 — automatic remediation, if configured.** Because this rule has
+   `put-remediation-configurations` attached with `"Automatic": true`, Config immediately invokes
+   the SSM Automation document `AWS-DisablePublicAccessForSecurityGroup`, passing the security
+   group ID as a parameter.
+7. **11:02:26 — the fix executes.** The SSM Automation document, running under its own IAM role
+   (`ConfigRemediationRole`, distinct from Config's own service role), calls
+   `RevokeSecurityGroupIngress` against the offending rule, removing exactly the rule that
+   triggered non-compliance — not the entire security group, and not any other legitimate rules
+   on it.
+8. **11:02:30 — re-evaluation confirms the fix.** Config re-evaluates the rule against the
+   now-changed resource, finds the risky ingress rule gone, and flips the compliance status back
+   to `COMPLIANT` — closing the loop in under 15 seconds from the original change, with zero human
+   action required, versus however long it would have taken a person to notice during a periodic
+   manual review.
+9. **The audit trail that remains.** Both the configuration history (what the resource looked like
+   before, during, and after) and the compliance history (non-compliant → compliant, with a
+   timestamp) persist in Config indefinitely, and the underlying `AuthorizeSecurityGroupIngress`/
+   `RevokeSecurityGroupIngress` calls are separately visible in CloudTrail — giving a security
+   review both *what changed* (Config) and *who/what changed it, including the automated fix
+   itself* (CloudTrail), months later if ever questioned.
+
 ## Worked Example: A Custom Config Rule (Lambda-Backed)
 
 AWS-managed rules cover common cases, but company-specific policy ("every resource must have a
@@ -313,16 +360,106 @@ provisioning path (console, CLI, another tool).
 
 ## Use Cases — When to Use It
 
-- Continuous compliance monitoring against a security baseline (CIS Benchmark, PCI-DSS, your
-  own internal rules) with alerting when something drifts out of compliance.
-- Answering "what changed on this resource and when?" for incident investigation (paired with
-  CloudTrail's "who changed it").
-- Auto-remediating common misconfigurations (public S3 buckets, unencrypted volumes, open
-  security groups) without waiting on a human.
-- Multi-account governance: an aggregator giving a central security team one compliance
-  dashboard across an entire AWS Organization.
-- Change management evidence for audits — proving a resource was compliant at every point in
-  time, not just "right now."
+1. **Continuous compliance drift detection against a security baseline.** A CIS Benchmark
+   requirement says every EBS volume must be encrypted; the team needs to know the moment any
+   volume violates that, not at the next quarterly audit. **Why this fits:** a Config rule
+   evaluating on every volume change catches drift within seconds, not months. **Tradeoff:**
+   broad, always-on recording across every resource type has a real, ongoing per-item cost — the
+   detection speed is bought with a bill that scales directly with how much churns in the account.
+
+2. **Multi-account governance via a central compliance aggregator.** A security team responsible
+   for 60 accounts in an AWS Organization needs one dashboard of "who's out of compliance right
+   now" instead of logging into 60 consoles. **Why this fits:** an aggregator in a dedicated
+   security account pulls every member account's compliance data into a single view.
+   **Tradeoff:** the aggregator reflects only what each member account's own recorder reports — a
+   member account whose recorder silently stopped (misconfigured IAM role, disabled recorder)
+   shows as stale or missing data rather than an obvious red flag, requiring a separate check that
+   recorders themselves are healthy.
+
+3. **Auto-remediating a public S3 bucket the instant it's detected.** A bucket is accidentally
+   made public during a migration and needs to be re-secured before anyone can exploit the window.
+   **Why this fits:** a managed rule with an automatic remediation action (an SSM Automation
+   document re-applying a private ACL) closes the gap in seconds with zero human involvement.
+   **Tradeoff:** automatic remediation on a rule you don't fully trust can "fix" a bucket that was
+   *intentionally* made public for a legitimate reason (a public asset bucket), breaking a working
+   configuration — automatic remediation should be reserved for rules with essentially zero
+   false-positive risk.
+
+4. **Incident post-mortem: what did this resource's configuration look like right before it
+   broke?** A resource behaves unexpectedly and CloudTrail shows no obviously relevant human-made
+   API call. **Why this fits:** Config's configuration timeline shows the exact property values
+   before and after, independent of whether CloudTrail cleanly attributes a human action to the
+   change (it might have been an AWS-internal or cascading effect). **Tradeoff:** Config shows
+   *what* the configuration was, not *why* it changed — pairing with CloudTrail is still needed to
+   find the underlying cause when one exists.
+
+5. **Enforcing a company-specific tagging/cost-attribution policy no AWS-managed rule covers.** A
+   finance team needs every resource tagged with a valid `CostCenter` value from their specific
+   taxonomy. **Why this fits:** a custom Lambda-backed rule encodes exactly this organization-
+   specific logic, something no AWS-managed rule (which only knows general best practices) can
+   express. **Tradeoff:** custom rules are code the team now owns and must maintain — a bug in the
+   Lambda's logic can silently mark everything compliant (or everything non-compliant), and
+   there's no automatic way to know the rule itself is broken without separately testing it.
+
+6. **Conformance Pack as a portable compliance baseline deployed via StackSets.** A platform team
+   wants the exact same set of 40 PCI-DSS-related Config rules active in every new AWS account,
+   deployed the same way infrastructure is deployed. **Why this fits:** a conformance pack bundles
+   rules + remediation as one deployable artifact, reusing the same StackSet mechanism as
+   infrastructure baselines — one governance tool, not five. **Tradeoff:** a conformance pack
+   update that changes rule behavior rolls out to every targeted account simultaneously; a
+   poorly-tested change can generate a flood of new non-compliant findings account-wide overnight.
+
+7. **Pre-deployment guardrail layered with a reactive safety net.** A security team wants both "stop
+   a bad resource before it's created" (preventive) and "catch anything that slips through a
+   different provisioning path" (detective). **Why this fits:** pairing a CloudFormation Hook
+   (preventive, blocks at creation time) with a Config rule (detective, catches console/CLI/other-
+   tool changes the Hook never saw) covers both provisioning paths. **Tradeoff:** running both
+   means maintaining two separate policy implementations (Hook logic and Config rule logic) that
+   must be kept logically consistent with each other, or they can silently diverge over time.
+
+8. **Change management evidence for a formal audit.** An auditor wants proof a specific database
+   was encrypted at every point in time over the last year, not just right now. **Why this fits:**
+   Config's configuration history is a factual, timestamped record answering exactly that question,
+   rather than relying on anyone's memory or a point-in-time screenshot. **Tradeoff:** history
+   retention tops out at Config's own 7-year window — a multi-decade retention requirement would
+   need a separate export/archival strategy beyond Config alone.
+
+9. **Correlating a Config finding with the CloudTrail event that caused it (incident
+   post-mortem/root cause).** A security group was flagged non-compliant and the team needs to
+   know exactly who made the change and whether it was an approved, ticketed action. **Why this
+   fits:** `get-compliance-details-by-resource` gives the exact timestamp the resource became
+   non-compliant; searching CloudTrail for that timestamp and resource ID surfaces the specific
+   `AuthorizeSecurityGroupIngress` call and principal. **Tradeoff:** this correlation is a manual,
+   two-step investigation (Config then CloudTrail) rather than one unified query — Security Hub
+   is the tool that normalizes both into one findings view if that unification matters more than
+   the raw investigative flexibility of querying each separately.
+
+10. **Verifying ML infrastructure stays inside a designated VPC post-deployment.** An ML platform
+    team needs ongoing, automatic confirmation that SageMaker endpoints are never publicly
+    accessible, without manual spot-checks each release. **Why this fits:** a Config rule scoped
+    to SageMaker endpoint resource types, evaluated on-change, continuously confirms this with zero
+    recurring manual effort — exactly the "continuous, rule-based" shape Config is built for.
+    **Tradeoff:** this only verifies the *configuration* is correct; it says nothing about whether
+    the endpoint's *data* or *model* itself has a security issue, which is a different (and
+    separate) concern from network isolation.
+
+11. **Scoping recording to control cost on a fast-churning fleet.** An Auto Scaling group
+    constantly launching/terminating instances generates a configuration item on every single
+    event, inflating the Config bill without adding proportional security value. **Why this fits:**
+    excluding high-churn, low-value resource types from the recording group (or scoping to
+    security-relevant types only) keeps cost proportional to actual compliance value.
+    **Tradeoff:** anything excluded from recording is also excluded from history and compliance
+    evaluation — a genuine misconfiguration on an excluded resource type won't be caught by Config
+    at all, so scoping is a real coverage tradeoff, not just a cost lever.
+
+12. **Supplying evidence for a Well-Architected Tool pillar review.** A team answering the Security
+    pillar's "how do you protect data at rest" question wants to ground the answer in actual data
+    rather than an optimistic assumption. **Why this fits:** pulling the current compliance status
+    of the relevant Config rules (e.g., `s3-bucket-server-side-encryption-enabled`) gives a factual
+    yes/no basis for the self-assessment instead of relying on memory. **Tradeoff:** Config
+    confirms configuration-level facts; it can't answer the Well-Architected Tool's process-level
+    questions (e.g., "is your incident response runbook tested"), which require an honest human
+    answer regardless of how much automated evidence exists elsewhere.
 
 ## When NOT to Use It / Alternatives
 

@@ -117,6 +117,51 @@ combines asset publishing (anything CloudFormation alone can't do — uploading 
 images) with the underlying `CreateChangeSet`/`ExecuteChangeSet` calls, meaning the actual
 resource provisioning is still 100% CloudFormation's job.
 
+### How It Works — Step by Step: Tracing a Code Change Through Synth, Diff, and Deploy
+
+As with raw CloudFormation, the mechanics click fastest by following one real change end to end —
+here, a developer adds a new DynamoDB table to the `OrdersApiStack` from the worked example below
+and needs it wired up to the existing Lambda with read/write access.
+
+1. **The code change.** The developer adds four lines to the stack's Python: a new
+   `dynamodb.Table` construct (`OrdersAuditTable`) and a call to
+   `orders_audit_table.grant_read_write_data(orders_fn)`. Nothing has touched AWS yet — this is a
+   local file edit, indistinguishable from any other code change until the next command runs.
+2. **`cdk synth`.** Running this locally re-executes the Python program. The CDK framework walks
+   every construct in the stack's tree, resolves all `Ref`/`Fn::GetAtt`-equivalent logical
+   connections, and emits a complete CloudFormation JSON template to `cdk.out/OrdersApiDev.template.json`
+   — including a brand-new `AWS::DynamoDB::Table` resource and an updated IAM policy statement
+   granting the Lambda's execution role `dynamodb:PutItem`/`GetItem`/etc. scoped to the new
+   table's ARN. No network call happens during this step.
+3. **`cdk diff`.** This is the first step that talks to AWS: it calls CloudFormation's
+   `GetTemplate`/`DescribeStacks` for the currently-deployed `OrdersApiDev` stack, compares that
+   against the freshly synthesized template, and prints the human-readable diff shown in the
+   worked example — a new `AWS::DynamoDB::Table` resource addition, plus a separate **IAM
+   Statement Changes** table flagging the new `dynamodb:Put*` grant specifically, so a reviewer's
+   eye is drawn to the permission expansion before approving.
+4. **Review and approval.** A teammate reviews the diff in a pull request (since `cdk diff` can run
+   in CI and post its output as a PR comment) — this is functionally the same review gate a raw
+   CloudFormation change set provides, just expressed in terms of the code's own resources rather
+   than a flat resource-by-resource diff.
+5. **`cdk deploy`.** CDK first uploads any new/changed assets (none in this particular change,
+   since no Lambda code changed) to the bootstrap S3 bucket, then calls CloudFormation's
+   `CreateChangeSet` with the synthesized template, waits for the change set to compute, and calls
+   `ExecuteChangeSet` automatically (CDK doesn't pause for a second manual review at this point
+   unless `--require-approval` is configured to demand it for IAM changes specifically — which is
+   the default for broad security-sensitive changes).
+6. **CloudFormation takes over.** From here the mechanics are identical to the raw CloudFormation
+   trace in [cloudformation.md](cloudformation.md): the stack moves `UPDATE_COMPLETE` →
+   `UPDATE_IN_PROGRESS`, creates the new `AWS::DynamoDB::Table` resource, attaches the new IAM
+   policy statement to the Lambda's execution role, and reports back per-resource status.
+7. **Failure path.** If the new table's name collided with an existing table (a realistic mistake),
+   CloudFormation's resource creation for that one resource fails, and — exactly as in the raw
+   CloudFormation trace — the stack auto-rolls-back to `UPDATE_ROLLBACK_COMPLETE`. CDK itself has
+   no separate rollback mechanism; it relies entirely on CloudFormation's.
+8. **Confirmation.** `cdk deploy` streams the same stack events CloudFormation emits, printing
+   `✅ OrdersApiDev` on success (or the rollback reason on failure) directly to the developer's
+   terminal — the single pane of glass covering both the code-level change and the infrastructure
+   outcome.
+
 ## Worked Example: An L2-Construct Stack in Python
 
 ```python
@@ -333,14 +378,104 @@ of hand-written-template bugs (typo'd export names).
 
 ## Use Cases — When to Use It
 
-- A platform/infra team building reusable, parameterized constructs that product teams consume
-  (e.g., a company-standard "secure S3 bucket" or "VPC with our network baseline" construct).
-- Complex conditional infrastructure logic that's painful in YAML (loop over a list of
-  environments and generate a stack per environment, with slightly different settings each time).
-- Teams who want infrastructure to go through the same code review, linting, and unit-testing
-  pipeline as application code.
-- Polyglot teams who'd rather write infrastructure in the same language as the application
-  (e.g., a Python shop keeping both app code and IaC in Python).
+1. **Platform team publishing a shared "secure defaults" construct library.** A central team
+   wants every product team's S3 buckets encrypted and private by default without a wiki page
+   anyone has to remember to follow. **Why this fits:** a versioned internal package (`pip install
+   acme-cdk-constructs`) exposing an opinionated `SecureBucket` L2 construct puts the safe default
+   directly in code every team imports. **Tradeoff:** the shared package becomes a dependency every
+   consuming stack now has — a breaking change in the shared construct's major version requires
+   coordinated upgrades across every team using it, which a copy-pasted YAML snippet never would
+   have forced.
+
+2. **Self-mutating CI/CD promoting dev → staging → prod.** A team wants merges to `main` to flow
+   through environments automatically, with the pipeline's own structure versioned alongside the
+   app it deploys. **Why this fits:** CDK Pipelines updates its own stage list the moment the
+   pipeline definition changes, removing the "someone ran `cdk deploy --profile prod` from a
+   laptop" failure mode entirely. **Tradeoff:** debugging a self-mutating pipeline failure is a
+   layer deeper than a static pipeline — you're troubleshooting both the pipeline's own update and
+   the application deploy it's performing, which can be confusing the first few times it happens.
+
+3. **Looping over environments/regions to generate near-identical stacks.** A SaaS company needs
+   the same application stack deployed to 12 customer-specific AWS accounts with slightly
+   different parameters each. **Why this fits:** a Python `for` loop over a list of account/region
+   pairs instantiating the same `Stack` class is trivial in CDK and has no clean equivalent in raw
+   CloudFormation. **Tradeoff:** twelve real stacks still means twelve independent deploy/rollback
+   surfaces to monitor — the loop reduces authoring effort, not operational surface area.
+
+4. **Incrementally migrating legacy hand-written CloudFormation via `cdk import`.** A team wants
+   to start managing an existing, business-critical S3 bucket through CDK without recreating it
+   (which would mean data loss or at minimum a risky cutover). **Why this fits:** `cdk import`
+   adopts the existing resource into a new CDK-managed stack's state, letting migration proceed
+   construct by construct instead of a risky big-bang rewrite. **Tradeoff:** import requires the
+   CDK-synthesized template's resource properties to match the live resource closely enough that
+   CloudFormation accepts the adoption — a property mismatch blocks the import until reconciled.
+
+5. **Unit-testing infrastructure logic before it ever touches AWS.** A team wants a CI check that
+   fails the build if a construct would accidentally produce a publicly readable S3 bucket.
+   **Why this fits:** CDK's assertions library (`Template.fromStack(stack).hasResourceProperties`)
+   lets you write a real unit test against the synthesized template, catching the mistake in
+   seconds, pre-merge. **Tradeoff:** these tests check the *synthesized template's shape*, not live
+   AWS behavior — a test passing doesn't guarantee the deploy will succeed against real account
+   quotas, IAM boundaries, or existing resource name collisions.
+
+6. **Cross-stack references within one CDK `App` without hand-written exports.** An application
+   stack needs the network stack's VPC object directly, in the same deploy. **Why this fits:**
+   passing the L2 `Vpc` construct object itself (`app_stack.vpc = network_stack.vpc`) auto-wires
+   the underlying `Export`/`ImportValue` CloudFormation plumbing, eliminating a class of
+   typo'd-export-name bugs common in hand-written templates. **Tradeoff:** this convenience only
+   works within the same account/region; cross-account or cross-region references still require
+   manual SSM Parameter Store-based plumbing, same as raw CloudFormation.
+
+7. **Generating near-identical SageMaker endpoint configurations per model variant (ML pipeline
+   looping).** An ML platform team deploys five model variants that differ only in instance type
+   and model artifact S3 path. **Why this fits:** looping over a Python list of variant configs to
+   instantiate one endpoint construct per variant avoids duplicating five nearly-identical YAML
+   blocks that would drift out of sync over time. **Tradeoff:** a bug in the shared loop logic now
+   affects all five variants simultaneously on the next deploy, versus a hand-copied YAML mistake
+   that would typically only affect the one block it was made in.
+
+8. **Polyglot team keeping application and infrastructure code in the same language.** A Python
+   shop wants infrastructure authored by the same engineers who write the application, in the same
+   language, under the same code review process. **Why this fits:** CDK's Python bindings mean
+   infra PRs go through identical review tooling (linting, type checking, CI) as application PRs —
+   no separate YAML review culture to maintain. **Tradeoff:** this assumes the team's programming
+   discipline (tests, review rigor) is actually applied to the infrastructure code too; CDK doesn't
+   enforce that discipline, it just makes it possible.
+
+9. **Encoding conditional environment-specific removal policies in real code.** Dev/staging
+   resources should be destroyed on stack deletion; prod resources must be retained no matter
+   what. **Why this fits:** `RemovalPolicy.RETAIN if env_name == "prod" else RemovalPolicy.DESTROY`
+   is a plain Python conditional, more readable at a glance than a CloudFormation `Condition` +
+   `Fn::If` block doing the same thing. **Tradeoff:** the logic is only as safe as the `env_name`
+   value actually being correct at deploy time — a mistyped or misconfigured environment name
+   silently applies the wrong policy with no template-level safeguard catching it.
+
+10. **Auto-generating least-privilege IAM policies via `grant_*` methods.** A team wants to avoid
+    hand-authoring IAM policy JSON that's either too permissive (wildcard resource ARNs) or
+    accidentally too narrow (missing an action the app actually needs). **Why this fits:**
+    `table.grant_read_write_data(fn)` computes the exact action list and the exact resource ARN
+    automatically, scoped to that specific table and that specific function's role. **Tradeoff:**
+    teams relying entirely on `grant_*` methods can lose the habit of reading IAM policies closely
+    — reviewing the synthesized template (or `cdk diff`'s IAM Statement Changes table) is still
+    necessary to catch a `grant_*` call added to the wrong resource.
+
+11. **Standing up a construct that spans multiple AWS services as one reusable pattern (L3).** A
+    team repeatedly needs "a Fargate service behind an ALB" and doesn't want to hand-wire the load
+    balancer, target group, and service every time. **Why this fits:**
+    `ApplicationLoadBalancedFargateService` is a single L3 construct call replacing dozens of lines
+    of L1/L2 wiring, used identically across every team adopting the pattern. **Tradeoff:** L3
+    patterns trade flexibility for convenience — a requirement the pattern didn't anticipate means
+    dropping to L2/L1 via an escape hatch, partially giving back the simplicity that made L3
+    attractive in the first place.
+
+12. **Sharing infrastructure config via Parameter Store across CDK stacks and CloudFormation
+    templates simultaneously.** A company is mid-migration from hand-written CloudFormation to
+    CDK and needs both to read the same `/app/prod/db-host` value. **Why this fits:** both CDK
+    constructs and raw CloudFormation's `{{resolve:ssm:...}}` syntax can read the identical
+    Parameter Store value, letting the migration proceed incrementally without duplicating
+    configuration in two places. **Tradeoff:** during the transition period, two different IaC
+    tools are both authoritative for different parts of the same application, which requires clear
+    team-level ownership boundaries to avoid both tools fighting over the same resource.
 
 ## When NOT to Use It / Alternatives
 

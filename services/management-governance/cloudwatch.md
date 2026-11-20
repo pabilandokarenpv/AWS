@@ -116,6 +116,45 @@ if *both* high latency AND high error rate are true simultaneously") — this re
 single-metric false positives, a pattern worth knowing because DVA-C03's "instrument for
 observability" task statement explicitly expects you to design alerting that avoids alert fatigue.
 
+### How It Works — Step by Step: Tracing an Error Spike From Log Line to Page
+
+The sequence diagram above shows metric → alarm → action; here's the companion trace for the
+*log*-driven path, following one unstructured error message from the moment the application
+writes it to the moment an on-call engineer's phone buzzes.
+
+1. **14:02:03 — the application writes a log line.** A payment service instance logs
+   `ERROR: payment timeout for order 48213` to stdout. The CloudWatch Logs agent (or, for Lambda,
+   the automatic logs integration) picks this up and ships it to the `/app/orders-service` log
+   group within seconds, landing in that instance's own log stream.
+2. **14:02:04 — the metric filter evaluates the new log line.** A metric filter already attached
+   to `/app/orders-service`, with pattern `{ $.level = "ERROR" && $.message = "*payment
+   timeout*" }`, matches this line the moment it's ingested — metric filters evaluate
+   continuously on ingestion, not on a schedule, so there's no polling delay here.
+3. **14:02:04 — the metric increments.** The match increments the custom metric
+   `PaymentTimeoutCount` (namespace `OrdersService`) by 1 for the current one-minute bucket. If
+   nine more matching lines land across the fleet in the next few minutes, the metric keeps
+   accumulating — this is exactly the mechanism that turns unstructured text into a first-class,
+   alertable number.
+4. **14:06:00 — the alarm evaluates its period.** `HighPaymentTimeoutRate` is configured with a
+   300-second period, `Sum` statistic, threshold `> 10`. At the next period boundary, CloudWatch
+   sums the matched events in that 5-minute window — suppose it's now 14, crossing the threshold.
+5. **14:06:01 — state transition.** The alarm flips `OK` → `ALARM`. This state change itself is
+   the trigger, not the raw metric value — a metric sitting at 14 forever without ever crossing
+   from below the threshold wouldn't refire the same action repeatedly.
+6. **14:06:02 — fan-out.** The alarm's configured action, an SNS topic ARN, receives a publish
+   call. SNS fans that single message out to every subscriber: an email subscription, an SMS
+   subscription, and a PagerDuty integration subscribed via HTTPS webhook — all three fire from
+   this one alarm transition.
+7. **14:06:05 — the page lands.** The on-call engineer's phone buzzes via PagerDuty roughly three
+   minutes after the tenth matching log line was written — the gap between "symptom exists" and
+   "human is notified" is almost entirely the alarm's 5-minute evaluation period, which is a
+   deliberate tradeoff between responsiveness and avoiding alerts on a single transient blip.
+8. **14:12:00 — resolution and recovery.** The engineer fixes the underlying payment processor
+   timeout setting. Error log lines stop. At the next 5-minute boundary with zero matching events,
+   the alarm re-evaluates, sees the sum back under threshold, and transitions `ALARM` → `OK`,
+   firing a second SNS notification confirming recovery — closing the loop without anyone needing
+   to manually acknowledge the alarm cleared.
+
 ## Worked Example: CloudWatch Logs Insights Queries
 
 Assume an application log group `/app/orders-service` where each line is a JSON-structured log
@@ -304,14 +343,101 @@ otherwise delay detection.
 
 ## Use Cases — When to Use It
 
-- Auto Scaling triggers: scale an EC2 fleet or ECS service out when average CPU/request latency
-  crosses a threshold, scale in when it drops.
-- Centralizing application logs from many instances/containers into one searchable place instead
-  of SSHing into each box.
-- Alerting on-call engineers (via SNS → email/SMS/PagerDuty) when error rates spike.
-- Building an operational dashboard a team watches during a deployment or incident.
-- Debugging production issues with Logs Insights queries instead of downloading raw log files.
-- Cost/performance tuning: Lambda duration and memory metrics inform right-sizing decisions.
+1. **Auto Scaling triggered by a workload-accurate custom metric.** An I/O-bound queue processor's
+   actual bottleneck is queue depth, not CPU. **Why this fits:** emitting `QueueDepth` via
+   `PutMetricData` or Embedded Metric Format and scaling on that metric directly reflects real
+   load, where CPU alone would scale too late or not at all. **Tradeoff:** custom metrics cost
+   money beyond the free tier and require the application to be instrumented correctly — a bug in
+   the metric-emission code silently breaks the scaling policy with no obvious symptom until load
+   spikes and nothing scales.
+
+2. **Centralizing logs from a fleet instead of SSHing into each instance.** An incident spans
+   dozens of containers and nobody has time to check each one's local log file individually.
+   **Why this fits:** every instance/container ships to the same log group, so one Logs Insights
+   query spans the whole fleet at once. **Tradeoff:** centralization adds ingestion cost
+   proportional to log volume — a service logging at DEBUG level in production can make this the
+   single largest CloudWatch cost line without anyone noticing until the bill arrives.
+
+3. **Composite alarms to reduce on-call noise.** A single noisy metric (brief latency blips during
+   normal traffic variance) pages someone unnecessarily several times a week. **Why this fits:**
+   combining a latency alarm AND an error-rate alarm into one composite alarm only pages when both
+   conditions are true simultaneously — a much stronger signal of a real problem. **Tradeoff:**
+   composite alarms are an extra layer of indirection to debug when they don't fire as expected;
+   troubleshooting requires checking both child alarms' states, not just one.
+
+4. **A live operational dashboard during a deployment or active incident.** A team rolling out a
+   risky change wants one screen showing error rate, latency, and request volume in real time.
+   **Why this fits:** a CloudWatch dashboard combining metric and log widgets gives the whole team
+   a shared, always-current view without everyone running their own queries. **Tradeoff:**
+   dashboards are only as useful as the metrics chosen to display — a dashboard missing the metric
+   that actually matters for this specific deploy gives false confidence that "everything looks
+   fine."
+
+5. **Root-cause investigation after an incident, using Logs Insights instead of raw files.** A
+   production error spiked for 20 minutes and the team needs to know exactly which order IDs and
+   which error messages were involved. **Why this fits:** a `stats count() by message` query
+   against the relevant window returns the answer in seconds versus downloading and grepping
+   gigabytes of raw log files. **Tradeoff:** Logs Insights bills per GB *scanned*, not per result —
+   a broad, unfiltered query across a long time range against a high-volume log group can get
+   expensive fast if not narrowed by time range and filter first.
+
+6. **Cost/performance tuning via Lambda duration and memory metrics.** A team suspects a Lambda
+   function is over- or under-provisioned on memory. **Why this fits:** CloudWatch's automatic
+   `Duration`/`MemoryUtilization` metrics directly inform a data-driven right-sizing decision
+   instead of guessing. **Tradeoff:** Lambda's cost/performance curve isn't always linear (more
+   memory can sometimes *reduce* total cost by finishing faster) — reading the metric correctly
+   requires understanding that nuance, not just "lower memory = lower cost."
+
+7. **Multi-account governance via cross-account observability (multi-account governance).** A
+   central SRE team supporting 40 workload accounts in an AWS Organization needs one pane of glass
+   instead of console-switching between every account. **Why this fits:** a dedicated monitoring
+   account linked as an observability sink lets that team query/dashboard every account's metrics
+   and logs centrally. **Tradeoff:** the link must be explicitly configured and opted into by each
+   source account — a newly onboarded account that forgets this step is invisible to the central
+   dashboard, a governance gap that's easy to miss until an incident in that specific account goes
+   unnoticed.
+
+8. **Synthetic canaries guarding a low-traffic endpoint.** A company's checkout flow sees almost no
+   real traffic at 3 AM, so a real outage during that window wouldn't be caught by error-rate
+   metrics for hours. **Why this fits:** a Synthetics canary scripts a request every few minutes
+   regardless of real user traffic, catching an outage within minutes at any hour. **Tradeoff:**
+   canaries only test the specific path they script — a canary hitting the login page doesn't
+   catch a checkout-specific bug, so coverage is only as good as the canary scripts actually
+   written.
+
+9. **Catching gradual performance drift with Anomaly Detection.** A SageMaker endpoint's latency
+   creeps upward over weeks, never crossing any single static threshold. **Why this fits:**
+   Anomaly Detection models the metric's expected statistical band and flags a deviation from that
+   band, catching a slow creep a fixed `>500ms` alarm would never trigger on. **Tradeoff:**
+   anomaly bands need time to learn a metric's normal pattern — a newly created metric or one with
+   genuinely irregular (but normal) seasonal patterns can produce false positives until the model
+   has enough history.
+
+10. **Detecting tampering with a security control via a metric filter on CloudTrail-delivered
+    logs (incident post-mortem groundwork).** A security team wants to know within minutes if
+    anyone disables the organization's CloudTrail trail or stops GuardDuty. **Why this fits:** a
+    metric filter on CloudTrail events delivered to CloudWatch Logs, watching for
+    `StopLogging`/`DeleteTrail`, converts a rare but critical event into an immediate alarm.
+    **Tradeoff:** this entire detection path depends on CloudTrail already delivering to CloudWatch
+    Logs *before* the tampering attempt — it cannot retroactively detect an event that happened
+    before the metric filter existed.
+
+11. **Fleet-wide patch compliance visibility fed from Systems Manager.** A platform team wants
+    patch compliance percentage visible on the same dashboard as application health metrics,
+    rather than checking Patch Manager's console separately. **Why this fits:** Patch Manager
+    compliance data can be surfaced as a CloudWatch metric via EventBridge/custom metric
+    publishing, unifying operational and security posture in one view. **Tradeoff:** this requires
+    extra integration work (Patch Manager doesn't push to CloudWatch as a built-in metric by
+    default) — it's a pattern a team builds, not a toggle they flip.
+
+12. **High-cardinality custom application metrics via Embedded Metric Format.** An application
+    wants per-customer-ID latency metrics without making a separate `PutMetricData` call for every
+    data point, which would be both slow and expensive at scale. **Why this fits:** EMF lets the
+    application just write structured JSON log lines, and CloudWatch extracts metrics from them
+    automatically and cheaply, even at high cardinality. **Tradeoff:** EMF logs still count toward
+    normal log ingestion/storage costs, and genuinely unbounded cardinality (e.g., a metric
+    dimension keyed by raw user ID across millions of users) can still produce a metric explosion
+    that's expensive and hard to query meaningfully, even via EMF.
 
 ## When NOT to Use It / Alternatives
 

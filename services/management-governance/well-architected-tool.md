@@ -97,6 +97,49 @@ items, then re-opens the *same* workload record (not a new one) to update answer
 Milestone. Comparing milestones over time is what turns "we think we've improved" into "here is
 the specific risk count delta, question by question."
 
+### How It Works — Step by Step: Tracing a Workload From First Review to a Trending Milestone
+
+The sequence diagram above shows the lifecycle shape; here's a single workload's realistic
+first-year journey through that lifecycle, including what actually changes between reviews.
+
+1. **Q1, day 1 — the workload is defined.** A platform team creates a Workload record named
+   "Checkout Service" in the tool, describing the architecture (ALB → ECS Fargate → Aurora, with a
+   Redis cache) and selects the base Well-Architected Lens plus nothing specialized yet, since this
+   is a conventional three-tier web service.
+2. **Q1, days 1-3 — the questionnaire.** Engineers from the team spend roughly three half-days
+   working through all six pillars' questions. For the Security pillar's "how do you protect data
+   at rest" question, rather than answering from memory, someone actually checks: RDS encryption
+   is confirmed off on this specific (older) Aurora instance, contradicting the team's assumption
+   that "we always encrypt everything."
+3. **Q1, day 3 — risks are generated.** That answer alone generates a High risk flagged
+   specifically against this instance, with a direct link to the RDS encryption documentation. By
+   the end of the questionnaire, the workload has 6 High risks and 11 Medium risks across all six
+   pillars — a number nobody had before this review existed as anything more than a gut feeling.
+4. **Q1, day 3 — Milestone 1 is saved.** The team locks in "v1.0 - initial review" as a timestamped
+   snapshot. This is the baseline every future comparison measures against.
+5. **Q1-Q3 — remediation happens outside the tool.** Over the following two quarters, the team
+   enables Aurora encryption (requiring a snapshot-and-restore, since encryption can't be toggled
+   on an existing unencrypted instance), writes a disaster-recovery runbook that didn't exist
+   before, and adds a WAF in front of the public ALB — none of this activity happens *inside* the
+   Well-Architected Tool; the tool only recorded that these gaps existed.
+6. **Q3, day 1 — the workload is re-opened, not recreated.** The same engineers return to the
+   *same* Workload record (critically not a new one — a new record would lose the comparison
+   baseline) and update their answers to reflect what's now actually true: RDS encryption is now
+   "Yes," the incident response runbook now exists and has been tested once.
+7. **Q3, day 1 — risks recompute.** The tool recalculates: High risks drop from 6 to 1, Medium from
+   11 to 4. The one remaining High risk is a genuinely new one introduced by a different feature
+   shipped in Q2 (a newly added Lambda function with an overly broad IAM policy) — the Milestone
+   comparison surfaces this honestly rather than just showing "net improvement," which matters,
+   since new risk can accumulate even while old risk is being fixed.
+8. **Q3, day 1 — Milestone 3 is saved** (Milestone 2 having been an interim check at end of Q1).
+   The team now has a concrete, defensible number — "High risks down from 6 to 1" — to present to
+   leadership, instead of a verbal "things feel better."
+9. **The honest failure mode worth knowing.** If the team had skipped re-opening the review and
+   just assumed things improved, there would be no record distinguishing genuine progress from
+   wishful thinking — the entire value of this trace depends on the discipline of actually
+   re-answering the questionnaire against real evidence, not on the tool doing anything
+   automatically in the background between reviews.
+
 ## Worked Example: A Mini Security Pillar Review
 
 Below is a condensed, realistic walkthrough of several Security pillar questions as they'd
@@ -218,16 +261,110 @@ AWS Well-Architected Lens questions.
 
 ## Use Cases — When to Use It
 
-- A structured architecture review before a major launch, or periodically (quarterly/annually)
-  for an existing production workload.
-- Onboarding a new team to "what does AWS consider a well-built system" via the pillar questions
-  themselves, which double as an architecture-education tool.
-- Tracking architectural debt over time — milestones give a concrete, comparable record instead
-  of "I think we've improved since last time."
-- Preparing for a customer/partner/compliance review that specifically asks about Well-Architected
-  alignment (this happens in enterprise sales and partner certification contexts).
-- Applying a specialized lens (e.g., Machine Learning Lens) to get pillar guidance specific to
-  that workload style rather than generic advice.
+1. **A structured pre-launch architecture review before a major production release.** A team is
+   about to launch a customer-facing service and wants a disciplined check against AWS best
+   practices beyond "it passed QA." **Why this fits:** the six-pillar questionnaire forces
+   consideration of operational, security, reliability, performance, cost, and sustainability
+   dimensions a feature-focused QA pass wouldn't naturally cover. **Tradeoff:** a thorough review of
+   a complex workload is a genuinely significant time investment (often multiple half-days) —
+   teams under launch pressure are tempted to skip or rush it, precisely when the review would be
+   most valuable.
+
+2. **Quarterly architectural debt tracking via Milestones.** Leadership wants to know whether
+   engineering is actually reducing accumulated risk over time, not just hear "we're working on
+   it." **Why this fits:** comparing Milestone risk counts quarter over quarter turns "we think
+   we've improved" into a specific, defensible number. **Tradeoff:** the risk count can
+   legitimately go up even while real remediation work happens, if new features introduce new
+   risks faster than old ones are fixed — a naive reading of "risk count didn't drop" as "the
+   review process failed" misses this nuance.
+
+3. **Onboarding a new team to AWS's own definition of good architecture.** A team newly migrating
+   to AWS doesn't yet have an intuitive sense of what "well-architected" means in AWS's specific
+   vocabulary. **Why this fits:** working through the pillar questions themselves functions as an
+   education tool, with each question explaining the best practice and why it matters.
+   **Tradeoff:** this works best when a knowledgeable facilitator or experienced engineer guides
+   the first pass — a team with zero AWS experience working through 100+ questions cold can find
+   some answers genuinely hard to self-assess accurately without that guidance.
+
+4. **Compliance/partner review evidence beyond automated scanning.** An enterprise customer's
+   procurement process specifically asks for evidence of Well-Architected alignment, which an
+   automated tool's findings alone don't satisfy. **Why this fits:** a saved Workload with
+   Milestones is a documented, structured artifact that directly answers this kind of partner/
+   procurement question. **Tradeoff:** producing this evidence requires having actually done the
+   review beforehand — it can't be generated retroactively on short notice the way a Trusted
+   Advisor report (reflecting current state) can.
+
+5. **Applying the Machine Learning Lens to an ML pipeline workload.** An ML platform team wants
+   pillar guidance addressing model drift, data lineage, and retraining triggers — none of which a
+   generic review covers. **Why this fits:** the ML Lens adds questions specific to ML workload
+   design on top of the base lens, directly relevant to operating and securing ML solutions.
+   **Tradeoff:** honestly answering the ML Lens's questions (e.g., "has a retraining trigger
+   actually fired recently") requires pulling real telemetry, not assuming the pipeline's
+   theoretical design is being followed — a review done from memory alone risks grading its own
+   homework too generously.
+
+6. **A mandatory governance gate before production launch (multi-account/organizational
+   governance).** A platform team requires every new production workload across the organization
+   to pass a Well-Architected review (at minimum Security and Reliability pillars) before go-live.
+   **Why this fits:** turning the framework from optional guidance into an actual checkpoint, with
+   any High risk requiring remediation or an explicit, signed-off risk acceptance, gives governance
+   real teeth. **Tradeoff:** this adds a real, often multi-day process step to every launch —
+   teams under aggressive deadlines will push back, and the gate only has teeth if leadership
+   actually backs enforcing it rather than letting exceptions become the norm.
+
+7. **Post-incident retrospective: was this risk already known?** After an incident, the team wants
+   to know whether the failure mode that caused it was a previously flagged, unaddressed risk, or
+   something nobody had considered. **Why this fits:** checking whether a saved Milestone already
+   flagged the exact failure mode (e.g., "no tested disaster-recovery runbook") gives direct,
+   dated evidence either way — a materially different retrospective conclusion than treating it as
+   completely unforeseeable. **Tradeoff:** this only works if a review actually happened before the
+   incident and covered the relevant pillar — a workload that was never reviewed has no such record
+   to check against.
+
+8. **Authoring a Custom Lens for internal standards beyond AWS's own guidance.** A company has its
+   own requirements (every production database must replicate to a specific DR region) that no
+   AWS-managed best practice captures. **Why this fits:** a Custom Lens's questions appear in the
+   same review flow and generate risks/improvement plans using the identical Milestone-tracked
+   mechanism, just driven by company-authored logic. **Tradeoff:** authoring and maintaining a
+   Custom Lens is real, ongoing content-ownership work — someone has to keep its questions current
+   as internal standards evolve, unlike the base AWS lens, which AWS itself maintains.
+
+9. **Scoping a first review to just the highest-stakes pillars when time is limited.** A team
+   facing a tight deadline can't realistically complete all six pillars before launch. **Why this
+   fits:** the tool doesn't require answering every pillar at once — scoping the first pass to
+   Security and Reliability, with Performance/Cost/Sustainability deferred to a follow-up session,
+   is a legitimate, commonly recommended way to get the highest-value coverage first.
+   **Tradeoff:** a partial review leaves real gaps (cost and performance risks genuinely unassessed,
+   not just deprioritized) — the team needs explicit follow-through to actually complete the
+   deferred pillars, or "we'll do it later" quietly becomes "we never did."
+
+10. **Comparing automated findings against a structured self-assessment to catch blind spots.** A
+    team wants to confirm their own honest self-assessment roughly matches what automated tools
+    (Trusted Advisor, Config) are independently finding. **Why this fits:** cross-referencing a
+    pillar answer like "we don't have any public S3 buckets" against an actual Config rule's
+    current compliance status catches a case where the team's belief and reality have quietly
+    diverged. **Tradeoff:** this cross-referencing is a manual step the team has to deliberately
+    do — the Well-Architected Tool doesn't automatically pull in Trusted Advisor/Config findings
+    to validate every answer for you.
+
+11. **Measuring the ROI of the review process itself to justify continuing it.** Leadership
+    questions whether the quarterly review cadence is worth the engineer time it costs.
+    **Why this fits:** connecting a specific flagged-but-unfixed risk to a subsequent real incident
+    that happened because of it (or didn't happen once fixed) is a far more persuasive, concrete
+    argument than citing the raw risk count alone. **Tradeoff:** this argument only exists if the
+    team tracks incidents against specific prior findings deliberately — without that explicit
+    cross-referencing effort, the connection between "we reviewed this" and "this didn't happen
+    again" remains anecdotal rather than demonstrated.
+
+12. **Distinguishing a Performance Efficiency concern from a Cost Optimization one for the same
+    underlying symptom.** A workload runs EC2 instances consistently at 15% CPU, "to be safe."
+    **Why this fits:** the tool captures this as two separate, pillar-specific risks — Cost
+    Optimization flags the spend waste, Performance Efficiency separately flags that the sizing
+    decision wasn't data-driven — giving a more complete picture than treating it as a single
+    cost-only issue. **Tradeoff:** recognizing both angles requires understanding that the same
+    observed symptom can map to multiple pillars for genuinely different underlying reasons, which
+    takes some practice to apply consistently across a real review rather than defaulting to
+    whichever pillar comes to mind first.
 
 ## When NOT to Use It / Alternatives
 

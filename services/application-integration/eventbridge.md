@@ -287,17 +287,71 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- **Reacting to AWS service activity without polling**: trigger a Lambda the instant an EC2
-  instance changes state, an S3 object is created, or a CodePipeline stage fails.
-- **Decoupled microservices with content-based routing**: route `OrderPlaced` events to
-  different downstream workflows depending on order value, region, or customer tier — all
-  configured declaratively, no code changes to the publisher.
-- **Scheduled/cron jobs** at scale (EventBridge Scheduler): "run this Lambda for every one of
-  our 50,000 tenants at their configured local midnight."
-- **SaaS-to-AWS integrations**: receive events from a partner SaaS tool (e.g., a support
-  ticketing system) directly onto a partner event bus.
-- **Cross-account event routing** in a multi-account AWS Organization (e.g., a security
-  account receiving GuardDuty findings from every member account).
+1. **Reacting to AWS service activity without polling** — a security team wants a Lambda to fire
+   the instant an EC2 instance's state changes or a CodePipeline stage fails, not on a polling
+   schedule. EventBridge's automatic default-bus delivery for AWS service events is the fit.
+   **Tradeoff vs. a Lambda on a CloudWatch Events-style polling schedule**: polling wastes
+   invocations checking "did anything change yet" and adds latency up to the poll interval —
+   EventBridge reacts the moment the state change actually happens.
+2. **Content-based routing across many order types** — an order-events bus needs high-value
+   orders to trigger a Step Functions workflow, EU orders to route to a compliance queue, and
+   every order to land in an audit log, all declaratively. EventBridge rules are the fit.
+   **Tradeoff vs. SNS with no filtering**: SNS would deliver every event to every subscriber,
+   pushing the routing logic into each subscriber's own code — EventBridge's pattern matching
+   keeps that logic centralized and declarative instead.
+3. **Massive-scale, per-tenant scheduled jobs** — a SaaS platform needs to run a nightly report
+   for each of 50,000 tenants, each at their own local midnight. EventBridge Scheduler is the
+   fit — purpose-built for millions of independent schedules. **Tradeoff vs. a handful of cron-
+   style scheduled rules**: scheduled rules are fine for a handful of shared jobs, but weren't
+   designed for per-tenant scale and lack Scheduler's flexible time windows and per-schedule
+   retry/DLQ.
+4. **SaaS-to-AWS integrations without building webhook infrastructure** — a company wants events
+   from a partner support-ticketing SaaS tool delivered directly into its AWS account's event
+   routing, without standing up and securing a public webhook endpoint. A partner event bus is
+   the fit. **Tradeoff vs. building and securing a custom webhook receiver (API Gateway +
+   Lambda)**: a custom receiver gives full control over the ingress contract, but means owning
+   webhook signature verification, retry handling, and endpoint security EventBridge's partner
+   integration already provides.
+5. **Cross-account security event aggregation** — a central security account in an AWS
+   Organization needs to receive and automatically triage findings from every member account.
+   Cross-account/cross-region event bus forwarding into a central security bus is the fit.
+   **Tradeoff vs. each account writing findings to a shared S3 bucket for later batch review**:
+   S3 aggregation is simpler for pure archival, but EventBridge enables immediate automated
+   remediation the moment a high-severity finding arrives, not just after-the-fact review.
+6. **Starting a multi-step business process from a single trigger** — an "OrderPlaced" event
+   needs to kick off a Step Functions saga that validates payment, checks inventory, and ships
+   the order. EventBridge routing into Step Functions as the trigger is the fit. **Tradeoff vs.
+   having the order service call Step Functions' `StartExecution` directly via SDK**: a direct
+   SDK call works for a single, simple trigger, but EventBridge lets *other* rules react to the
+   same OrderPlaced event (e.g., an audit-log rule) without the order service knowing or caring
+   who else is listening.
+7. **High-volume, short-lived event processing at scale** — an IoT platform ingests millions of
+   telemetry events per day and needs each one validated and routed quickly, without needing a
+   full execution history retained for every single one. EventBridge routing into a target that
+   processes events in bulk is the fit for the routing layer itself. **Tradeoff vs. a Kinesis
+   Data Streams pipeline for the same telemetry**: Kinesis guarantees ordering and supports
+   replay for this volume, which EventBridge does not — EventBridge is the right choice for
+   content-based *routing* decisions, not for ordered, replayable high-throughput ingestion.
+8. **Replaying historical events to backfill a newly built consumer** — a team builds a new
+   analytics consumer and needs it to process the last 30 days of events as if they just
+   happened, without re-deriving them from original source systems. EventBridge Archive & Replay
+   is the fit, provided archiving was enabled in advance. **Tradeoff vs. re-querying original
+   source systems for historical data**: re-querying sources works if they still hold the
+   history, but Archive & Replay captures the *events themselves*, including ones a source system
+   may have since purged or transformed.
+9. **Decoupled approval and automated-remediation branching on severity** — a GuardDuty finding
+   with HIGH severity should trigger automatic instance isolation, while all findings (any
+   severity) should also reach a SIEM ingestion queue. Two rules on the same bus, each matching a
+   different slice of the same event stream, is the fit. **Tradeoff vs. one Lambda that branches
+   internally on severity**: a single Lambda centralizes the logic in one place, but couples the
+   SIEM-forwarding path to the same code/deploy lifecycle as the remediation path — a bug in one
+   can break both.
+10. **Scheduled batch jobs with explicit retry and DLQ per job** — a finance team's month-end
+    close job must run reliably on schedule, and a failure needs to be captured for
+    investigation rather than silently vanish. EventBridge Scheduler with a configured retry
+    policy and DLQ is the fit. **Tradeoff vs. a cron job on an EC2 instance**: a cron job is
+    familiar and simple, but gives no built-in retry/DLQ and depends on that one instance being
+    healthy and running at the scheduled time — Scheduler removes both failure modes.
 
 ## When NOT to Use It / Alternatives
 

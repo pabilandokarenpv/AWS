@@ -131,6 +131,55 @@ later won't show as drift; (4) each resource gets a per-resource drift status; (
 whole is marked `DRIFTED` if even one resource diverged. Not every resource type supports drift
 detection — check the current supported-resources list before assuming it'll catch everything.
 
+### How It Works — Step by Step: Tracing One Stack Update End-to-End
+
+Abstract flowcharts are useful, but the actual mechanics only click when you follow one concrete
+change all the way through. Here's a single realistic update, narrated start to finish, including
+the failure branch:
+
+1. **The starting point.** `dev-web-tier` is a stack in `UPDATE_COMPLETE`, running a `t3.micro`
+   EC2 instance behind a security group, created from the template shown below. A developer needs
+   to resize it to `t3.small` to handle more load during a traffic test.
+2. **Template edit.** The developer changes one line — `InstanceType: !Ref InstanceType` still
+   reads from a parameter, so really it's a parameter override, not even a template edit: `aws
+   cloudformation deploy --parameter-overrides InstanceType=t3.small`. Under the hood, `deploy` is
+   shorthand that calls `create-change-set` then `execute-change-set` for you.
+3. **Change set computation.** CloudFormation diffs the new desired state (`t3.small`) against the
+   stack's current recorded state (`t3.micro`) for every resource, not just the one that changed —
+   this is why a change set can take several seconds even for a one-line edit. It determines the
+   `AWS::EC2::Instance` resource's `InstanceType` property supports **in-place modification** for
+   this particular change (changing AZ or subnet would instead force `Replacement: True`).
+4. **Human review gate.** `describe-change-set` returns the computed diff. The developer reads the
+   `Replacement` field, confirms it says `False` (no data loss, no new resource, brief reboot at
+   worst), and only then runs `execute-change-set`.
+5. **Execution begins.** The stack transitions `UPDATE_COMPLETE` → `UPDATE_IN_PROGRESS`.
+   CloudFormation calls EC2's `ModifyInstanceAttribute`/stop-start sequence under the hood for the
+   one resource that changed; resources with no diff (the VPC, the security group, the subnet) are
+   left completely untouched — change sets are precise about blast radius, not all-or-nothing.
+6. **Success path.** EC2 confirms the resize succeeded. CloudFormation marks that one resource
+   `UPDATE_COMPLETE`, waits for every resource in the set to report a terminal state, then flips
+   the whole stack to `UPDATE_COMPLETE`. The stack's event log now has a permanent, timestamped
+   record: old value, new value, who/what triggered it (if CloudTrail is cross-referenced for the
+   underlying `UpdateStack` API call's `userIdentity`).
+7. **Failure path (the one worth rehearsing before it happens for real).** Suppose instead the
+   developer had also added a second resource in the same change set — a new EBS volume attachment
+   referencing a device name already in use — and that resource creation fails mid-update. The
+   stack transitions `UPDATE_IN_PROGRESS` → `UPDATE_ROLLBACK_IN_PROGRESS` automatically, with no
+   human action required. CloudFormation walks backward through every resource touched by *this*
+   change set (not the whole stack) and reverts each one to its pre-update state — the EC2
+   instance that had already resized back to `t3.micro`, because partial success isn't an
+   acceptable end state for a stack.
+8. **Rollback resolution.** If every reverted resource succeeds, the stack lands in
+   `UPDATE_ROLLBACK_COMPLETE` — functionally back to where it started, update rejected cleanly. If
+   the rollback *itself* fails (e.g., the EC2 instance got manually terminated by someone else
+   mid-update, so there's nothing to revert), the stack instead lands in `UPDATE_ROLLBACK_FAILED`,
+   which requires `continue-update-rollback --resources-to-skip` naming the stuck resource before
+   any further update can be attempted on that stack.
+9. **The end state that matters for an audit.** Whether success or rollback, the stack's **Events**
+   tab now holds a complete, ordered, timestamped narrative of exactly what was attempted, what
+   succeeded, what failed, and what was reverted — this event history, not a person's memory of
+   what they clicked, is what a post-incident review or compliance audit actually reads.
+
 ## Worked Example: A Three-Tier Template With Change Sets
 
 Below is a more realistic template than a single S3 bucket — a VPC, a security group, and an
@@ -422,13 +471,104 @@ replacement and an outage.
 
 ## Use Cases — When to Use It
 
-- Standing up a reproducible environment (dev/staging/prod parity) from the same template.
-- Disaster recovery: redeploy an entire application stack into a new region in minutes.
-- Enforcing a security baseline across every AWS account in an org via StackSets (mandatory
-  CloudTrail trail, mandatory GuardDuty, mandatory IAM password policy).
-- Any time "how was this built?" needs an answer better than "ask the person who clicked it."
-- Underpinning higher-level tools — CDK, SAM, Amplify, and most third-party deployment
-  frameworks compile down to CloudFormation templates under the hood.
+1. **Environment parity across dev/staging/prod.** A team needs staging to be a faithful
+   predictor of production behavior before a release ships. **Why this fits:** the same template
+   with different parameter values (instance size, environment tag) guarantees structural
+   identity — no "staging forgot a security group rule prod has." **Tradeoff:** parity is only as
+   good as parameter discipline; a stray hardcoded value in the template silently breaks it for
+   one environment while looking fine in the others.
+
+2. **Disaster recovery into a new region.** A region-wide outage requires standing up the
+   application elsewhere within minutes, not days. **Why this fits:** `!FindInMap`-driven AMI
+   selection and `!GetAZs` mean the identical template deploys in `eu-west-1` without a single
+   edit. **Tradeoff:** data (databases, S3 contents) still needs its own replication strategy —
+   CloudFormation reproduces *structure* instantly, not stateful data, which must already exist in
+   the target region before the stack is useful.
+
+3. **Multi-account security baseline enforcement (multi-account governance).** A newly onboarded
+   AWS account under an Organization must automatically receive a mandatory CloudTrail trail,
+   Config recorder, and IAM password policy with zero manual setup. **Why this fits:** a StackSet
+   with automatic deployment to an OU rolls the baseline out the moment the account joins, no
+   ticket, no manual checklist. **Tradeoff:** StackSets add an extra operational layer (stack
+   instance failures per account/region must be triaged individually) and a bad baseline template
+   update now risks breaking compliance account-wide in one action instead of one account at a
+   time.
+
+4. **Compliance-driven drift detection on regulated resources.** A PCI-scoped VPC's security
+   groups must never silently diverge from the template that was audited and approved.
+   **Why this fits:** scheduled `detect-stack-drift` (via an EventBridge rule) catches any manual
+   console edit that bypassed the template, closing the gap between "approved design" and "what's
+   actually running." **Tradeoff:** drift detection only flags properties the template *itself*
+   declared — a property the template never set and someone configured later won't show as drift,
+   so it complements but doesn't replace AWS Config's broader rule-based compliance checking.
+
+5. **Incident post-mortem reconstruction (paired with CloudTrail).** After an outage, the team
+   needs to know exactly what infrastructure changed in the hour before symptoms began.
+   **Why this fits:** the stack's Events tab shows *what* changed and when; cross-referencing the
+   same window in CloudTrail's `UpdateStack`/`ExecuteChangeSet` events shows *who* triggered it —
+   together they turn "something changed" into a precise, attributable timeline. **Tradeoff:**
+   this only works if the resource in question was actually managed by CloudFormation; a manual
+   console change outside the template shows up as drift, not as a stack event, so the
+   investigation has to check both sources, not just one.
+
+6. **Blue/green infrastructure replacement to avoid forced-replacement downtime.** A database
+   engine upgrade would force resource replacement (`Replacement: True` in the change set), which
+   means real downtime if done naively. **Why this fits:** standing up a parallel `app-green`
+   stack and shifting Route 53 weighting avoids ever taking the `app-blue` stack's database
+   offline mid-cutover. **Tradeoff:** running two full environments simultaneously, even briefly,
+   roughly doubles cost for the overlap window, and the two stacks' state (if any) must be
+   synchronized manually — CloudFormation doesn't orchestrate the data migration piece.
+
+7. **Reusable network module via nested stacks.** Ten product teams each need "our standard VPC
+   shape" without copy-pasting 80 lines of subnet/route-table YAML into every template.
+   **Why this fits:** a platform team versions one `standard-vpc.yaml` in S3; every consuming
+   team's parent stack references it and picks up fixes on their next deploy. **Tradeoff:** nested
+   stacks share the parent's 500-resource budget indirectly through depth limits (5 levels) and a
+   breaking change to the shared child template can simultaneously affect every team's next
+   deploy, so the shared module needs its own versioning/change-review discipline.
+
+8. **Change-set-gated production deployment for a risky resource change.** A property change
+   on a production RDS instance might force replacement (and data loss) depending on exactly what
+   changed. **Why this fits:** reviewing `describe-change-set`'s `Replacement` field before
+   executing is the only reliable way to know in advance whether an update is safe or destructive
+   — "it probably updates in place" is not an acceptable basis for a production change.
+   **Tradeoff:** the review step adds latency to the deploy pipeline (a human must look before
+   `execute-change-set` runs), which teams sometimes automate away under delivery pressure,
+   reintroducing exactly the risk the gate exists to prevent.
+
+9. **Clean environment decommissioning (zombie-resource prevention).** A three-month proof-of-
+   concept environment needs to be fully torn down with nothing left behind still accruing
+   charges. **Why this fits:** `delete-stack` removes every resource the template created in one
+   call — nothing is left to "remember" manually. **Tradeoff:** `DeletionPolicy: Retain` or a
+   non-empty S3 bucket can cause `DELETE_FAILED`, meaning teardown isn't always literally one
+   click; stateful resources still need an explicit decision about whether their data survives the
+   stack.
+
+10. **CI/CD pipeline deploying ephemeral per-feature-branch infrastructure.** Each pull request
+    needs its own throwaway environment for integration testing, created on branch push and
+    destroyed on merge/close. **Why this fits:** `create-stack`/`delete-stack` scripted into a
+    pipeline step gives every branch an isolated, identical environment with no manual
+    provisioning step. **Tradeoff:** at high PR volume this can approach the 2,000-stacks-per-
+    region soft limit and meaningfully inflate cost if teardown isn't reliably automated (a failed
+    pipeline step that skips `delete-stack` leaves an orphaned, billed environment behind).
+
+11. **Splitting ownership across network/app/data stacks.** The network team and the application
+    team need to deploy independently without either one's changes risking the other's resources.
+    **Why this fits:** `Export`/`!ImportValue` lets the app stack consume the network stack's VPC
+    ID without ever having write access to the network stack itself — a natural ownership boundary
+    that also limits blast radius. **Tradeoff:** CloudFormation blocks deleting a stack while
+    anything still imports its exports, which is a safety feature but also means decommissioning
+    the network stack requires first finding and removing every downstream consumer, which isn't
+    always obvious from the network team's side alone.
+
+12. **Preventive guardrails via CloudFormation Hooks on top of reactive drift detection.** A
+    security team wants no S3 bucket to ever be created without encryption, not just detected
+    after the fact. **Why this fits:** a Hook can block the `CreateBucket` resource operation
+    outright during stack execution, stopping the non-compliant resource before it ever exists —
+    strictly stronger than drift detection, which only notices after the fact. **Tradeoff:** Hooks
+    add a new moving part (a Registry extension to build, test, and maintain) and a
+    misconfigured Hook can block *legitimate* deployments, so they need their own test coverage
+    before being rolled out broadly.
 
 ## When NOT to Use It / Alternatives
 

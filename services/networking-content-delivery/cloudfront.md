@@ -254,16 +254,63 @@ for localized content, nothing else), letting everything else collapse into shar
 
 ## Use Cases — When to Use It
 
-- **Static website/asset hosting** — the classic S3 + CloudFront pattern for websites, images,
-  JS/CSS bundles, downloads.
-- **Video/media streaming** — on-demand and live streaming with signed URLs for access control.
-- **API acceleration** — caching cacheable API GET responses, or even just using CloudFront as a
-  fast, globally distributed TLS termination/DDoS-absorbing front door for an API Gateway/ALB
-  origin, even with caching disabled for non-cacheable routes.
-- **Software/game distribution** — large file downloads benefit heavily from edge caching and
-  CloudFront's optimized long-haul network between edge and origin.
-- **Dynamic content acceleration** — even uncacheable, dynamic requests benefit from CloudFront's
-  persistent connections and optimized backbone routing between edge and origin.
+- **Global content delivery for a static website.** A marketing site or SPA with images, JS, and
+  CSS bundles needs fast loads worldwide. S3 + CloudFront is the canonical pattern — edge caching
+  cuts both latency and origin load dramatically. Tradeoff vs. serving straight from an S3 website
+  endpoint: CloudFront adds a small per-request/per-GB cost and a cache-invalidation concept to
+  manage, but removes the "every user's request travels all the way to one bucket's Region" problem.
+- **Multi-tier web application API acceleration.** An application's dynamic, mostly uncacheable
+  API still benefits from sitting behind CloudFront purely for its optimized backbone routing and
+  edge-absorbed DDoS protection, even with caching disabled for those routes. Tradeoff vs. pointing
+  clients directly at the ALB/API Gateway: CloudFront adds a layer and its own request-based cost,
+  but shields the origin from volumetric attacks and shortens the public-internet leg of every
+  connection.
+- **Hybrid cloud origin with on-prem content.** A company keeps some content on an on-prem server
+  but wants it delivered through the same CDN as its AWS-hosted content. CloudFront supports
+  custom (non-AWS) HTTP(S) origins directly. Tradeoff vs. migrating everything to S3/ALB first:
+  avoids a forced migration, but on-prem origin availability/latency becomes the CDN's weakest
+  link unless an origin group with an AWS-hosted failover origin is also configured.
+- **Multi-Region origin failover for high availability.** A business-critical site needs to keep
+  serving content even if its primary origin Region has an outage. An origin group with a primary
+  and secondary origin lets CloudFront automatically fail over on configured error codes, with no
+  client-visible interruption or DNS change. Tradeoff vs. relying on Route 53 failover alone:
+  CloudFront's origin failover is faster (no DNS TTL wait) and transparent to the client, but
+  only protects the origin-fetch path — it doesn't help if CloudFront's own distribution has an
+  issue, which Route 53-level failover to an entirely different CDN setup theoretically could.
+- **Microservices mesh multi-tenant SaaS routing.** A SaaS platform wants one distribution to
+  serve many customers, each with isolated caching/TLS/WAF rules, routed by path pattern or host
+  header to different origins. Tradeoff vs. one distribution per customer: dramatically fewer
+  distributions to manage/pay the per-distribution limit against, but a misconfigured cache
+  behavior can potentially affect multiple tenants sharing the same distribution.
+- **Compliance-driven private content distribution.** A video-on-demand platform must ensure only
+  authenticated, paying subscribers can stream content, without exposing the origin bucket
+  directly. Signed cookies scoped to `/videos/*` plus Origin Access Control on the S3 origin
+  satisfy this. Tradeoff vs. signing every individual video URL: signed cookies grant access to
+  an entire path pattern for the cookie's validity window in one shot, but are harder to revoke
+  for one specific asset mid-session compared to expiring/regenerating individual signed URLs.
+- **M&A account consolidation — unifying CDN presence across merged brands.** After a merger, two
+  companies' separately run CDN setups (possibly on different providers) need consolidating under
+  one distribution strategy for consistent caching/security policy. Tradeoff vs. leaving both CDN
+  setups running independently: consolidation gives one place to apply WAF/Shield/cache policy
+  consistently, but requires careful DNS cutover planning and reconciling each brand's existing
+  cache behaviors and TLS certificates.
+- **Software/game distribution at scale.** A company distributing large installers or game assets
+  needs edge caching and CloudFront's optimized long-haul network between edge and origin to keep
+  download times low worldwide. Tradeoff vs. direct-from-S3 downloads: CloudFront materially
+  speeds up repeat downloads and reduces S3 request/data-transfer cost at volume, but adds cache
+  invalidation considerations whenever a new build needs to replace a previous one at the same URL.
+- **API acceleration in front of API Gateway/ALB.** An API that serves cacheable GET responses
+  (e.g., product catalog reads) wants those specific routes cached at the edge while leaving
+  writes/auth routes fully dynamic. Per-path cache behaviors let one distribution do both.
+  Tradeoff vs. caching at the API Gateway layer instead: CloudFront's edge caching is closer to
+  the user globally, but requires careful cache-key configuration per route to avoid serving
+  stale or user-specific data to the wrong caller.
+- **DDoS-resilient public front door.** Any internet-facing service wants baseline DDoS protection
+  without separately provisioning it. CloudFront includes AWS Shield Standard automatically on
+  every distribution at no extra cost. Tradeoff vs. relying on the origin's own DDoS defenses
+  (e.g., an ALB alone): CloudFront's edge absorbs volumetric attacks before they reach the origin
+  at all, but this benefit only applies to traffic actually routed through CloudFront — any
+  direct-to-origin path (if not locked down with OAC/security groups) bypasses it entirely.
 
 ## When NOT to Use It / Alternatives
 

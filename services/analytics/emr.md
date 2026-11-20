@@ -224,17 +224,68 @@ escalation path.
 
 ## Use Cases — When to Use It
 
-- Large-scale, complex **Spark or Hadoop** processing jobs (petabyte-scale ETL, large ML
-  feature engineering, log processing) where you need control over cluster size, instance
-  types, and the specific framework version.
-- Workloads that specifically need **Hive, HBase, Presto/Trino, or other Hadoop-ecosystem
-  tools** that Glue doesn't offer.
-- **Cost-sensitive, fault-tolerant batch processing** where a large Spot-instance fleet can cut
-  compute cost substantially (EMR is a textbook SAA-C03 Domain 4 cost-optimization example).
-- Processing that needs full control (e.g., custom Spark configurations, tuning shuffle
-  behavior, GPU-accelerated ML training on raw data at scale).
-- Interactive, exploratory **data science at scale** via EMR Studio notebooks against very
-  large datasets that don't fit on a single machine or SageMaker notebook instance.
+1. **Petabyte-scale nightly Spark ETL** — a media company needs to join and reshape 10TB/night
+   of viewing logs, with full control over executor memory tuning to avoid shuffle spill. EMR is
+   the fit because it exposes real Spark configuration knobs. **Tradeoff vs. Glue ETL**: Glue is
+   zero-ops and cheaper for a job this size that fits standard Spark patterns, but EMR wins once
+   you need to hand-tune `spark.sql.shuffle.partitions` or executor memory ratios that Glue
+   abstracts away.
+2. **Workloads needing Hive, Presto/Trino, or HBase specifically** — a team migrating an
+   on-prem Hadoop stack relies on HBase for low-latency key lookups alongside Hive for SQL. EMR
+   is the fit because it's the full open-source ecosystem, not a curated subset. **Tradeoff vs.
+   Athena + DynamoDB**: that combination is more AWS-native and serverless, but means rewriting
+   application code that assumes HBase/Hive APIs specifically.
+3. **Cost-sensitive, fault-tolerant batch processing with Spot** — a genomics research lab runs
+   large, interruptible batch jobs overnight and wants to cut compute cost aggressively. EMR with
+   Spot Task nodes (On-Demand Core/Master) is the textbook fit. **Tradeoff vs. an all On-Demand
+   cluster**: On-Demand guarantees no mid-job interruption at all, but at a meaningfully higher
+   steady-state cost for workloads that can tolerate a task retry.
+4. **Custom distributed algorithms beyond standard joins/filters** — a quant trading firm runs a
+   proprietary distributed simulation that doesn't map cleanly onto Glue's visual ETL or
+   DataBrew's recipe model. EMR's unrestricted Spark/Hadoop access is the fit. **Tradeoff vs.
+   SageMaker Processing jobs**: Processing jobs are simpler to wire into an ML pipeline, but
+   assume a more standard container/script execution model than a full custom distributed
+   algorithm often needs.
+5. **GPU-accelerated large-scale preprocessing for ML** — a computer vision team needs to
+   preprocess millions of images with GPU-accelerated transforms before training, at a scale
+   beyond a single SageMaker Processing instance. EMR with GPU instance types is the fit.
+   **Tradeoff vs. SageMaker Data Wrangler**: Wrangler is far easier to set up for moderate-scale,
+   standard feature transforms, but doesn't offer the raw distributed GPU compute EMR can
+   provision.
+6. **Interactive, exploratory data science at scale** — a data science team needs a persistent
+   shared Spark context for ad-hoc exploration of a 5TB dataset that doesn't fit one machine.
+   A long-running EMR cluster with EMR Studio notebooks is the fit. **Tradeoff vs. SageMaker
+   Studio notebooks alone**: SageMaker notebooks are simpler for moderate-size data, but hit a
+   hard ceiling once a dataset genuinely needs distributed Spark compute to explore interactively.
+7. **Unpredictable, bursty Spark workloads with zero capacity planning** — a startup's Spark
+   jobs run irregularly and nobody wants to guess cluster sizing. EMR Serverless is the fit —
+   AWS allocates workers per job. **Tradeoff vs. a transient, manually-sized classic cluster**:
+   a sized cluster can be cheaper per-job at predictable, steady volume, but someone has to keep
+   re-tuning that size as the workload's shape changes.
+8. **Container-standardized teams already running EKS** — an organization has already invested
+   in Kubernetes-based autoscaling and observability and doesn't want a separate EMR-native
+   cluster fleet to operate. EMR on EKS is the fit, running Spark as pods inside existing
+   infrastructure. **Tradeoff vs. classic EMR**: classic EMR is simpler to reason about in
+   isolation, but duplicates tooling (monitoring, autoscaling, deployment pipelines) a
+   container-standardized org has already built once for EKS.
+9. **Log processing at a scale Athena can't comfortably query live** — a large ad-tech company
+   processes raw bid-stream logs (tens of TB/day) through complex multi-stage Spark
+   transformations before anything is queryable. EMR is the fit for the transformation step
+   itself. **Tradeoff vs. doing it all in Athena CTAS statements**: CTAS is simpler for a single
+   reshape, but can't express true multi-stage, stateful Spark pipelines the way a real Spark
+   job can.
+10. **Large-scale ML feature engineering feeding SageMaker** — a recommendation system needs
+    features computed across hundreds of GB to TB of user interaction history, beyond what a
+    single Data Wrangler flow handles efficiently. EMR Spark writing to S3 for a SageMaker
+    training job to consume is the fit. **Tradeoff vs. Glue ETL**: Glue can do standard joins and
+    filters at this scale too, but EMR gives finer control over partitioning/shuffle behavior
+    when the feature logic itself is non-standard or very heavy.
+11. **Transient, scheduled Spark clusters for a defined nightly window** — a reporting pipeline
+    needs real Spark/Hive for 90 minutes a night and nothing in between. A cluster launched via
+    Step Functions/EventBridge, running steps, then auto-terminating is the fit. **Tradeoff vs.
+    keeping the cluster always-on "just in case"**: an always-on cluster avoids the few minutes of
+    cluster startup latency each night, but costs roughly 16x more for the same actual useful
+    compute time, as the pricing worked example in this document shows.
 
 ## When NOT to Use It / Alternatives
 

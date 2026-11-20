@@ -324,17 +324,64 @@ response configuration.
 
 ## Use Cases — When to Use It
 
-- **Decoupling a web app from background work**: a user uploads an image → app enqueues a
-  "resize this image" message → a fleet of Lambda/EC2 workers processes the queue — the user
-  gets an instant response, work happens async.
-- **Buffering traffic spikes**: an order-processing backend that can only handle 50 orders/sec
-  gets 500 orders/sec at a sale launch — SQS absorbs the burst, workers drain it steadily.
-- **Load leveling between microservices** so a slow downstream service doesn't crash under a
-  fast upstream burst.
-- **FIFO specifically**: bank transaction processing, order-of-operations-sensitive event
-  pipelines (e.g., "create order" must be processed before "cancel order" for the same order ID).
-- **Fan-out buffering**: as the durable leg of an SNS → SQS fan-out, so each downstream
-  microservice gets its own independently drained, retry-capable copy of every event.
+1. **Decoupling a web app from slow background work** — a user uploads an image and the app
+   needs to resize it, but shouldn't make the user wait for that to finish. The app enqueues a
+   "resize this image" message and returns instantly; a worker fleet drains the queue. SQS is
+   the fit. **Tradeoff vs. calling the resize logic synchronously in the request handler**:
+   synchronous is simpler code, but ties the user's response time to the slowest possible resize
+   job and risks the request timing out under load.
+2. **Buffering a traffic spike that would otherwise crash a downstream service** — an
+   order-processing backend that comfortably handles 50 orders/sec gets hit with 500/sec at a
+   flash sale. SQS absorbs the burst; workers drain it steadily at their own pace. **Tradeoff vs.
+   scaling the downstream service to meet the exact peak**: over-provisioning for a rare peak
+   means paying for idle capacity the other 99% of the time — the queue buys the same resilience
+   for a fraction of the cost.
+3. **Load leveling between microservices with different throughput capabilities** — a fast
+   upstream order-intake service would otherwise overwhelm a slower downstream fulfillment
+   service during busy periods. SQS between them is the fit. **Tradeoff vs. backpressure/circuit
+   breakers in the calling code**: backpressure avoids adding a new component, but means the
+   upstream service must itself slow down or reject work — a queue instead lets upstream keep
+   accepting work at full speed.
+4. **Order-of-operations-sensitive processing per entity** — a banking system must process a
+   "withdraw" event before a "deposit reversal" for the same account, but doesn't care about
+   relative ordering across different accounts. SQS FIFO with per-account message groups is the
+   fit. **Tradeoff vs. Standard queues**: Standard offers effectively unlimited throughput and
+   lower cost, but makes no ordering promise at all — wrong choice the moment sequence matters.
+5. **Durable fan-out buffering behind SNS** — several independent microservices (billing,
+   shipping, analytics) each need their own copy of every order event, held durably with its own
+   retry/DLQ even if one service is temporarily down. SNS → multiple SQS queues is the fit.
+   **Tradeoff vs. plain SNS with no queue behind it**: plain SNS delivers push-style with its own
+   retry policy, but a subscriber down longer than that retry window simply loses the message —
+   the SQS leg is what makes the fan-out durable.
+6. **Priority-based work processing** — a support ticketing system wants urgent tickets handled
+   before normal ones, but SQS has no native priority field. Two queues (high/low) with a
+   consumer that always checks the high-priority queue first is the fit. **Tradeoff vs. a single
+   queue with a `priority` message attribute the consumer filters on**: a single queue is simpler
+   to operate, but the consumer still has to poll and discard/requeue lower-priority messages
+   rather than simply draining a dedicated queue — the two-queue pattern is the cleaner default.
+7. **Large-payload handoff via the claim-check pattern** — a video transcoding pipeline needs to
+   pass 2GB files between stages, far beyond SQS's 256KB message limit. Storing the payload in S3
+   and passing only a pointer through SQS (the Extended Client Library automates this) is the
+   fit. **Tradeoff vs. splitting the payload into many small SQS messages**: splitting avoids an
+   S3 dependency, but reassembly logic and ordering across the split parts is genuinely harder to
+   get right than a single S3 pointer.
+8. **Scaling a worker fleet directly off backlog depth** — an Auto Scaling Group needs to grow
+   and shrink based on actual pending work, not guesswork. SQS's `ApproximateNumberOfMessagesVisible`
+   metric driving a scaling policy is the fit. **Tradeoff vs. scaling off CPU utilization alone**:
+   CPU-based scaling reacts to symptoms of backlog, but queue depth is a direct, leading signal —
+   workers can be scaled up before CPU even climbs.
+9. **Building resilience into a monolith-to-microservices migration's first cut** — a team
+   splitting a monolith wants the very first extracted service to survive the rest of the
+   monolith being briefly unavailable. SQS between the new service and the monolith is often the
+   first service introduced. **Tradeoff vs. a direct synchronous API call to the new service**:
+   a direct call is simpler initially but reintroduces the exact tight coupling the migration is
+   trying to remove.
+10. **Draining a batch job's work items with built-in retry** — a nightly reconciliation job
+    needs to process 50,000 account records, retrying any that fail transiently without manually
+    tracking which ones. SQS with a dead-letter queue for records that fail repeatedly is the
+    fit. **Tradeoff vs. a simple in-memory retry loop inside one script**: an in-memory loop is
+    simpler for a single run, but loses all retry state if the script itself crashes partway —
+    SQS persists the work items durably regardless of what happens to any one worker process.
 
 ## When NOT to Use It / Alternatives
 

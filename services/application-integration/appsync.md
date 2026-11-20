@@ -273,15 +273,67 @@ flowchart TD
 
 ## Use Cases — When to Use It
 
-- **Mobile/web apps that need to assemble data from multiple backends in one round trip** —
-  a single screen pulling from DynamoDB, a Lambda-backed recommendation service, and a search
-  index, all in one query.
-- **Real-time collaborative or live-updating apps**: chat apps, live order tracking, live
-  dashboards — subscriptions push changes instantly to every connected client.
-- **Bandwidth-constrained mobile clients** where over-fetching unnecessary fields over a
-  cellular connection is a real cost/performance problem.
-- **Front-end teams that want a strongly-typed, self-documenting API contract** (the GraphQL
-  schema) decoupled from how many different backends actually serve it.
+1. **Assembling multi-backend data in one mobile screen load** — an order-details screen needs
+   the order from DynamoDB, recommendations from a Lambda-backed engine, and a product search
+   result from OpenSearch, all in one round trip over a cellular connection. AppSync is the fit.
+   **Tradeoff vs. the mobile client calling three separate REST endpoints**: three calls are
+   simpler to build individually, but add three round trips of latency on a mobile network —
+   AppSync's single query collapses that into one.
+2. **Live order-tracking / ride-sharing style live updates** — a delivery app needs a customer's
+   screen to update the instant the order status changes, without polling an endpoint every few
+   seconds. AppSync subscriptions over a managed WebSocket are the fit. **Tradeoff vs. client-side
+   polling a REST endpoint every 5 seconds**: polling is simpler to implement but wastes battery
+   and bandwidth checking for a change that usually hasn't happened yet, and still adds up to a
+   poll-interval's worth of latency when it has.
+3. **Bandwidth-constrained mobile clients avoiding over-fetching** — a field-service app on a
+   slow cellular connection only needs 3 fields from a large customer record, not the whole
+   object. AppSync's client-declared field selection is the fit. **Tradeoff vs. a REST endpoint
+   returning the full object**: a full-object REST response is simpler to cache and reason about,
+   but costs real bandwidth/latency on a constrained connection for fields the screen never uses.
+4. **Backend-for-frontend (BFF) aggregating several owned microservices** — a company has
+   separate orders, payments, and inventory microservices, each with its own data store, and
+   wants one coherent API surface for client teams rather than three separate ones to coordinate
+   against. AppSync as the "supergraph" is the fit. **Tradeoff vs. an API Gateway with Lambda
+   proxy integrations per microservice**: API Gateway is simpler if clients are fine making
+   separate calls per microservice, but AppSync's resolvers let one query span all three
+   backends transparently.
+5. **Real-time collaborative apps** — a shared document or chat app needs every connected
+   client to see another user's edit or message the instant it happens. AppSync subscriptions
+   are the fit. **Tradeoff vs. a custom WebSocket API Gateway route**: a custom WebSocket API
+   gives full control over connection/message framing, but means building and operating
+   connection management, fan-out, and scaling AppSync already provides for GraphQL
+   subscriptions specifically.
+6. **Fine-grained, per-field authorization on one shared type** — a customer-facing order API
+   needs a public field, an admin-only internal-cost field, and an owner-only field all on the
+   same `Order` type, each enforced independently. AppSync's per-field authorization is the fit.
+   **Tradeoff vs. three separate API endpoints, one per access level**: separate endpoints avoid
+   AppSync's authorization-config complexity, but mean maintaining three parallel API surfaces for
+   data that's logically one object.
+7. **Live operational dashboards driven by backend events, not user actions** — an inventory
+   dashboard needs to update the moment stock changes, triggered by an EventBridge rule rather
+   than a client action. A Lambda-triggered AppSync mutation purely to fan out the update via
+   subscription is the fit. **Tradeoff vs. the dashboard polling an API on an interval**: polling
+   is simpler but adds staleness up to the poll interval — AppSync here is being used purely as
+   the real-time delivery leg of a larger event-driven pipeline, not as the system of record.
+8. **Offline-capable mobile apps with conflict resolution** — a field inspection app must let
+   users keep working with no signal and sync changes (including resolving conflicts from two
+   offline edits) once reconnected. AppSync + Amplify DataStore's conflict detection/resolution
+   is the fit. **Tradeoff vs. a custom local-first sync layer**: a custom sync layer gives full
+   control over conflict semantics, but reimplements the optimistic-concurrency/auto-merge
+   strategies AppSync+DataStore already provide.
+9. **Strongly-typed, self-documenting API contracts across teams** — a platform team wants
+   front-end and backend teams to agree on exactly what fields/types an API exposes, enforced by
+   the schema itself rather than documentation that drifts out of date. The AppSync GraphQL
+   schema is the fit. **Tradeoff vs. an OpenAPI spec on a REST API**: OpenAPI also documents a
+   contract, but GraphQL's schema is additionally enforced at request time — a client literally
+   cannot ask for a field that doesn't exist, where a REST client can silently ignore an outdated
+   OpenAPI doc.
+10. **Simple real-time pub/sub without a full GraphQL schema** — a chat feature needs
+    publish/subscribe messaging but the team doesn't want to design and maintain a full GraphQL
+    schema just for that. AppSync Events is the fit. **Tradeoff vs. full AppSync GraphQL
+    subscriptions**: GraphQL subscriptions integrate naturally if the rest of the app already
+    uses AppSync's GraphQL API, but AppSync Events is simpler to stand up when pub/sub messaging
+    is the *only* real-time need.
 
 ## When NOT to Use It / Alternatives
 

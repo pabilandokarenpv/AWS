@@ -135,19 +135,64 @@ and regulatory-compliance frameworks require.
 
 ## Use Cases — When to Use It
 
-- **Regulated industries needing a provable, centralized backup policy** (finance, healthcare) —
-  one audit trail across every service instead of per-service configuration screenshots.
-- **Protecting a multi-service application** (e.g., EC2 + RDS + EFS + DynamoDB working together) —
-  one plan, one schedule, consistent retention across all of it.
-- **Ransomware resilience** — Vault Lock creates immutable recovery points an attacker (or a
-  compromised admin credential) cannot delete.
-- **Cross-account/cross-Region DR strategy** — centralize backup governance via AWS Organizations,
-  with automatic copies landing in a dedicated backup account/Region.
-- **Simplifying operations at scale** — tag-based assignment means a growing fleet of resources
-  stays backed up without per-resource manual setup.
-- **Protecting an S3 data lake with separation of duties** — backup administrators manage retention
-  and vaults independently from the storage administrators who manage bucket-level S3 features,
-  satisfying compliance frameworks that require role separation.
+- **Regulated healthcare group needing one provable backup policy across EC2, RDS, and DynamoDB.** An
+  auditor wants a single policy and a single audit trail, not three different per-service configuration
+  screenshots. One AWS Backup plan applied by tag covers all three natively. *Alternative cost:*
+  configuring each service's native backup tool separately means stitching together three audit
+  stories for every compliance review.
+- **Ransomware resilience for a mid-size company after a near-miss credential compromise.** The company
+  needs recovery points an attacker with full admin access cannot delete. Vault Lock in Compliance mode
+  makes backups immutable even against a compromised root account. *Alternative cost:* relying on IAM
+  permission boundaries alone doesn't help if the attacker's stolen credential already has the
+  deny-bypassing privilege.
+- **Cross-account/cross-Region DR governance for a company under AWS Organizations.** Quickly growing
+  member accounts all need consistent backup coverage without per-account manual setup. An
+  Organization-wide backup policy plus tag-based assignment enrolls every new resource in every account
+  automatically. *Alternative cost:* manually configuring backups per account as they're created
+  guarantees some will be missed — exactly the audit finding AWS Backup exists to prevent.
+- **Protecting a multi-service e-commerce application (EC2 + RDS + EFS) with one consistent retention
+  window.** The checkout service, its database, and its shared asset storage must all restore to the
+  same point in time after an incident. One backup plan applied across all three resource types
+  guarantees consistent scheduling/retention. *Alternative cost:* three separate native backup
+  schedules risk subtly different retention windows that don't actually let you restore the whole
+  application consistently.
+- **Pre-deployment backup gate in a CI/CD pipeline for a SaaS company.** Before a risky database
+  migration runs, the pipeline needs an automatic, auditable rollback point without waiting for the
+  nightly schedule. An on-demand AWS Backup job via API, triggered as a pipeline step, gives this.
+  *Alternative cost:* relying on the previous night's scheduled backup instead could be many hours
+  stale by deployment time.
+- **Protecting an S3 data lake with separation of duties for a financial institution.** Compliance
+  requires that no single compromised identity can both alter live data and delete its backups. A
+  backup administrator role owns the AWS Backup vault/KMS key independently from the storage
+  administrator who manages bucket-level S3 features. *Alternative cost:* letting the same team/role
+  manage both fails the separation-of-duties control an auditor will specifically ask about.
+- **Compliance archival of 7-year financial records with centralized cold-storage transition.** Records
+  must move to cheap, auditable cold storage automatically as they age, across every account that
+  generates them. A backup plan's lifecycle rule (warm-to-cold transition, expiration) applies
+  uniformly without per-account scripting. *Alternative cost:* hand-building per-account lifecycle
+  automation instead duplicates logic the backup plan already centralizes.
+- **Logically air-gapped vault for a company in a highly targeted industry (critical infrastructure).**
+  The company needs backup storage isolated into a separate, service-owned account boundary an
+  attacker in the production account structure can't reach even with full admin rights there. A
+  logically air-gapped vault, shareable only via AWS RAM, gives this highest-isolation tier.
+  *Alternative cost:* a regular cross-account copy rule still depends on the destination account's own
+  security posture, which may itself be compromised in a sophisticated attack.
+- **Database storage recovery testing for an insurance company's quarterly DR drill.** Compliance
+  requires proof that backups are actually restorable, not just present. AWS Backup's automated
+  restore testing validates this on a schedule and produces a report. *Alternative cost:* trusting
+  "the backup job succeeded" as proof of restorability is exactly the gap that turns a real disaster
+  into a failed recovery.
+- **Centralizing Storage Gateway volume backups for a branch-office hybrid environment.** A retail
+  chain's Stored Volume Gateway backups (per-branch EBS snapshots) need the same governance as its
+  cloud-native resources. AWS Backup can apply the same plan/retention/Vault Lock policy to Storage
+  Gateway volumes alongside EC2/RDS. *Alternative cost:* managing Storage Gateway's own native snapshot
+  scheduling separately reintroduces the fragmented-policy problem AWS Backup exists to solve.
+- **Log retention governance for a SaaS company's observability data.** Operational logs stored in a
+  supported backup target need the same retention and immutability guarantees as the rest of the
+  company's protected resources, without a separate bespoke policy. A single backup plan extended to
+  cover the log-storage resource keeps the audit story uniform. *Alternative cost:* a standalone
+  retention script for just the logging resource is one more unaudited, unmonitored process an
+  auditor will ask about separately from everything else.
 
 ## When NOT to Use It / Alternatives
 

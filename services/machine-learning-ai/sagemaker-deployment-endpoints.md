@@ -203,23 +203,75 @@ clues embedded in the question's wording.
 
 ## Use Cases — When to Use It
 
-- **Real-time** — a live product feature calling the model on every user action (fraud check at
-  checkout, product recommendation, chatbot response) where latency must stay low and traffic
-  is fairly steady.
-- **Serverless** — an internal tool, a dev/test environment, or a feature with unpredictable,
-  bursty, or low-volume traffic where paying for an always-on instance would waste money.
-- **Asynchronous** — processing a large document, video frame batch, or a model with multi-
-  minute inference time, where the caller can poll or get notified later instead of waiting live.
-- **Batch Transform** — scoring your entire customer base overnight for a churn report, or
-  running one-time inference over a historical dataset with no live traffic involved.
-- **Neo** — a smart camera, drone, or factory sensor that must run inference locally with no
-  guaranteed internet connectivity, or where sending every frame to the cloud would be too slow
-  or too expensive in data transfer.
-- **Multi-model endpoints / inference components** — you have many models (per-customer models,
-  many narrow use cases) each with low individual traffic, and hosting one dedicated endpoint
-  per model would be prohibitively expensive.
-- **Shadow testing** — you want real confidence a new model version performs at least as well as
-  the current one before it ever actually influences a real user's experience.
+- **Fraud detection at checkout (payments/financial services):** Problem — every card transaction
+  must be scored within the time budget a payment authorization allows. Why it fits — a real-time
+  endpoint with auto scaling absorbs steady, latency-critical traffic and spikes (Black Friday)
+  without manual intervention. Tradeoff vs. serverless — serverless's cold start would be visible
+  on a fraction of checkouts at this volume, an unacceptable customer-facing latency hit a
+  continuously-busy real-time endpoint never incurs.
+- **Customer churn scoring for a nightly report (telecom/SaaS):** Problem — score the entire
+  customer base once a day for a retention team's morning report; nothing is waiting live. Why it
+  fits — Batch Transform spins up compute, scores every row, writes results, and tears down, with
+  zero endpoint existing before or after. Tradeoff vs. a real-time endpoint — a real-time endpoint
+  would bill 24/7 for a workload that's never actually queried live, pure wasted spend for this
+  traffic shape.
+- **Medical imaging analysis (healthcare):** Problem — large image files (50+ MB scans) take
+  real processing time, and a clinician can tolerate a notification-based result rather than an
+  instant answer. Why it fits — an asynchronous endpoint handles large payloads and multi-minute
+  processing without a client holding a connection open. Tradeoff vs. real-time/serverless — both
+  have far smaller payload ceilings than async allows, ruling them out outright for large scan
+  files regardless of latency tolerance.
+- **Demand forecasting pipeline (retail/CPG):** Problem — score a forecasting model against an
+  entire product catalog on a weekly cadence, with no live user ever calling it directly. Why it
+  fits — Batch Transform, same reasoning as the churn example: no persistent endpoint needed for a
+  workload with no live traffic at all. Tradeoff vs. serverless — serverless would still provision
+  per-request, adding orchestration overhead for what is fundamentally one big bulk job, not many
+  small ones.
+- **RAG chatbot backend for internal search (any enterprise):** Problem — an internal assistant
+  gets unpredictable, often low-volume, bursty traffic through business hours only. Why it fits —
+  a serverless endpoint scales to zero overnight and only bills for actual compute during the
+  handful of daily queries. Tradeoff vs. real-time — real-time guarantees no cold start but bills
+  24/7 for an endpoint idle more than 95% of the time at this traffic volume, pure wasted spend.
+- **Content moderation on user uploads (social/UGC platforms):** Problem — every uploaded image or
+  video needs a moderation score fast enough to gate publishing, at unpredictable, bursty volume.
+  Why it fits — real-time endpoint with auto scaling (steady core traffic) or serverless (if
+  genuinely spiky with acceptable cold-start tolerance) depending on actual traffic shape. Tradeoff
+  — picking real-time for what's actually spiky traffic overpays for idle capacity; picking
+  serverless for what's actually steady, high-volume traffic exposes cold starts a steady real-time
+  endpoint never would have.
+- **Recommendation engine at the product page (e-commerce):** Problem — every page load needs a
+  personalized ranking in well under 200ms, consistently, all day. Why it fits — a real-time
+  endpoint sized with auto-scaling policies is the only option meeting this latency bar at this
+  volume. Tradeoff vs. a multi-model endpoint — if this is genuinely one high-traffic model, a
+  dedicated endpoint avoids the memory-contention risk multi-model hosting introduces when many
+  models compete for the same instance memory.
+- **Document processing pipeline (insurance/legal back office):** Problem — uploaded documents
+  (claims, contracts) need OCR plus model-based classification taking minutes per document,
+  decoupled from the user's upload action. Why it fits — an async endpoint queues the request and
+  delivers the result via S3 + SNS once ready, matching exactly this non-blocking pattern.
+  Tradeoff vs. real-time — real-time's payload/timeout limits make it structurally unable to
+  handle a multi-minute, large-document workload at all, not just a worse fit.
+- **Predictive maintenance on factory floor sensors (manufacturing/industrial IoT):** Problem — a
+  smart sensor must detect an anomaly locally within milliseconds, with no guaranteed internet
+  connectivity to call any cloud endpoint. Why it fits — SageMaker Neo compiles the model for the
+  device's specific hardware, run via AWS IoT Greengrass entirely offline. Tradeoff vs. any cloud
+  endpoint — a cloud option is disqualified outright by the connectivity requirement regardless of
+  how fast its latency would otherwise be; Neo's tradeoff is the engineering overhead of
+  compilation and validating accuracy on the compiled model before fleet-wide rollout.
+- **Multi-tenant SaaS with per-customer models (B2B SaaS):** Problem — hundreds of customers each
+  have their own lightly-used model, and the obvious "one endpoint per customer" approach costs
+  far more than the traffic justifies. Why it fits — multi-model endpoints or inference components
+  consolidate many models onto shared instances, loaded into memory only when actually called.
+  Tradeoff vs. dedicated endpoints per customer — dedicated endpoints guarantee no
+  cross-customer latency contention but multiply instance-hour cost by the customer count, which
+  is exactly the expense this pattern exists to avoid.
+- **Safe model version rollout (any regulated production ML system, e.g., credit scoring):**
+  Problem — a new model version must be validated against real traffic before it ever risks
+  affecting a live decision. Why it fits — shadow testing routes a copy of live traffic to the new
+  variant for comparison without exposing any real user to its output. Tradeoff vs. a canary
+  deployment — canary does expose a small percentage of real users to the new variant's actual
+  output, a deliberate choice when some real-world exposure is acceptable; shadow testing is the
+  stricter, zero-user-risk option when it isn't.
 
 ## When NOT to Use It / Alternatives
 

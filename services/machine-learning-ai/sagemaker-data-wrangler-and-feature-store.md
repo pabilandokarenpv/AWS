@@ -201,22 +201,62 @@ incidental detail.
 
 ## Use Cases — When to Use It
 
-- You have messy raw tabular data (missing values, inconsistent types, imbalanced classes) and
-  want to clean it visually instead of hand-writing a pandas script.
-- Multiple teams/models need the *same* engineered feature (e.g., "30-day rolling average
-  spend") and you want one governed source of truth instead of N slightly different
-  implementations.
-- You're serving real-time predictions and need a feature's latest value looked up in
-  milliseconds (fraud scoring, recommendation at checkout) without querying your production
-  database directly.
-- You want an automatic report on data quality/bias before you even start training.
-- You need point-in-time-correct historical data to build a training set without leaking future
-  information into the past (a frequent cause of models that look great in testing and fail in
-  production).
-- You need a quick, low-code sanity check (Quick Model) that a proposed feature set is even worth
-  building a full pipeline around.
-- Your raw data comes from multiple source systems (a CRM, a data warehouse, event logs) that
-  need joining before any single row represents a complete training example.
+- **Fraud detection feature engineering (financial services):** Problem — a fraud model needs
+  real-time features like "this card's average transaction size over the last 30 days" available
+  in single-digit milliseconds at scoring time. Why it fits — Feature Store's Online Store serves
+  exactly this low-latency lookup, fed continuously via streaming ingestion. Tradeoff vs. querying
+  a production database directly — a direct query against a transactional database risks
+  contending with live application traffic and lacks the training/serving consistency guarantee
+  Feature Store's dual-write provides.
+- **Customer churn feature consistency across teams (telecom/SaaS):** Problem — three different
+  teams each compute "average monthly spend" slightly differently, producing inconsistent churn
+  predictions and reporting. Why it fits — centralizing the definition in one Feature Group makes
+  every consumer read the identical computation. Tradeoff vs. each team maintaining its own
+  feature pipeline — independent pipelines are faster to stand up initially but guarantee drift
+  between definitions over time, exactly the inconsistency Feature Store eliminates structurally.
+- **Medical imaging metadata preparation (healthcare):** Problem — a hospital's scan archive has
+  inconsistent patient metadata (missing fields, inconsistent coding) that must be cleaned before
+  any model can train on it. Why it fits — Data Wrangler's visual transforms (missing-value
+  handling, encoding) clean this without a custom ETL script, and its bias report flags
+  demographic imbalance in the training set before any compute is spent training a biased model.
+  Tradeoff vs. a hand-written pandas script — a script offers more flexibility for genuinely
+  unusual transformations, but Data Wrangler's built-in transforms cover the common cases with no
+  code and a live preview, faster for routine cleaning.
+- **Demand forecasting feature preparation (retail/CPG):** Problem — raw POS data needs lag
+  features (last week's sales) and rolling averages before a time-series model can use it. Why it
+  fits — Data Wrangler's dedicated time-series transform category (lag features, rolling window
+  aggregates, resampling) builds these without custom code. Tradeoff vs. a Glue ETL job — Glue is
+  the better fit if an engineering team already maintains a mature Spark pipeline; Data Wrangler is
+  faster for a data scientist working without heavy ETL tooling or team support.
+- **Recommendation engine feature store (e-commerce):** Problem — a recommendation model needs a
+  customer's current engagement features (recent session duration, purchase count) looked up
+  instantly at the moment of a page view. Why it fits — the Online Store serves this exact
+  real-time lookup pattern, while the Offline Store trains the model on full historical data from
+  the same governed source. Tradeoff vs. a custom DynamoDB-based cache — DynamoDB might outperform
+  the Online Store at extreme, highly custom throughput requirements, but loses the automatic
+  training/serving consistency guarantee Feature Store's single ingestion API provides.
+- **Document processing feature extraction (insurance/legal back office):** Problem — extracted
+  document fields (claim amount, filing date, category) need to feed a downstream risk model
+  consistently across every claim processed. Why it fits — Data Wrangler's custom code cells
+  (pandas/PySpark/SQL) handle the document-specific cleaning logic alongside its built-in
+  transforms for standard numeric/categorical fields. Tradeoff vs. a fully custom processing
+  script — Data Wrangler is faster to iterate on visually for the standard-shape transforms,
+  reserving custom code only for the document-specific parsing logic the built-ins don't cover.
+- **Content moderation training data preparation (social/UGC platforms):** Problem — a training
+  set for a custom moderation classifier has far more "safe" examples than "violating" examples,
+  producing a model that rarely flags anything. Why it fits — Data Wrangler's built-in class
+  imbalance transforms (oversampling, undersampling, SMOTE-style synthetic oversampling) correct
+  this before training. Tradeoff vs. adjusting the training algorithm's class weights afterward —
+  correcting the underlying data imbalance first is the stronger, primary lever; algorithm-level
+  weighting is a secondary fix layered on top, not a substitute.
+- **Leak-free credit risk model training (banking):** Problem — building a training set from
+  months of historical loan data risks accidentally including information only known *after* a
+  loan's outcome, inflating offline accuracy metrics that won't hold in production. Why it fits —
+  Feature Store's time-travel queries reconstruct exactly what a feature's value was at each
+  historical snapshot's own timestamp, preventing this leakage structurally. Tradeoff vs. a manual
+  point-in-time join written by hand — a manual join requires the engineer to get the logic
+  exactly right every time; time-travel queries make the correct behavior the default rather than
+  something each pipeline author must separately remember to implement.
 
 ## When NOT to Use It / Alternatives
 

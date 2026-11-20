@@ -224,20 +224,73 @@ here, with a few Glue-specific wrinkles:
 
 ## Use Cases — When to Use It
 
-- You have raw files landing in S3 (logs, exports, IoT data) and need a **repeatable, scheduled
-  transformation** into a clean, partitioned, query-ready format (e.g., CSV → Parquet) —
-  classic Glue ETL job.
-- You need a **shared schema catalog** so Athena, EMR, and Redshift Spectrum all agree on table
-  definitions without redefining them in three places — Glue Data Catalog.
-- A business analyst (not an engineer) needs to clean/normalize a dataset visually before it's
-  usable — **Glue DataBrew**.
-- You're building a **data lake** and need automatic schema discovery as new data partitions
-  (e.g., daily S3 folders) show up — **Glue Crawlers** on a schedule, or partition projection
-  for a known naming scheme.
-- Preparing training data for ML (dedup, null handling, format conversion) before it reaches
-  SageMaker — Glue ETL/DataBrew is the standard "data prep" layer in MLA-C02 pipelines.
-- Enforcing **data quality gates** before curated data is trusted downstream — Glue Data
-  Quality rules embedded in a scheduled ETL job.
+1. **Nightly ETL for daily reporting** — a retailer's raw sales exports land in S3 every night
+   and need to be clean, partitioned Parquet by morning for the BI team. A scheduled Glue ETL job
+   with job bookmarks is the fit — serverless, pay-per-run, no idle cluster. **Tradeoff vs. EMR**:
+   EMR gives the same transform more low-level Spark tuning control, but means paying to manage
+   cluster sizing for a job that's genuinely simple and intermittent.
+2. **Shared schema catalog across query engines** — a data platform team wants Athena, EMR, and
+   Redshift Spectrum to agree on one table definition instead of three teams maintaining three
+   schemas that silently drift. The Glue Data Catalog is the fit by design. **Tradeoff vs. a Hive
+   Metastore you run yourself**: self-hosting is viable if you're already deep in the Hadoop
+   ecosystem, but then you're patching and scaling a metastore server Glue gives you for free.
+3. **Analyst-driven data cleaning, no engineers involved** — a business analyst needs to dedupe
+   and standardize a messy CSV export before it reaches a dashboard, and has no Spark/Python
+   experience. Glue DataBrew's point-and-click recipes are the fit. **Tradeoff vs. Glue ETL
+   (code-based)**: ETL scales better to huge, complex joins, but requires an engineer to write and
+   maintain the PySpark — overkill for a one-off analyst cleaning task.
+4. **Automatic schema discovery for an evolving data lake** — new daily S3 partitions arrive and
+   nobody wants to hand-write `ALTER TABLE ADD PARTITION` for each one. A scheduled Glue Crawler
+   is the fit when the naming scheme isn't fully predictable. **Tradeoff vs. partition
+   projection**: projection needs zero catalog updates at all, but only works when the partition
+   naming pattern is fully predictable up front — a crawler is the fallback when it isn't.
+5. **ML training data preparation** — a data science team needs deduplication, null handling, and
+   format conversion on raw clickstream data before SageMaker sees it. Glue ETL/DataBrew is the
+   standard "data prep" layer. **Tradeoff vs. SageMaker Data Wrangler**: Wrangler is purpose-built
+   for ML-specific feature transforms that export straight to Feature Store/training, while Glue
+   is the more general-purpose transform tool — pick Wrangler once the task becomes genuinely
+   ML-feature-shaped rather than general cleaning.
+6. **Data-quality gating before a dashboard sees bad numbers** — a finance team has been burned
+   by null-filled or duplicated rows silently reaching their QuickSight dashboard. Glue Data
+   Quality rules embedded in a scheduled job catch this before promotion to the curated zone.
+   **Tradeoff vs. catching it in Athena after the fact**: Athena can surface a bad row with a
+   query, but only after someone already built a dashboard on top of it — the Glue gate stops it
+   earlier, at the cost of a slightly more complex pipeline.
+7. **Multi-source consolidation into one catalog** — a company has sales data in an on-prem JDBC
+   database, inventory in DynamoDB, and clickstream in S3, and wants one Glue ETL job joining
+   across all three without hand-rolling connection code for each. Glue Connections + Crawlers are
+   the fit. **Tradeoff vs. writing custom Python connectors**: custom code gives full control over
+   each connection's auth/retry behavior, but means re-implementing what a Glue Connection already
+   handles for the common JDBC/DynamoDB/S3 cases.
+8. **Streaming-to-batch feature consistency** — an ML pipeline needs the same cleaning/feature
+   logic applied whether data arrives via nightly batch or a live Kinesis stream, so training and
+   serving never silently diverge. A Glue streaming ETL job sharing logic with the batch job is
+   the fit. **Tradeoff vs. two independently-maintained pipelines**: separate batch and streaming
+   code paths are simpler to write once, but drift apart over time and are a classic source of
+   "why does the model behave differently in production" bugs.
+9. **Schema-evolution-safe producer/consumer contracts** — multiple teams publish events onto a
+   shared Kinesis/Kafka topic and a producer's accidental breaking schema change should fail loud
+   and early, not corrupt the curated zone downstream. The Glue Schema Registry is the fit.
+   **Tradeoff vs. trusting producers to coordinate manually**: manual coordination works at small
+   team counts but doesn't scale — the registry enforces compatibility automatically at the
+   write boundary.
+10. **PII discovery and redaction at scale** — a compliance team needs to find and redact Social
+    Security numbers scattered across thousands of legacy files before they can be shared with an
+    analytics vendor. Glue's Sensitive Data Detection transform is purpose-built for this.
+    **Tradeoff vs. a custom regex-based Lambda scanner**: a hand-rolled regex scanner is cheaper
+    for a narrow, well-known pattern, but Glue's ML-powered detection catches a far broader range
+    of PII shapes without per-pattern maintenance.
+11. **Fuzzy deduplication of near-identical records** — a CRM migration surfaces thousands of
+    customer records that are "almost" duplicates (typos, formatting differences) a simple exact
+    match won't catch. Glue FindMatches' ML-powered matching is purpose-built for this.
+    **Tradeoff vs. exact-match SQL dedup**: exact match is instant and free but misses fuzzy
+    near-duplicates entirely — FindMatches costs a training/inference cycle to catch what SQL
+    structurally cannot.
+12. **Event-driven micro-batch ETL** — a fraud team needs new data queryable within minutes of
+    arriving, not once a night. An S3 PUT event → EventBridge rule → Glue Workflow (crawl then
+    transform) is the fit. **Tradeoff vs. a continuously-running EMR cluster**: EMR could also hit
+    minute-level freshness, but at the cost of paying for cluster uptime between events instead of
+    Glue's pay-per-run model.
 
 ## When NOT to Use It / Alternatives
 

@@ -62,6 +62,61 @@ Storage is separate from compute: an **EBS volume** is a virtual hard drive that
 independently of the instance's lifecycle (stop/start/terminate), unlike the now-rare **instance
 store**, which is physically attached to that one host and disappears when the instance stops.
 
+### How It Works — Step by Step: From `run-instances` to a Reachable Instance
+
+It's worth walking through the exact sequence of events between typing `aws ec2 run-instances`
+and having a machine you can actually SSH into, because every step maps to a real exam-tested
+concept and a real failure mode:
+
+1. **API call and authentication.** The CLI signs your request with your IAM credentials and
+   sends it to the EC2 control plane's regional API endpoint. The control plane first checks IAM
+   (do you have `ec2:RunInstances` permission, and permission on the specific AMI/subnet/security
+   group resources referenced) before doing anything else — an `UnauthorizedOperation` error means
+   you never got past this step.
+2. **Parameter validation and quota check.** AWS validates the AMI exists and is accessible to
+   your account, the instance type is valid in the target Region, and — critically — that
+   launching it wouldn't exceed your account's vCPU service quota for that instance family (see
+   Limits & Quotas below). This is where a fresh account trying to launch a `p5.48xlarge` with a
+   default 0-vCPU GPU quota gets rejected before any hardware is even considered.
+3. **Placement decision.** The control plane's placement engine picks a physical host in the
+   Availability Zone (and, if specified, the placement group) that has spare capacity matching the
+   requested instance type. This is the step that can fail with `InsufficientInstanceCapacity` —
+   AWS genuinely doesn't have a free slot of that exact shape in that exact AZ at that exact
+   moment, which is why retrying in another AZ or with a different but similar instance type often
+   succeeds immediately after.
+4. **EBS volume creation and attachment.** In parallel with placement, EC2 asks the EBS service to
+   create the root volume (and any additional volumes from the block device mapping) from the
+   AMI's snapshot, in the same Availability Zone as the chosen host (EBS volumes cannot span AZs).
+   The volume is then attached to the instance's virtual device slot over the Nitro System's
+   dedicated EBS data path — a separate physical channel from the instance's CPU/memory, which is
+   part of why EBS throughput doesn't compete with your application's own CPU use for bandwidth.
+5. **ENI creation and network attachment.** EC2 creates (or attaches a pre-existing) Elastic
+   Network Interface in the subnet you specified, assigns it a private IP from that subnet's CIDR
+   range, and associates your chosen security group(s) with that ENI. If you requested a public IP,
+   one is allocated and mapped (via NAT at the Internet Gateway) to the private IP at this point —
+   the instance's OS never actually sees the public IP directly; it only ever knows its private one.
+6. **Hypervisor boot.** The Nitro hypervisor on the chosen host boots a microVM, loads the AMI's
+   root volume as its boot disk, and starts the guest OS kernel exactly as a normal computer would
+   boot from its own hard drive — the guest OS has no idea it's virtualized at this level of
+   indirection, which is the entire point of Nitro's near-bare-metal performance.
+7. **User data execution (if configured) and status checks.** Once the OS finishes booting,
+   `cloud-init` (Linux) or EC2Config/EC2Launch (Windows) runs your user data script exactly once.
+   Independently, EC2 begins running two status checks every few seconds: the **system status
+   check** (is the underlying host/network/hardware healthy) and the **instance status check** (is
+   the guest OS itself responsive) — both must pass before the console shows the instance as
+   fully `2/2 checks passed`.
+8. **Reachability.** The instance is reachable the moment its ENI has a route back to you: the
+   subnet's route table must have a path to an Internet Gateway (for a public IP) or to wherever
+   you're connecting from (a VPN, Direct Connect, or a bastion in the same VPC), and the security
+   group must explicitly allow the inbound port you're trying to reach. Only once all of this
+   lines up — placement succeeded, EBS attached, ENI attached with the right security group, OS
+   finished booting, status checks green, and a route exists — can you actually connect.
+
+Each of the troubleshooting entries later in this file maps directly onto one of these eight
+steps, which is why memorizing this sequence (rather than just the end states) is the fastest way
+to diagnose "my instance won't launch" or "my instance launched but I can't reach it" in both the
+real world and on the exam.
+
 ### The instance lifecycle in detail
 
 An instance doesn't just exist or not exist — it moves through a defined set of states, and
@@ -134,6 +189,16 @@ flowchart TB
     I3 -.replicates.-> RDS
 ```
 
+*This diagram is the single most common "design for high availability" answer on the SAA-C03
+exam: an Application Load Balancer spreads traffic across instances in two separate Availability
+Zones, and each zone's instances talk to a Multi-AZ RDS database that itself fails over
+automatically if its primary AZ goes down. The reason this specific shape matters: if AZ A
+suffers a full outage (power, network, a correlated hardware failure), the ALB simply stops
+routing to the instances in AZ A and sends all traffic to AZ B's surviving instances — and RDS's
+standby, which lives in AZ B, is promoted to primary automatically if the original primary was in
+AZ A. No single Availability Zone failure can take the whole application down, which is exactly
+the property "resilient" means in this context.*
+
 ### Spot Instance interruption handling
 
 Understanding the interruption flow is what separates "I used Spot once" from "I can design a
@@ -153,6 +218,18 @@ sequenceDiagram
     ASG->>ASG: Launch replacement instance (On-Demand or different Spot pool)
 ```
 
+*Reading this sequence left to right is the fastest way to internalize why Spot requires
+architectural accommodation, not just a cheaper price tag: AWS's Spot Capacity Manager decides it
+needs the capacity back (for an On-Demand customer, or because that Spot pool is oversubscribed)
+and emits an interruption notice roughly two minutes before reclaiming the instance — enough time
+for well-designed code to listen for that event (via the instance metadata service or an
+EventBridge rule) and drain in-flight work, checkpoint progress, or deregister from a load
+balancer, but not enough time for anything manual. If the workload is running inside a mixed
+instances policy Auto Scaling Group, the ASG treats the interruption exactly like a health-check
+failure and immediately launches a replacement — often from a different Spot pool or instance type
+entirely, which is why Spot-safe application code should never assume it will get the same
+instance type back.*
+
 ### Choosing a purchasing option
 
 ```mermaid
@@ -164,6 +241,14 @@ flowchart TD
     COMMIT -->|Yes| SP[Savings Plans]
     COMMIT -->|No, locked family is fine| RI[Reserved Instances]
 ```
+
+*This decision tree collapses the entire pricing-model section below into the two questions that
+actually determine the right purchasing option: can the workload survive an instance disappearing
+with two minutes' notice, and if not, how confident are you in the usage pattern over the next 1-3
+years? A surprising number of real-world cost mistakes come from skipping straight to "Reserved
+Instances save money" without first asking the interruption-tolerance question — locking in a
+3-year Reserved Instance for a workload that turns out to be genuinely bursty (and would have
+worked fine on Spot) is a common, expensive mistake this flowchart is designed to prevent.*
 
 ## Instance Type Families — Deep Dive
 
@@ -360,28 +445,83 @@ pick by default" → `gp3`.
 
 ## Use Cases — When to Use It
 
-- **Lift-and-shift of an existing app** that expects to control its own OS, install arbitrary
-  system packages, or needs a specific kernel/driver — EC2 gives you that OS-level control that
-  Lambda/Fargate don't. This is the single most common first AWS migration pattern for
-  organizations moving off physical/on-prem hardware: the application code doesn't change, only
-  the box it runs on does.
-- **Long-running, steady-state workloads** — a web server or application server that's up 24/7 —
-  where you can reserve capacity and get a discount instead of paying the serverless per-invoke
-  premium.
-- **Custom or legacy runtime requirements** — an old Java version, a licensed commercial database
-  engine installed yourself, a Windows-only app.
-- **GPU workloads** — training or serving ML models on `p5`/`g5` instance families when you need
-  direct control over the CUDA stack, batch size, and driver versions.
-- **Self-managed databases or caches** that aren't offered as a managed service, or where you
-  need tuning knobs the managed version (RDS) doesn't expose.
-- **Dev/test environments** you can snapshot as an AMI and spin up identically on demand.
-- **High Performance Computing (HPC)** — tightly-coupled simulations (computational fluid
-  dynamics, genomics, weather modeling) using `hpc6a`/`hpc7g` instances in `cluster` placement
-  groups for the lowest possible inter-node network latency, something no serverless offering can
-  match since they don't expose node-to-node network topology at all.
-- **Specialized compliance/licensing needs** — software licensed per physical core or socket
-  (certain enterprise databases, some vendor appliances) requires Dedicated Hosts, which only EC2
-  offers.
+- **E-commerce order-processing monolith (retail/e-commerce).** Situation: a mid-size retailer's
+  Java-based order management system assumes full OS control — custom JVM garbage-collection
+  flags, a kernel-level APM agent, local disk caching tuned to a specific filesystem. Why EC2
+  fits: lift-and-shift onto EC2 preserves the existing deployment process while escaping the data
+  center, with no application rewrite. What the alternative would cost: refactoring onto Lambda or
+  Fargate would mean rewriting the monolith's session/state and filesystem assumptions from
+  scratch — months of engineering effort versus a weekend EC2 migration.
+- **Fintech core banking ledger (financial services).** Situation: a regulated payments company
+  runs its transaction ledger on a specific, certified PostgreSQL build with custom WAL archiving
+  and compliance logging that managed database services don't expose. Why EC2 fits: root-level
+  OS access is what lets the team meet an auditor-mandated requirement to inspect raw WAL files on
+  disk. What the alternative would cost: RDS would be cheaper to operate, but failing the audit
+  requirement would force a costly compliance exception process or a forced migration back to
+  self-managed infrastructure later anyway.
+- **Media/streaming video transcoding farm (media & entertainment).** Situation: a video platform
+  transcodes thousands of hours of user-uploaded footage daily into multiple bitrates and
+  resolutions. Why EC2 fits: `c`-family compute-optimized instances (often purchased as Spot) give
+  the lowest cost per encoded minute with direct control over the encoder's threading model. What
+  the alternative would cost: running the same job on Lambda would hit the 15-minute timeout on
+  anything but the shortest clips, forcing complex chunking/reassembly logic that adds engineering
+  overhead with no compensating cost benefit.
+- **Healthcare medical-imaging GPU inference (healthcare).** Situation: a radiology SaaS runs a
+  proprietary deep-learning model for X-ray analysis that requires a specific CUDA driver version
+  pinned by the model vendor's support contract. Why EC2 fits: `g5`/`p5` instances let the team
+  pin the exact GPU driver/CUDA stack the vendor certifies, something a managed inference
+  container doesn't expose. What the alternative would cost: being locked to a managed service's
+  supported driver versions could mean waiting on an AWS release cycle before deploying a
+  vendor-mandated security patch to the model runtime — unacceptable in a regulated clinical
+  setting.
+- **Gaming real-time multiplayer game servers (gaming).** Situation: a multiplayer game needs
+  dozens of dedicated session servers holding in-memory authoritative match state, with sub-50ms
+  latency and direct UDP socket handling. Why EC2 fits: instances in a `cluster` placement group
+  minimize inter-instance network latency and give full control over the socket/networking stack
+  that a request-response compute model can't provide. What the alternative would cost: Lambda or
+  Fargate add connection-handling overhead and don't cleanly support long-lived stateful UDP
+  sessions, risking dropped connections mid-match for players.
+- **SaaS multi-tenant application with per-customer isolation (SaaS).** Situation: a B2B SaaS
+  vendor runs a "silo" deployment model where each enterprise customer gets a dedicated, isolated
+  compute environment to satisfy data-residency and no-shared-hardware security requirements. Why
+  EC2 fits: Dedicated Hosts/Instances give provably isolated physical hardware per customer. What
+  the alternative would cost: a shared multi-tenant Fargate/Lambda model would be cheaper per
+  customer but would fail an enterprise prospect's security questionnaire outright, risking the
+  deal entirely.
+- **Batch analytics data warehouse ETL staging (data analytics).** Situation: a retailer's nightly
+  ETL job needs a fleet of `i4i` storage-optimized instances with fast local NVMe for intermediate
+  shuffle data during a large distributed-processing job. Why EC2 fits: instance store on the
+  `i`-family gives far higher IOPS than network-attached EBS for ephemeral shuffle files that don't
+  need to survive the job. What the alternative would cost: running the same shuffle workload
+  against `gp3` EBS volumes instead of local NVMe would add meaningful wall-clock time to every
+  nightly run, risking the morning reporting SLA.
+- **IoT fleet telemetry ingestion gateway (IoT/industrial).** Situation: an industrial IoT company
+  runs protocol-translation gateway instances that terminate long-lived MQTT connections from
+  hundreds of thousands of field devices and forward normalized data into a streaming pipeline.
+  Why EC2 fits: instances behind a Network Load Balancer hold the long-lived, stateful MQTT
+  sessions that a short-lived invocation model isn't built for. What the alternative would cost:
+  terminating MQTT directly in Lambda would force every device to reconnect on every cold start,
+  overwhelming the ingestion pipeline with reconnect storms.
+- **HPC genomics and weather simulation (scientific computing).** Situation: a genomics research
+  lab runs tightly-coupled MPI simulations across dozens of nodes, needing the lowest possible
+  inter-node network latency. Why EC2 fits: `hpc7g` instances in a `cluster` placement group
+  deliver the node-to-node latency MPI jobs require; no serverless offering exposes node topology
+  at all. What the alternative would cost: Batch or Fargate can run the same container image but
+  can't guarantee physical proximity between nodes, silently slowing the simulation with
+  cross-rack network hops mid-job.
+- **Dev/test golden-image environments (software development/QA).** Situation: a platform team
+  needs an identical staging environment — same OS patches, same installed agents — for every
+  feature branch's integration tests, torn down afterward. Why EC2 fits: snapshotting a configured
+  instance as a custom AMI and launching fresh copies on demand gives byte-identical environments
+  on command. What the alternative would cost: keeping a single shared staging EC2 fleet running
+  24/7 for the same purpose costs roughly the same per hour but introduces test flakiness from
+  multiple branches colliding in one shared environment.
+- **Specialized compliance/licensing needs (enterprise software/legal).** Situation: a commercial
+  database or vendor appliance is licensed per physical core or socket, a licensing model that only
+  makes sense against visible, dedicated hardware. Why EC2 fits: Dedicated Hosts expose the actual
+  physical socket/core counts the license agreement requires. What the alternative would cost:
+  running the same software on shared-tenancy compute (or serverless) would violate the license
+  terms outright, exposing the company to an audit penalty far larger than any cost savings.
 
 ## When NOT to Use It / Alternatives
 

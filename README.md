@@ -106,14 +106,26 @@ surprise bill, same CLI commands you'd run against real AWS. See [`labs-floci/RE
 
 ## 📊 Build status
 
-This is a living repository. Scaffolding and fundamentals are in place; domain content is being
-filled in per-cert, per-domain, per-service. Track progress in each cert's README (checklist at
-the top of every domain folder).
+| Layer | Status |
+|---|---|
+| Repo structure, templates, diagram/icon conventions | ✅ Complete |
+| `00-fundamentals/` (6 docs) | ✅ Complete |
+| `services/` reference (94 docs, ~19k lines, every doc with a diagram + local icon) | ✅ Complete |
+| Cert domain docs (12 domain folders × README + topic docs + labs, 3 certs) | ✅ Complete |
+| Icons (86 service logos, vendored locally — zero broken images) | ✅ Complete |
+| `glossary/` (auto-generated from every doc's Definition section) | ✅ Complete |
+| `practice-questions/` (SAA-C03: 60, DVA-C03: 50, MLA-C02: 50 — scenario-based, fully explained) | ✅ Complete |
+| `STUDY-PLAN.md` (phased plan targeting Jan 2027 SAA-C03 start) | ✅ Complete |
+
+This repo stays living as the official MLA-C02 exam guide finalizes (GA Jan 14, 2027) and as AWS
+ships new services/features — update the relevant doc in place rather than re-writing the whole
+cert; the glossary regenerates from `services/*/Definition` sections so it never drifts.
 
 ## 📚 Start here
 
 1. New to AWS entirely → [`00-fundamentals/`](00-fundamentals)
-2. Studying for a specific cert → jump into that cert's folder, read its `README.md` first
-   (exam format + domain weights), then work domain by domain
-3. Looking up one service/term → [`services/`](services) or the [`glossary/`](glossary)
-4. Want to practice hands-on for free → [`labs-floci/`](labs-floci)
+2. Have a target date → [`STUDY-PLAN.md`](STUDY-PLAN.md) (phased, SAA-C03 → DVA-C03 → MLA-C02)
+3. Studying for a specific cert → jump into that cert's folder, read its `README.md` first
+   (exam format + domain weights), then work domain by domain, then its `practice-questions/`
+4. Looking up one service/term → [`services/`](services) or the [`glossary/`](glossary)
+5. Want to practice hands-on for free → [`labs-floci/`](labs-floci)

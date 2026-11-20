@@ -29,6 +29,18 @@ infrastructure to the actual traffic shape, don't over- or under-provision."
 | **3.2 — Containerize and package models** | ECR, custom inference containers, Bring Your Own Container | [`services/containers/ecr.md`](../../../services/containers/ecr.md), [`services/containers/ecs.md`](../../../services/containers/ecs.md), [`services/containers/eks.md`](../../../services/containers/eks.md) |
 | **3.3 — Automate deployment (CI/CD/IaC)** | CodePipeline/CodeBuild/CodeDeploy, CloudFormation/CDK, SageMaker Pipelines, EventBridge-triggered retraining | [`services/machine-learning-ai/sagemaker-pipelines.md`](../../../services/machine-learning-ai/sagemaker-pipelines.md) |
 | **3.4 — NEW: Orchestrate GenAI workflows** | Bedrock Knowledge Bases (RAG) and Agents as deployable, chainable components | [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md), see also Domain 1's [`embeddings-and-rag-data-prep.md`](../domain-1-data-preparation/embeddings-and-rag-data-prep.md) |
+| **3.1.7 — NEW: Configure FM deployment/hosting/resource allocation** | Provisioning throughput, choosing hosting options, sizing resources for a deployed FM | this doc's ["FM Deployment Configuration"](#new-skills-317318--fm-deployment-configuration--rag-system-configuration-at-deploy-time) section below |
+| **3.1.8 — NEW: Apply RAG system configurations** | Retrieval strategy and reranking choices applied at the deployment/infrastructure layer | this doc's ["FM Deployment Configuration"](#new-skills-317318--fm-deployment-configuration--rag-system-configuration-at-deploy-time) section below |
+| **3.2.7 — NEW: Create/manage Bedrock Knowledge Bases** | Vector DB config, document indexing, retrieval optimization as a deployable resource | this doc's ["Knowledge Bases, Retrieval, Agent State, and GPU Scaling"](#new-skills-327-3211--knowledge-bases-retrieval-pipelines-agent-state-management-gpu-scaling-and-agentic-infrastructure) section below |
+| **3.2.8 — NEW: Implement retrieval pipelines** | Deploying/operating the retrieval half of RAG as production infrastructure | same section below |
+| **3.2.9 — NEW: Implement agent state management systems** | Session/conversation/task state across multi-turn agent interactions | same section below |
+| **3.2.10 — NEW: AI-specific resource scaling for GPU workloads** | Scaling GPU capacity for FM hosting/agentic workloads specifically | same section below |
+| **3.2.11 — NEW: Deploy agentic workflow infrastructure** | Standing up the infrastructure an agent runs on/within | same section below |
+| **3.3.7 — NEW: Manage prompts (Bedrock Prompt Management)** | Versioning, testing, and deploying prompt templates as first-class artifacts | this doc's ["Prompt Management, Agent CI/CD, and RAG Pipeline Orchestration"](#new-skills-337-3311--prompt-management-agent-cicd-prompt-testing-fm-deployment-automation-and-rag-pipeline-orchestration) section below |
+| **3.3.8 — NEW: Automated agent deployment pipelines + version management** | CI/CD specifically for agent configurations, with rollback by version | same section below |
+| **3.3.9 — NEW: AI model testing frameworks including prompt testing** | Automated test suites for prompts/models before production rollout | same section below |
+| **3.3.10 — NEW: FM deployment automation with fine-tuned model versioning** | Automating the rollout of newly fine-tuned FM versions | same section below |
+| **3.3.11 — NEW: AI-specific pipeline orchestration for RAG updates** | Scheduling/automating knowledge base refresh cycles as a pipeline | same section below |
 
 ## Linked service docs — the deep dives
 
@@ -55,6 +67,172 @@ infrastructure to the actual traffic shape, don't over- or under-provision."
   (if present in this repo) / the general AWS CI/CD trio — CodePipeline orchestrates stages,
   CodeBuild compiles/tests/builds, CodeDeploy performs the actual rollout — the same three
   services DVA-C03's CI/CD domain covers, reused here for ML-specific pipelines.
+
+## NEW skills 3.1.7/3.1.8 — FM deployment configuration & RAG system configuration at deploy time
+
+**Task 3.1.7, plain English:** deploying a foundation model (whether a Bedrock-hosted model or a
+self-managed one via SageMaker JumpStart) requires its own configuration decisions, distinct from
+classic-ML endpoint deployment:
+
+| Configuration decision | What it controls | Exam-relevant signal |
+|---|---|---|
+| Hosting option | **On-Demand** (pay per request/token, no commitment) vs. **Provisioned Throughput** (reserved capacity, lower effective per-token cost at high volume) vs. self-hosting a JumpStart FM on a SageMaker endpoint you fully control | Steady, high-volume usage → Provisioned Throughput; unpredictable/low volume → On-Demand; need full infra control (custom scaling policies, VPC specifics) → self-hosted JumpStart endpoint |
+| Model unit/throughput sizing | How many requests per minute a given reservation can actually serve | Under-provisioning causes throttling under load; over-provisioning wastes the Provisioned Throughput commitment — size against measured, not guessed, traffic |
+| Region/model availability | Not every foundation model is available in every AWS Region | A scenario with a hard data-residency requirement may constrain which models are even selectable, before any performance/cost comparison matters |
+| GPU vs. specialized inference hardware (self-hosted) | For a self-hosted FM (JumpStart on SageMaker), choosing GPU instance family/size | See the GPU resource scaling section below — this decision interacts directly with cost and latency |
+
+**Task 3.1.8, plain English:** a RAG system's *retrieval* configuration is itself a deployment-
+time decision, not only a Domain 1/2 data-prep concern — once the architecture pattern is chosen
+(Domain 2's task 2.1.5), deploying it means configuring:
+
+- **Retrieval strategy at the infrastructure layer** — how many chunks to retrieve (top-K),
+  whether hybrid keyword+vector search is enabled, and which vector store backend serves the
+  request, all configured as part of the Knowledge Base/retrieval pipeline's deployed
+  infrastructure, not just a data-prep-time choice.
+- **Reranking deployment** — if the architecture calls for reranking (Domain 2's advanced RAG
+  pattern), the reranker itself is a deployed component with its own latency/cost footprint that
+  has to be sized and monitored like any other inference endpoint.
+- **The exam-relevant connective tissue:** Domain 2 decides *which* RAG pattern and *why*; Domain
+  3 (this task statement) is about actually standing up and configuring the infrastructure that
+  realizes that choice in production — the same build-vs-operate distinction that runs throughout
+  this entire domain's relationship to Domain 2.
+
+## NEW skills 3.2.7–3.2.11 — Knowledge Bases, retrieval pipelines, agent state management, GPU scaling, and agentic infrastructure
+
+**3.2.7 — Creating and managing Bedrock Knowledge Bases as a deployable resource:** beyond the
+conceptual chunk→embed→retrieve pipeline (Domain 1), *operating* a Knowledge Base as
+infrastructure means configuring its vector database binding (which OpenSearch collection, RDS
+cluster, or S3 vector bucket it writes to — see Domain 1's vector database comparison), its data
+source sync schedule (how often it re-indexes the underlying S3 documents), and its retrieval
+configuration (number of results, metadata filtering rules) — all as versioned, deployable
+settings, not one-time setup choices.
+
+**3.2.8 — Implementing retrieval pipelines:** the production-operations view of retrieval — once
+deployed, a retrieval pipeline needs health checks (is the vector store reachable and responding
+within SLA), the same way any other service dependency does, and its latency is a real component
+of the end-to-end response time budget a user-facing chatbot has to meet.
+
+**3.2.9 — Implementing agent state management systems:** this is genuinely new, distinct content.
+**Plain English:** a single foundation-model call is stateless — it only knows what's in the
+current prompt. A multi-turn **agent** conversation (book a flight → confirm dates → pay) needs
+to remember what happened in earlier turns and *where it is* in a multi-step task, across
+multiple separate requests that might even hit different compute instances.
+
+```mermaid
+flowchart TD
+    A["Turn 1: 'Book me a flight<br/>to Chicago next Friday'"] --> B["Agent state store:<br/>task=book_flight,<br/>destination=Chicago,<br/>date=next Friday,<br/>status=searching"]
+    B --> C["Turn 2: 'Actually make<br/>it Thursday instead'"]
+    C --> D{"Load existing state<br/>for this session"}
+    D --> E["Update: date=Thursday,<br/>status=searching<br/>(task NOT restarted)"]
+    E --> F["Turn 3: 'Book it'"]
+    F --> G{"Load state"}
+    G --> H["status=booking →<br/>call booking tool<br/>with full accumulated context"]
+    H --> I["status=completed"]
+```
+
+- **Why this can't just be "put it in the prompt"** — for a long-running or multi-session task
+  (a booking flow a user might pause and resume hours later), state needs to persist independent
+  of any single request's prompt, and independent of which compute instance happens to handle the
+  next turn — this requires an external, durable state store (e.g., DynamoDB, or Bedrock
+  AgentCore's managed session/state handling), not just appending to a growing prompt.
+- **What actually gets stored** — the conversation history (or a summarized version of it, since
+  unbounded raw history both costs tokens and eventually exceeds the context window — see
+  `ml-cost-optimization.md`'s GenAI cost levers), the current task's progress/status, and any
+  intermediate results from tool calls already made (e.g., a confirmed flight search result,
+  so a later turn doesn't need to re-call the search tool).
+- **Session identity** — every multi-turn interaction needs a session ID the client passes back
+  on every subsequent request, which the agent uses as the key to load the correct state — a
+  missing or inconsistent session ID is the most common real-world root cause of an agent that
+  "forgets" context between turns that otherwise looks like a model capability problem.
+- **The exam-relevant trap:** attributing an agent's failure to remember earlier context to the
+  foundation model itself being "bad at conversation" when the actual root cause is a missing or
+  misconfigured state-management layer — the model has no memory at all between calls by default;
+  all continuity is the state-management system's job, not the model's.
+
+**3.2.10 — AI-specific resource scaling for GPU workloads:** self-hosted foundation models and
+embedding models (via JumpStart, or a self-hosted agent's own compute) commonly run on GPU
+instances, which scale differently than CPU-based classic-ML endpoints:
+
+- **GPU capacity is a scarcer, lumpier resource than CPU** — GPU instance types come in large,
+  discrete jumps in capability and cost (no fine-grained "a little more compute" option the way
+  CPU auto-scaling can add one more small instance), so scaling decisions are coarser and
+  capacity availability in a given Region/AZ can itself be a real constraint, not just a cost one.
+- **Batching requests to GPU-hosted models** — because a GPU can often process several requests
+  together more efficiently than one at a time (up to a point), request batching/queuing in front
+  of a GPU-hosted model is a real throughput lever distinct from simply adding more GPU instances.
+- **Scaling an agentic workload specifically** — an agent's resource usage is bursty and
+  unevenly distributed across its own steps (a planning step might be cheap/fast; a tool-calling
+  step might wait on an external API; a final synthesis step might need the most capable, most
+  GPU-hungry model) — scaling an agent's infrastructure means scaling each component to its own
+  actual load pattern, not provisioning uniform capacity across the whole pipeline.
+
+**3.2.11 — Deploying agentic workflow infrastructure:** the deployable units of an agent-based
+system — the agent's own orchestration logic/runtime (e.g., Bedrock Agents, or a self-hosted
+framework), its state store (3.2.9), its tool/Lambda integrations, and its Knowledge Base(s) —
+all have to be deployed, versioned, and connected together as one coherent infrastructure stack,
+typically via the same IaC (CloudFormation/CDK) discipline used for any other production AWS
+infrastructure, described later in this document's "Infrastructure as Code" section.
+
+## NEW skills 3.3.7–3.3.11 — Prompt Management, agent CI/CD, prompt testing, FM deployment automation, and RAG pipeline orchestration
+
+**3.3.7 — Managing prompts with Amazon Bedrock Prompt Management:** **plain English:** a prompt
+template used in production (e.g., a customer-support chatbot's system prompt) is a real,
+versioned artifact that changes over time — Bedrock Prompt Management treats it that way
+explicitly, rather than leaving it as a hardcoded string buried in application code.
+
+```mermaid
+flowchart LR
+    A["Prompt template<br/>drafted/edited"] --> B["Saved as a new<br/>Prompt Management version"]
+    B --> C["Automated eval suite runs<br/>against test cases<br/>(task 3.3.9)"]
+    C --> D{"Scores acceptable?"}
+    D -->|No| E["Version rejected,<br/>previous version<br/>stays live"]
+    D -->|Yes| F["New version promoted<br/>to production variant"]
+    F --> G["Live traffic uses<br/>the new prompt version"]
+    G --> H["Can instantly roll back<br/>to any prior saved version"]
+```
+
+- **Why version prompts like code, not like configuration** — a prompt change can shift model
+  behavior as significantly as a code change can, so it needs the same rollback-ability, review
+  gate, and audit trail — Prompt Management gives every saved prompt a version history, with the
+  ability to point production traffic at a specific version and roll back instantly if a new one
+  underperforms.
+- **Separation from the application code** — because the prompt lives in Prompt Management rather
+  than hardcoded in the calling application, a prompt-only change doesn't require a full
+  application redeploy — a genuine operational win for teams that iterate on prompt wording
+  frequently.
+
+**3.3.8 — Automated agent deployment pipelines and agent version management:** agents get the
+same CI/CD discipline as any other deployable artifact (directly extending the domain's existing
+"GenAI orchestration layered on the same CI/CD shape" diagram below) — every change to an agent's
+instructions, its tool definitions, or its Knowledge Base bindings is a new, versioned deployment
+that goes through an automated eval gate before reaching production traffic, with the ability to
+roll back to a prior agent version exactly like rolling back a model version in Model Registry.
+
+**3.3.9 — AI model testing frameworks including prompt testing:** before any model, prompt, or
+agent configuration change reaches production, an automated test suite runs a representative set
+of test inputs and checks outputs against expected properties (not necessarily exact string
+matches — often using the NLP evaluation metrics and LLM-as-a-judge techniques from Domain 2's
+`ml-fundamentals-glossary.md`) — this is what task 3.3.9 means by "AI model testing," and it's the
+automated gate referenced in the Prompt Management diagram above and the agent-deployment pipeline
+diagram below.
+
+**3.3.10 — FM deployment automation with fine-tuned model versioning:** when a fine-tuning job
+(Domain 2) produces a new model version, rolling it into production follows the same automated
+pipeline pattern as a classic-ML model (SageMaker Pipeline's evaluate→register→deploy flow
+described below), with one GenAI-specific addition: the fine-tuned model version has to be
+tracked distinctly from the *base* foundation model version it was fine-tuned from, since a base
+model update (a new Bedrock model version) can require re-validating (and potentially
+re-running) every fine-tune built on top of the old base version.
+
+**3.3.11 — AI-specific pipeline orchestration for RAG updates/Knowledge Base refresh cycles:** a
+Knowledge Base's underlying documents change over time (Domain 1), and keeping the deployed
+retrieval system in sync is itself an orchestrated pipeline, not a manual re-upload: a scheduled
+or event-triggered pipeline (EventBridge on a new/changed S3 document, or a fixed refresh
+schedule) re-syncs the Knowledge Base's data source, re-indexes changed/new documents into the
+vector store, and — for a mature pipeline — runs the same automated retrieval-accuracy evaluation
+(Domain 2's task 2.3.10 metrics) after each refresh to confirm the update didn't regress
+retrieval quality before fully rolling it out to production traffic.
+
 
 ## How It Works — full MLOps CI/CD with SageMaker Pipelines
 
@@ -257,6 +435,60 @@ no record of exactly what was configured, can't be easily reproduced in a second
 (staging vs. production), and can't be code-reviewed before it takes effect — the same reasons
 IaC is standard practice for any production AWS infrastructure, applied here specifically to ML
 serving infrastructure.
+
+## Use Cases — Real Scenarios
+
+1. A travel booking assistant maintains per-session state (destination, dates, booking status)
+   in DynamoDB across a five-turn conversation, correctly resuming a paused booking flow when the
+   user returns an hour later with the same session ID.
+2. A retailer's customer-service team edits a chatbot's system prompt weekly to reflect current
+   promotions, using Bedrock Prompt Management to version each change and instantly roll back a
+   version that produced off-brand responses, without redeploying the surrounding application.
+3. A logistics company commits to Bedrock Provisioned Throughput for its steady, high-volume
+   delivery-estimate chatbot after six months of stable On-Demand usage data justified the
+   commitment, directly reusing the decision discipline from `ml-cost-optimization.md`.
+4. A media company deploys a self-hosted, fine-tuned summarization model on GPU instances sized
+   specifically for its bursty daily-digest generation window, scaling GPU capacity up before the
+   nightly batch and down immediately after, rather than running GPU capacity continuously.
+5. A legal-tech platform's Knowledge Base refresh pipeline automatically re-indexes updated
+   contract templates every night via an EventBridge-triggered job, then runs an automated
+   Precision@K check before promoting the refreshed index to serve live traffic.
+6. An insurance company's agent-deployment pipeline rejects a new agent configuration version
+   after its automated prompt-testing suite flags it for occasionally skipping a required
+   disclosure step, keeping the previous, compliant agent version live instead.
+7. A SaaS company's engineering team debugs a chatbot that "forgets" earlier turns, discovering
+   the root cause is a missing session ID in one client integration rather than any model
+   limitation — directly exercising the agent-state-management exam trap.
+8. A healthcare provider configures its Bedrock Knowledge Base's retrieval to combine hybrid
+   keyword+vector search specifically because clinicians search using exact drug names that a
+   vector-only search sometimes blurs together with similar-sounding alternatives.
+9. A fintech startup versions its fine-tuned fraud-explanation model distinctly from the base
+   foundation model it was built on, and re-validates all three of its fine-tunes after the base
+   model receives a provider-side update, catching a behavior regression in one fine-tune before
+   it reached production.
+10. A customer support platform batches concurrent GPU-hosted embedding requests during peak
+    hours rather than processing them one at a time, measurably increasing throughput on the same
+    GPU instance count without any additional compute cost.
+
+## How This Domain's Services Work Together — The Big Picture
+
+Domain 3's services split into three layers that stack on top of each other for any GenAI
+deployment. **The infrastructure layer** decides where compute actually runs: real-time/
+serverless/async/batch endpoints for classic models, FM hosting (On-Demand or Provisioned
+Throughput, possibly self-hosted via JumpStart on sized GPU instances) for foundation models, and
+a Knowledge Base's vector database binding for retrieval — all configured against the actual
+measured traffic pattern, not guessed. **The orchestration layer** sits on top, coordinating
+multiple infrastructure pieces into one coherent interaction: a Bedrock Agent calling a Knowledge
+Base and a Lambda tool together, backed by an external state store so a multi-turn conversation
+survives across separate requests and even across compute instances. **The automation layer**
+wraps both of the layers below in CI/CD: SageMaker Pipelines automate the classic-ML path
+(process→train→evaluate→register→deploy); Prompt Management, agent deployment pipelines, and
+fine-tuned-model-versioning automation cover the equivalent GenAI path, each gated by an
+automated AI-testing suite before any change — a model version, a prompt edit, an agent
+configuration change, or a Knowledge Base refresh — reaches production traffic. The throughline
+connecting all three layers is the same blue/green or canary discipline this domain's CI/CD
+diagrams describe: nothing new ships to all users at once, regardless of whether what shipped is
+a retrained XGBoost model, an updated prompt template, or a refreshed vector index.
 
 ## Troubleshooting / Common Issues
 

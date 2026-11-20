@@ -166,6 +166,48 @@ pattern of avoiding NAT Gateway data-processing charges (see
 - **NACL rules are evaluated in numeric order**, lowest rule number first, and the first match
   wins — unlike security groups, where all matching "allow" rules are simply additive.
 
+## Use Cases — Real Scenarios
+
+- **Healthcare records API isolating PHI behind three subnet tiers.** The ALB handles public
+  HTTPS traffic; the FHIR API app tier sits in private subnets reachable only from the ALB's
+  security group; the patient-record database sits in a third, fully isolated subnet with no NAT
+  route — satisfying a hospital system's security review that explicitly asked "show me the
+  network path from the internet to patient data" and expecting the honest answer to be "there
+  isn't one."
+- **Online brokerage protecting its order-execution API from both DDoS and algorithmic abuse.**
+  Shield Advanced handles volumetric attacks aimed at taking the exchange offline; WAF rate-based
+  rules separately throttle any single API key submitting orders faster than a human could possibly
+  trade, catching a misbehaving algorithmic trading client without needing a DDoS event at all.
+- **SaaS company migrating off a flat "everything in one subnet" EC2 deployment.** The exact
+  "Full Worked Mini-Case" retrofit in this doc — splitting into alb-sg/app-sg/db-sg and removing
+  direct SSH — mirrors the real first engagement a cloud security consultant runs for a client who
+  self-describes as "we think we're secure but nobody's actually reviewed it."
+- **IoT device-management platform avoiding NAT Gateway costs and exposure simultaneously.** The
+  device-telemetry Lambda functions read/write to DynamoDB through a Gateway VPC Endpoint rather
+  than through a NAT Gateway, which both removes a recurring cost line and removes an entire class
+  of "what if the NAT Gateway's route table gets misconfigured" exposure risk.
+- **Government contractor required to prove zero inbound SSH across an entire fleet.** Systems
+  Manager Session Manager replaces every bastion host; a Config rule continuously checks that no
+  security group in the account has port 22 open to `0.0.0.0/0`, giving continuous (not point-in-
+  time) proof of the requirement rather than a one-time manual audit.
+- **Ad network debugging a mysterious "requests reach the server but responses time out"
+  incident.** The root cause — exactly the NACL stateless-ephemeral-port gotcha this doc calls out
+  — was a recently-added subnet NACL rule that allowed inbound 443 but never added the matching
+  outbound ephemeral-port rule, silently dropping every response.
+- **Manufacturing company connecting a factory's PLC network to an AWS analytics pipeline.** The
+  factory network reaches AWS exclusively over Site-to-Site VPN into a dedicated ingestion subnet
+  with no other route in or out, so a compromise of the (historically less-patched) factory network
+  gear can't pivot into the broader AWS environment.
+- **University research cluster needing bastion-free SSH for hundreds of ephemeral EC2 research
+  instances.** Every instance launches with the SSM agent and an IAM instance profile permitting
+  Session Manager; researchers never need a shared SSH key or an open inbound port, and access is
+  centrally logged and revocable per-user through IAM alone.
+- **Retailer separating its point-of-sale payment network from its general corporate network for
+  PCI-DSS scope reduction.** The payment VPC's security groups and NACLs reference only the
+  specific security groups of PCI-scoped resources, deliberately avoiding any rule that references
+  the shared corporate VPC's CIDR range, keeping the PCI audit scope from silently expanding to
+  include unrelated corporate systems.
+
 ## Common Mistakes (what wrong answers on the exam look like)
 
 - Security group allowing `0.0.0.0/0` on a database port "because it was faster to set up."

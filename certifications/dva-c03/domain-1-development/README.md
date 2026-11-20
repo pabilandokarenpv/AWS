@@ -338,6 +338,66 @@ A classic wrong-answer pattern: a question describes a cold-start latency proble
 distractor answer is "increase reserved concurrency." Reserved concurrency guarantees *capacity
 exists*, it does not pre-warm anything — only provisioned concurrency fixes cold starts.
 
+## Use Cases — Real Scenarios
+
+Concrete situations where a developer has to actually make the Task 1.1/1.2/1.3 calls this domain
+tests — the shape of a real feature, not a one-line exam distractor:
+
+1. **App type:** B2C ride-hailing backend. **Requirement:** driver location updates arrive every 2
+   seconds from thousands of active drivers and must reach a dispatch service within about a
+   second; a dropped stale update is fine, an out-of-order one for the same driver is not.
+   **Decision:** Kinesis Data Streams with driver ID as the partition key (same driver's updates
+   always land on one shard, preserving order) consumed by a Lambda event source mapping — not SQS
+   (no per-key ordering guarantee at this scale) and not a synchronous API call per update (ties
+   dispatch's responsiveness to every driver's network quality).
+2. **App type:** Internal HR document portal. **Requirement:** employees upload PDFs that must be
+   virus-scanned and text-extracted before being marked "available," and the UI shouldn't need to
+   poll constantly to show progress. **Decision:** S3 `ObjectCreated` event → EventBridge rule
+   fanning out to an independent scan Lambda and an independent text-extraction Lambda, each
+   writing its own status attribute to one DynamoDB item; the UI's refresh just does a cheap
+   `GetItem` instead of recomputing anything.
+3. **App type:** B2B invoicing SaaS. **Requirement:** generating a monthly invoice needs to join a
+   customer's subscription row with every usage-metered line item and enforce that the invoice
+   total and its line items are written atomically — a partial write is worse than no write.
+   **Decision:** Aurora (relational, multi-table join plus an ACID transaction wrapping the insert
+   of the invoice header and all line items), not DynamoDB — DynamoDB transactions exist but cap
+   at 25 items and don't give you SQL joins across a normalized schema.
+4. **App type:** Flash-sale e-commerce checkout (see the full case study above). **Requirement:**
+   absorb a 50x traffic spike for ~10 minutes without a capacity-planning exercise, and tolerate a
+   few hundred milliseconds of staleness on inventory counts. **Decision:** DynamoDB on-demand
+   capacity with an eventually consistent read for the inventory check — paying for
+   `ConsistentRead=true` here would double read-capacity cost for a guarantee the business
+   explicitly doesn't need.
+5. **App type:** Photo-sharing mobile app. **Requirement:** a user uploads a photo and expects to
+   immediately see it in their own feed, but other users' feeds can lag by a second or two.
+   **Decision:** a strongly consistent DynamoDB read (`ConsistentRead=true`) only on the
+   just-uploaded user's own feed query right after upload, while every other feed read stays
+   eventually consistent — applying the consistency decision per access pattern, not globally.
+6. **App type:** Legacy inventory system migration. **Requirement:** a new serverless order API
+   must call an existing on-prem-style RDS instance that lives in a private subnet with no public
+   endpoint, and must not need a VPN client installed on the Lambda service itself. **Decision:**
+   attach the Lambda function to that VPC (ENI in the private subnet, security group open on the
+   DB port) — the function gets a private IP inside the VPC, no NAT/internet access required
+   unless the function also needs to reach something external.
+7. **App type:** Multi-team platform with five Lambda functions sharing one HTTP client wrapper and
+   a company-standard logging format. **Requirement:** update the shared wrapper once without
+   redeploying every function, and without versioning five separate copies of the same code.
+   **Decision:** a Lambda layer containing the shared module; each function's own deployment
+   package stays small and only the layer version is bumped when the wrapper changes.
+8. **App type:** Payment-processing function sitting behind a known, pre-announced Black Friday
+   traffic spike. **Requirement:** the function must respond within 200ms even in the first few
+   seconds of the spike, and must never consume more than a fixed share of the account's Lambda
+   concurrency pool, so a runaway retry storm on checkout can't starve unrelated functions.
+   **Decision:** provisioned concurrency (pre-warmed ahead of the known spike, eliminating cold
+   starts) stacked with reserved concurrency (caps the function's own ceiling) — two different
+   knobs solving two different problems on the same function.
+9. **App type:** Clickstream analytics pipeline for a media site. **Requirement:** three
+   independent downstream systems (real-time dashboard, fraud-detection model, long-term data
+   lake) each need to consume every page-view event at their own pace, without one slow consumer
+   blocking another. **Decision:** Kinesis Data Streams (multiple independent consumers can read
+   the same stream at their own position) rather than SQS, where a message is normally consumed
+   once and fanning it out to three independent consumer rates needs three separate queues anyway.
+
 ## Common exam scenarios
 
 - *"A Lambda function needs to read from an RDS instance in a private subnet"* → Lambda must be

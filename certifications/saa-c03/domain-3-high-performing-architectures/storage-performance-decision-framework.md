@@ -105,6 +105,41 @@ a scenario describing a database on st1/sc1 storage is describing a mismatch.
   distances — the specific exam-tested answer for "users far from the bucket's Region are
   uploading large files slowly."
 
+## Use Cases — Real Scenarios
+
+- **Architecture firm's CAD file collaboration platform.** Dozens of engineers across multiple
+  offices need concurrent read/write access to the same large CAD project files — EFS is the only
+  fit among S3/EFS/EBS for this genuinely shared-filesystem access pattern.
+- **Trading platform's order-book database demanding the highest available IOPS.** The database
+  backing live order matching runs on EBS io2 Block Express specifically because the exchange's
+  stated latency requirement (sub-millisecond) and IOPS requirement exceed what gp3 is designed
+  for.
+- **Video-transcoding farm using local NVMe for in-flight decode buffers.** Each transcoding worker
+  uses EC2 Instance Store for its temporary frame buffers, since that data is fully disposable and
+  the ultra-low local latency measurably speeds up each transcode job.
+- **Global retailer serving millions of product images over HTTPS.** Product images live in S3,
+  not EFS or EBS, precisely because the access pattern is "fetch whole objects over HTTP from
+  anywhere," not "mount as a filesystem" — S3's near-unlimited scale handles the catalog size
+  without any capacity planning.
+- **Windows-based enterprise application needing native SMB file shares.** Rather than forcing a
+  Linux-native EFS filesystem to serve Windows clients awkwardly, the team uses FSx for Windows File
+  Server, which speaks native SMB and integrates with Active Directory permissions directly.
+- **HPC genomics pipeline needing a high-throughput, POSIX-compliant shared filesystem.** The
+  pipeline's I/O pattern (thousands of parallel compute nodes reading/writing the same dataset at
+  very high aggregate throughput) points to FSx for Lustre rather than standard EFS, which isn't
+  built for that throughput profile.
+- **Startup's small but suddenly very active EFS-backed build-artifact cache.** Default Bursting
+  Throughput mode throttled builds because the stored data volume was small even though demand was
+  high — switching to Elastic Throughput mode decoupled throughput from stored size and fixed the
+  bottleneck immediately.
+- **Big-data company's log-processing pipeline reading large sequential files.** The pipeline's EBS
+  volumes use st1 (throughput-optimized HDD) rather than gp3/io2, because the access pattern is
+  large sequential reads, not small random I/O — exactly what st1 is priced and designed for.
+- **Design agency accelerating large file uploads from clients around the world.** Clients
+  uploading multi-gigabyte video files to an S3 bucket in us-east-1 from Australia see dramatically
+  faster uploads once S3 Transfer Acceleration (routing through CloudFront's edge network) is
+  enabled for that bucket.
+
 ## Common Mistakes
 
 - Trying to "mount" S3 as a shared drive for multiple EC2 instances — the correct service for

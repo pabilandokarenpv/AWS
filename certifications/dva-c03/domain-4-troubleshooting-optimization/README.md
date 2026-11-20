@@ -193,6 +193,67 @@ This case study's shape — "trace first to find *where*, metrics to find *what*
 the master pattern for nearly every Domain 4 scenario question, regardless of which specific
 services the question names.
 
+## Use Cases — Real Scenarios
+
+Concrete developer/SRE situations where Task 4.1/4.2/4.3 decisions actually get made, with app
+type / requirement / implementation decision spelled out:
+
+1. **App type:** Multi-hop order-fulfillment API (API Gateway → Lambda → DynamoDB → external
+   shipping-rate API). **Requirement:** a customer reports slow checkout, and the team needs to
+   know which of the four hops is actually responsible before touching any code.
+   **Decision:** open the X-Ray service map first — it shows per-hop latency across the whole
+   chain, which raw CloudWatch Logs from a single function can't show without manual timestamp
+   correlation across four separate log groups.
+2. **App type:** Internal analytics dashboard Lambda function. **Requirement:** a security
+   reviewer needs to know exactly which IAM principal deleted a specific DynamoDB table at 2am,
+   three weeks after the fact. **Decision:** CloudTrail event history lookup, not CloudWatch
+   Logs — CloudTrail is the durable record of *which API call* happened and *who* made it;
+   CloudWatch Logs only shows what the *application* printed, not AWS management-plane actions.
+3. **App type:** Payment-processing Lambda function reported as "slow" under load.
+   **Requirement:** confirm whether the function is CPU-bound or I/O-bound before deciding whether
+   to raise memory or investigate a downstream dependency. **Decision:** check CloudWatch's `Max
+   Memory Used` and Duration together — high memory utilization plus high duration points at
+   CPU/memory constraint (raise memory); low memory utilization with high duration points at an
+   external wait (trace it with X-Ray instead of touching memory).
+4. **App type:** B2B API platform with a composite service made of six Lambda functions.
+   **Requirement:** give an on-call engineer one chart showing overall error rate and latency
+   trend across the whole service, not six separate default dashboards.
+   **Decision:** a single CloudWatch dashboard built from a custom metric math expression
+   aggregating all six functions' metrics, rather than asking the on-call engineer to mentally
+   combine six separate views during an incident.
+5. **App type:** Read-heavy product catalog API. **Requirement:** reduce DynamoDB read-capacity
+   cost from repeated reads of the same few hundred hot items, without changing the application's
+   query logic. **Decision:** add a DAX caching layer in front of DynamoDB — a drop-in client swap
+   rather than an application-logic rewrite, specifically because the access pattern is repeated
+   reads of the same known keys.
+6. **App type:** Checkout service that just had a routine infrastructure deploy (see the full case
+   study above). **Requirement:** figure out why latency spiked right after a deploy where nobody
+   touched the application code. **Decision:** check CloudTrail for infrastructure-level changes
+   (capacity mode, IAM, config) that rode along with the deployment as an unreviewed side effect —
+   the regression isn't always in the code diff itself.
+7. **App type:** Early-stage startup's first production incident. **Requirement:** an AI tool
+   summarizes CloudWatch Logs into a plausible root cause during an outage, and the team must
+   decide how much to trust it before applying a fix. **Decision:** treat the summary as a fast
+   hypothesis to verify against the raw X-Ray trace/metrics, not as a confirmed diagnosis — ship
+   the fix only after confirming the actual data supports it.
+8. **App type:** Cost review ahead of a board meeting. **Requirement:** figure out whether a
+   Lambda function is paying for memory it doesn't actually use, without guessing from the
+   configured memory value alone. **Decision:** right-size memory down based on the function's
+   actual reported `Max Memory Used`, then re-verify Duration doesn't regress badly enough to
+   offset the savings — compute cost as memory × duration, not from the memory number alone.
+9. **App type:** Compliance-driven infrastructure team. **Requirement:** determine whether a
+   security group was ever in a compliant state and exactly when it drifted, separate from which
+   specific API call caused the drift. **Decision:** use AWS Config's configuration timeline to
+   answer "when did this resource's state change," paired with CloudTrail to answer "which API
+   call did it" — using both tools together rather than expecting either alone to answer both
+   questions.
+10. **App type:** Platform team doing a pre-launch architecture review for a new payments system.
+    **Requirement:** a holistic check of whether the whole system's design follows AWS best
+    practices, not just whether any one resource is individually misconfigured.
+    **Decision:** run a structured AWS Well-Architected Tool review across the relevant pillars,
+    rather than relying only on Trusted Advisor's automated per-resource checks, which answer a
+    narrower question.
+
 ## Common exam scenarios
 
 - *"A Lambda function's errors aren't showing enough context to debug"* → the function isn't

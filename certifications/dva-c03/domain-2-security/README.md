@@ -207,6 +207,61 @@ This case study is intentionally a composite of nearly every Task 2.1/2.2/2.3 bu
 scenario — if you can explain why each piece is there, you can handle almost any Domain 2 scenario
 question built from a subset of it.
 
+## Use Cases — Real Scenarios
+
+Concrete developer/security situations where Task 2.1/2.2/2.3 decisions actually get made, with
+app type / requirement / implementation decision spelled out:
+
+1. **App type:** Consumer fitness-tracking mobile app. **Requirement:** users sign up/sign in with
+   email+password or Google, and the app writes workout data directly to DynamoDB from the mobile
+   client without a backend in between. **Decision:** Cognito User Pool for authentication plus a
+   Cognito Identity Pool to exchange the user's JWT for temporary, user-scoped STS credentials —
+   the mobile client never embeds a long-lived AWS access key.
+2. **App type:** B2B logistics platform with a partner-facing API. **Requirement:** a partner's
+   Lambda function (running in their own AWS account) needs read access to a shipment-status S3
+   bucket in your account, and the access must be revocable without rotating any shared secret.
+   **Decision:** a cross-account IAM role with a trust policy naming the partner's account/role ARN,
+   assumed via STS — revoking access means removing the trust statement, not rotating a key.
+3. **App type:** Subscription SaaS billing service. **Requirement:** the database password must
+   rotate automatically on a schedule without any manual intervention or application downtime
+   during rotation. **Decision:** Secrets Manager with native rotation (a Lambda rotation function
+   for RDS), not Parameter Store — rotation support is the deciding feature, not just "it's a
+   secret."
+4. **App type:** Healthcare records API. **Requirement:** patient data at rest must be encrypted
+   with a key the security team can audit (who used it, when) and revoke independently of the
+   data store itself. **Decision:** a KMS customer-managed key (CMK) with a tightly scoped key
+   policy and CloudTrail-logged key usage, not the default AWS-owned key — the audit/control
+   requirement is the deciding factor, since both options encrypt the data equally well.
+5. **App type:** Internal microservices mesh. **Requirement:** service-to-service TLS between
+   internal hostnames that should never appear in a public certificate transparency log.
+   **Decision:** ACM Private CA issuing certs trusted only within the internal trust chain, instead
+   of public ACM certificates, which log every issued hostname publicly.
+6. **App type:** B2B SaaS support chatbot built on Bedrock (see the case study above).
+   **Requirement:** each tenant's data must never leak into another tenant's chatbot session, even
+   via the model itself. **Decision:** scope data retrieval at the IAM/session-policy layer (STS
+   AssumeRole with a tenant session tag, Knowledge Base query filtered to the tenant's own prefix)
+   rather than relying on a system prompt instruction, which prompt injection could defeat.
+7. **App type:** Regulated financial-services AI assistant. **Requirement:** compliance requires
+   that no customer prompt or document ever touches the public internet on its way to the model.
+   **Decision:** a VPC interface endpoint for `bedrock-runtime` with no NAT/internet gateway route
+   from the calling Lambda at all — the strongest version of the requirement, not just "it's over
+   TLS."
+8. **App type:** Customer-support AI agent with order-management tool access. **Requirement:** the
+   agent should be able to look up order status freely but must never issue a refund without a
+   human confirming it first. **Decision:** scope the agent's action-group IAM role to read-only
+   lookup actions, and gate the refund action behind an explicit human-approval step — treating the
+   agent's tool-access grant with the same scrutiny as an IAM policy review.
+9. **App type:** Enterprise workforce accessing a dozen AWS accounts (not application end-users).
+   **Requirement:** employees sign in once and get console/CLI access scoped per account/role
+   without a separate IAM user in every account. **Decision:** IAM Identity Center (SSO), not
+   Cognito — Cognito is for an *application's* end users, Identity Center is for a workforce
+   accessing AWS itself.
+10. **App type:** AI support bot logging pipeline. **Requirement:** a security audit must be able
+    to reconstruct which IAM principal invoked which Bedrock model and when, independent of what
+    the application logged about its own behavior. **Decision:** rely on CloudTrail for the
+    `InvokeModel` audit trail (who/when), and keep CloudWatch Logs scoped to redacted application
+    telemetry (what happened) — using each tool for the question it actually answers.
+
 ## Common exam scenarios
 
 - *"Mobile app users need to sign up/sign in and the app needs temporary AWS credentials scoped

@@ -8,9 +8,16 @@ aws.amazon.com/certification/.*
 > **Exam transition:** MLA-C01 retired (English) Sept 28, 2026. **MLA-C02** entered beta
 > Sept 29, 2026 and goes **GA Jan 14, 2027** — adding generative AI (Bedrock, RAG, fine-tuning
 > foundation models, agents, AI cost monitoring) throughout all 4 domains. This repo targets
-> MLA-C02. Where the official C02 guide isn't fully public yet, content is based on the
-> confirmed C01→C02 domain mapping plus publicly announced additions; flagged inline where still
-> provisional.
+> MLA-C02. **The official C02 exam guide is now fully published**, and this repo has been
+> cross-checked line-by-line against its complete task-statement list — including a much deeper
+> set of generative-AI/agentic additions than early public previews suggested: agent state
+> management, Bedrock Prompt Management, agent observability and coordination-failure monitoring,
+> scalable vector database configuration (OpenSearch Service, RDS pgvector, S3), NLP evaluation
+> metrics (BLEU/ROUGE/BERTScore, semantic similarity), LLM-as-a-judge evaluation, GPU resource
+> scaling for agentic/FM workloads, FM credential-type selection, and CI/CD security scanning
+> (CodeGuru, Inspector) for ML pipelines. Nothing below is provisional anymore — every task
+> statement referenced in this repo's domain docs traces to a real, confirmed line in the
+> published guide.
 
 ## Plain-English: what is this certification actually testing?
 
@@ -202,6 +209,61 @@ domain a question is nominally testing:
    control-plane APIs only — it does not run real SageMaker training/inference or Bedrock
    inference. Every domain's `labs.md` spells out the real, free/cheap alternative for the parts
    Floci can't cover.
+
+## Use Cases — Real Scenarios
+
+The abstract domain/task-statement breakdown above is easiest to hold onto once you've seen it
+applied to concrete companies spanning the full lifecycle (not just one domain in isolation) —
+these are the kind of end-to-end business situations a case-study-style exam question draws on,
+each one deliberately touching multiple domains the way the real exam does:
+
+1. **A regional bank** needs a fraud model that scores transactions in under 100ms (Domain 3:
+   real-time endpoint), trained on highly imbalanced data (Domain 1: class imbalance handling,
+   Domain 2: recall-first evaluation), with full SHAP explainability for regulators (Domain 4)
+   and KMS-encrypted, VPC-isolated training data throughout (Domain 4 security).
+2. **An e-commerce company** wants a support chatbot grounded in its own, frequently-changing
+   product catalog (Domain 1: chunking, embeddings, vector store) orchestrated as a Bedrock Agent
+   that can also call a live order-tracking API (Domain 3), wrapped in Guardrails that block PII
+   leakage and off-topic requests (Domain 4), with token-usage cost monitored monthly (Domain 4
+   cost optimization) since GenAI costs scale per-token, not per-instance-hour.
+3. **A healthcare network** builds a 30-day-readmission risk model on nightly batch exports,
+   inside a VPC with no internet egress for HIPAA compliance (Domain 1/4), scored by a nightly
+   Batch Transform job (Domain 3, not a real-time endpoint, since there's no live caller) with
+   pre-training bias checks mandated before any training run (Domain 1/2).
+4. **A SaaS analytics company** running 40 small, mostly-idle per-customer real-time endpoints
+   discovers the architecture fix (multi-model endpoints, Domain 3) is simultaneously the cost
+   fix (Domain 4) — a direct illustration of how Domains 3 and 4 are often the same decision
+   viewed from two angles, not two separate problems.
+5. **A legal-tech startup** needs every chatbot answer to cite its exact source paragraph for
+   compliance (Domain 1: RAG's natural source-attribution property, not fine-tuning), with human
+   reviewers scoring a sample of generated answers weekly using an LLM-as-a-judge rubric plus
+   BLEU/ROUGE comparison against a gold-standard answer set (Domain 2 evaluation) before any
+   prompt-template change ships (Domain 3: Prompt Management + automated eval gating).
+6. **A manufacturing company** fine-tunes an open foundation model on years of internal
+   maintenance-ticket text to teach it domain vocabulary and ticket-categorization behavior
+   (Domain 1: FM fine-tuning data prep — prompt/completion pairs; Domain 2: fine-tuning strategy
+   selection), then deploys it with GPU-based resource scaling sized for bursty maintenance-season
+   traffic (Domain 3: AI-specific GPU resource scaling).
+7. **A multi-tenant HR SaaS platform** isolates every customer's RAG-grounded chatbot answers
+   using metadata filtering on a shared vector store (Domain 1), tracks per-tenant embedding and
+   vector-storage cost separately for internal chargeback (Domain 4: AI-specific cost patterns),
+   and selects Bedrock API keys (rather than long-lived IAM credentials) for the lowest-friction,
+   most auditable per-tenant FM access pattern (Domain 4: FM credential-type selection).
+8. **A media company's ML platform team** adds Amazon Inspector and CodeGuru scanning to their
+   SageMaker/Bedrock CI/CD pipeline (Domain 4: securing ML CI/CD) after a near-miss where a
+   vulnerable base container image almost shipped to production, directly illustrating that
+   Domain 4 security now explicitly includes the *pipeline* itself, not only the deployed model.
+9. **A travel booking agent-based assistant** maintains conversation and task state across a
+   multi-turn booking flow (search flights → confirm dates → pay) using an agent state-management
+   system (Domain 3) and is monitored in production for coordination failures, truncated streaming
+   responses, and tool-call failures via Amazon Bedrock AgentCore Observability and CloudWatch
+   generative AI observability dashboards (Domain 4) — the specific, new C02 monitoring surface
+   for agentic (not just single-call) GenAI systems.
+10. **A retail analytics team** distills a large, expensive foundation model into a smaller,
+    cheaper fine-tuned model that performs nearly as well on their narrow summarization task
+    (Domain 1: model distillation data prep; Domain 2: tradeoffs between a large general FM and a
+    smaller specialized one; Domain 4: the resulting inference cost drop is the entire business
+    case for having done it).
 
 ## Status
 

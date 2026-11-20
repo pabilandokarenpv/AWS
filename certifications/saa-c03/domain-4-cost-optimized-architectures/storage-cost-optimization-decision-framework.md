@@ -105,6 +105,44 @@ not less — a frequently tested exam trap.
   compliance requirement for immutable backups does not, on its own, force a more expensive
   storage tier; it's a policy setting layered on top of the same lifecycle-tiered storage.
 
+## Use Cases — Real Scenarios
+
+- **Healthcare company retaining 10 years of patient records at the lowest safe cost.** The same
+  lifecycle ladder this doc's worked example walks through — Standard for 60 days, Standard-IA to
+  2 years, Glacier Deep Archive after — is deployed company-wide once this first use case proves
+  the pattern, covering every regulated-retention dataset the company holds.
+- **Media company storing an enormous back-catalog of rarely-reaccessed but occasionally-trending
+  video assets.** Because individual titles can unpredictably spike in popularity years after
+  release, the catalog uses S3 Intelligent-Tiering rather than a fixed lifecycle schedule, avoiding
+  both overpaying for Standard storage on cold titles and costly early-retrieval penalties on a
+  title that suddenly trends.
+- **Engineering team discovering hundreds of orphaned EBS volumes during a cost audit.** Trusted
+  Advisor's unattached-volume check surfaces volumes left behind by terminated test instances over
+  several years; the team snapshots each (as a safety net) before deleting, recovering a meaningful
+  chunk of monthly spend that had been silently accruing.
+- **Financial services firm nearly triggering an early-deletion penalty.** A proposed lifecycle
+  rule would have moved short-lived trading-session logs (deleted after 45 days by policy) into
+  Glacier Flexible Retrieval (90-day minimum storage duration) — caught during review before
+  deployment, avoiding paying the full 90-day minimum for data gone in 45.
+- **E-commerce company accumulating cost from unbounded S3 Versioning.** Years of Versioning being
+  enabled with no lifecycle rule expiring old versions had silently multiplied storage cost many
+  times over for frequently-updated product images; adding a noncurrent-version-expiration rule
+  brings the bucket's cost back in line with its actual current-version footprint.
+- **Research institute storing a sole, irreplaceable copy of decades of field data.** The team
+  explicitly avoids One Zone-IA for this dataset despite its lower price, because the data cannot
+  be regenerated if that single Availability Zone is lost — the cost savings aren't worth the risk
+  for genuinely irreplaceable data.
+- **Enterprise applying AWS Backup Vault Lock for a compliance mandate without a budget increase.**
+  The compliance team required immutable backups; Vault Lock in compliance mode satisfies that
+  requirement as a policy setting layered on the existing lifecycle-tiered backup storage, with no
+  separate, more expensive storage tier required.
+- **Podcast network reconsidering Glacier Deep Archive for a catalog with an active licensing
+  business.** Older episodes initially moved to Deep Archive on a standard schedule, but the
+  licensing team regularly needs same-day access to license specific back-catalog episodes to
+  other platforms — the 12-hour Deep Archive retrieval delay conflicts with that business need, so
+  the catalog is moved to Standard-IA instead, trading a higher per-GB storage price for retrieval
+  speed the licensing deals actually require.
+
 ## Common Mistakes
 
 - Writing a lifecycle rule that transitions data to Glacier/Deep Archive on a schedule faster

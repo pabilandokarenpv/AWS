@@ -6,6 +6,11 @@ alias is set up before starting.
 
 ## Lab 1 — Lambda + API Gateway + DynamoDB (the Domain 1 request flow)
 
+**Why this lab:** this is the single most common request shape on the real exam — a REST API in
+front of a serverless function in front of a NoSQL table — so building it once by hand turns four
+abstract Task 1.1/1.3 bullet points (SDK calls, serialization, API Gateway stages, DynamoDB writes)
+into one concrete, debuggable thing you've actually run.
+
 Builds the exact flow diagrammed in [`README.md`](README.md#how-it-fits-together-a-lambda--api-gateway--dynamodb-request).
 
 ```bash
@@ -69,6 +74,10 @@ Lambda alias and compare.
 
 ## Lab 2 — Event-driven: S3 upload triggers a Lambda function
 
+**Why this lab:** the exam constantly contrasts synchronous request/response (Lab 1) with
+asynchronous, event-driven processing — building both back to back makes the difference between
+"the caller waits" and "the event source hands off and moves on" tangible instead of abstract.
+
 ```bash
 # 1. Create bucket and function (function just logs the event — see README's event-driven flow)
 awslocal s3 mb s3://uploads-bucket
@@ -111,6 +120,10 @@ awslocal logs tail /aws/lambda/process-upload --follow
 
 ## Lab 3 — DynamoDB consistency: eventual vs. strong read
 
+**Why this lab:** "which read guarantees you see your own write" is one of the most frequently
+tested Task 1.3 distinctions, and it's a one-flag difference in code — seeing both calls side by
+side, against the same item, is the fastest way to make the distinction permanent in memory.
+
 ```bash
 awslocal dynamodb create-table --table-name Counters \
   --attribute-definitions AttributeName=id,AttributeType=S \
@@ -134,6 +147,12 @@ flag/parameter — this is exactly the kind of one-line distinction the exam lik
 "which read guarantees you see your own write immediately" scenario.
 
 ## Lab 4 — Idempotent writes with a conditional expression (the case-study pattern)
+
+**Why this lab:** "the client may retry the same request, and it must not double-charge" is one of
+the highest-value patterns on the exam because it disguises itself in many different scenario
+wordings — running it hands-on, and seeing the *second* invocation succeed without creating a
+second item, cements the mechanism (conditional write + idempotency key) far better than reading
+about it.
 
 Builds the "never double-charge on retry" piece of the [README's flash-sale case study](README.md#full-worked-case-study-a-flash-sale-order-api).
 
@@ -193,6 +212,11 @@ disguised as many different scenario wordings.
 
 ## Lab 5 — Lambda layers: sharing a dependency across two functions
 
+**Why this lab:** layers are easy to describe ("shared code across functions") but the exam tests
+whether you understand what's actually *not* in each function's own package — building two
+functions that both import the same layer-only module makes that boundary concrete instead of
+theoretical.
+
 ```bash
 # 1. Build a layer containing a shared "helpers" module
 mkdir -p python
@@ -245,6 +269,11 @@ start (after you point them at the new layer version), instead of redeploying ev
 uses it.
 
 ## Lab 6 — Reserved concurrency as a blast-radius limiter
+
+**Why this lab:** reserved concurrency is one of the exam's most common "which knob fixes this"
+wrong-answer traps (it doesn't pre-warm anything, provisioned concurrency does) — setting a cap
+and confirming the function genuinely can't exceed it builds the correct mental model directly,
+instead of relying on memorizing the distinction from a table.
 
 ```bash
 # 1. A function that simulates a slow downstream call (e.g. a legacy DB with few connections)

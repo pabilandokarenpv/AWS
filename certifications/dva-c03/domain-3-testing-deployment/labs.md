@@ -4,6 +4,10 @@ Hands-on exercises against the free local [Floci](../../../labs-floci/README.md)
 
 ## Lab 1 — Build and push a container image to ECR (Task 3.1)
 
+**Why this lab:** ECR lifecycle policies and scan-on-push are easy to nod along to in a README but
+easy to forget to actually configure in real pipelines — writing the lifecycle JSON yourself here
+means you've seen its exact shape once before an exam question describes it in prose.
+
 ```bash
 # 1. Create the repository
 awslocal ecr create-repository --repository-name demo-app
@@ -38,6 +42,10 @@ awslocal ecr put-lifecycle-policy --repository-name demo-app --lifecycle-policy-
 ```
 
 ## Lab 2 — Validate and deploy with SAM (Task 3.2 + 3.3)
+
+**Why this lab:** Task 3.2 is specifically about validating *before* anything is deployed — running
+`sam validate` and `sam local invoke` back to back shows you two distinct pre-deployment checks
+(template correctness, handler logic) that happen with zero live infrastructure involved.
 
 ```bash
 # 1. Minimal SAM template
@@ -80,6 +88,11 @@ both things that happen *before* anything touches a real/emulated environment �
 Task 3.2 means by testing before deployment.
 
 ## Lab 3 — Blue/Green-style deployment with CodeDeploy concepts (Task 3.3)
+
+**Why this lab:** the exam expects you to recognize named deployment-config strings
+(`LambdaCanary10Percent5Minutes`, etc.) by pattern, not operate CodeDeploy from memory — authoring
+an AppSpec and a deployment group with one of these configs ties the name to the actual traffic-
+shifting behavior it encodes.
 
 Floci's CodeDeploy support is limited, so this lab focuses on authoring the **AppSpec** and
 deployment-group configuration correctly — the artifact-shape knowledge the exam actually tests.
@@ -125,6 +138,11 @@ memorize every parameter from scratch.
 
 ## Lab 4 — Externalized config read at runtime (Task 3.1)
 
+**Why this lab:** "the same artifact must be promotable across environments without rebuilding" is
+a recurring Task 3.1 scenario phrase — deploying one literal zip twice with only an environment
+variable differing proves the artifact-immutability discipline instead of just stating it as a
+rule to follow.
+
 Builds the "same artifact, different environments" discipline from the
 [README's Task 3.1 diagram](README.md#task-31-in-one-picture-what-actually-goes-into-a-deployable-artifact).
 
@@ -169,6 +187,11 @@ behind Task 3.1's "externalize configuration" bullet, and it's exactly what a qu
 "the same build artifact must be promotable across environments without rebuilding" is testing.
 
 ## Lab 5 — CloudWatch alarm driving a deployment rollback decision (Task 3.3)
+
+**Why this lab:** a common exam trap is assuming "automatic rollback" happens just because
+something went wrong in the abstract — building the metric filter and alarm from scratch shows
+it's a specific, must-be-configured CloudWatch resource that CodeDeploy merely watches, not a
+built-in deployment behavior.
 
 ```bash
 # 1. Create a metric filter that counts ERROR log lines as a custom metric
@@ -220,6 +243,11 @@ that a deployment is in progress. Understanding that separation is exactly what 
 section is testing.
 
 ## Lab 6 — ECS task definition and Fargate service (Task 3.3's container emphasis)
+
+**Why this lab:** container deployment is a new direct-test area on DVA-C03 — registering a task
+definition revision and updating a service to it shows the immutable-revision model is the ECS
+equivalent of the "promote the exact tested artifact, never rebuild" discipline from Task 3.1,
+just expressed through a different API shape.
 
 ```bash
 # 1. Register a task definition for the checkout microservice from the case study

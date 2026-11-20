@@ -4,6 +4,11 @@ Hands-on exercises against the free local [Floci](../../../labs-floci/README.md)
 
 ## Lab 1 — IAM least privilege + STS AssumeRole (Task 2.1)
 
+**Why this lab:** nearly every Domain 2 "will this call succeed" question is really asking you to
+reason about a trust policy plus a permissions policy together — writing both from scratch and
+then watching a disallowed action actually get rejected makes the two-document model concrete
+instead of a memorized rule.
+
 ```bash
 # 1. Create a restrictive policy — only read access to one specific S3 bucket
 cat > read-only-policy.json <<'EOF'
@@ -53,6 +58,11 @@ the role can do once assumed) are two separate documents — a very common exam 
 
 ## Lab 2 — VPC endpoint for private AI-service connectivity (Task 2.3)
 
+**Why this lab:** Task 2.3's "VPC endpoints for data privacy" is new on this exam version and easy
+to treat as abstract policy language — creating the actual endpoint resource against a real
+service name (`bedrock-runtime`) shows it's the identical PrivateLink mechanism you already use for
+S3/DynamoDB, just pointed at a different service.
+
 ```bash
 # 1. Create a VPC (Floci gives you a default VPC, but let's be explicit)
 VPC_ID=$(awslocal ec2 create-vpc --cidr-block 10.0.0.0/16 --query 'Vpc.VpcId' --output text)
@@ -85,6 +95,11 @@ new mechanism, it's the existing PrivateLink pattern applied to a new service ca
 
 ## Lab 3 — Secrets Manager rotation vs. Parameter Store (Task 2.2)
 
+**Why this lab:** the exam tests this as a scenario ("the secret rotates automatically...") rather
+than naming the service — storing one value in each service side by side and calling
+`rotate-secret` makes the capability gap (rotation vs. no native rotation) something you've
+actually exercised, not just read in a comparison table.
+
 ```bash
 # 1. Store a "database password" as a secret
 awslocal secretsmanager create-secret --name prod/db/password --secret-string 'S3cretP@ss'
@@ -106,6 +121,11 @@ simple config storage (Parameter Store Standard tier), covered in
 [`services/security-identity-compliance/secrets-manager-vs-parameter-store.md`](../../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md).
 
 ## Lab 4 — Simulating the AI-agent human-approval gate (Task 2.3)
+
+**Why this lab:** "an AI agent proposes, a human approves before an irreversible action executes"
+is the single rule that answers most Task 2.3 agent-security questions — this lab makes it
+non-abstract by building a state machine that provably *cannot* proceed past the approval step
+without an external signal, instead of just asserting the rule from memory.
 
 Floci doesn't emulate Bedrock Agents, but the **approval-gate pattern** underneath "require human
 approval for irreversible agent actions" is just a Step Functions wait-for-callback task — fully
@@ -191,6 +211,11 @@ human approves before an irreversible action executes" from
 
 ## Lab 5 — KMS envelope encryption end to end (Task 2.2)
 
+**Why this lab:** the exam likes to ask why you can't just "encrypt a 10GB file with KMS directly"
+— walking through `GenerateDataKey` and seeing that only the small data key, never the bulk
+payload, ever touches the KMS API makes the 4KB-per-call limit and envelope-encryption pattern
+click as mechanism, not trivia.
+
 ```bash
 # 1. Create a customer-managed KMS key
 KEY_ID=$(awslocal kms create-key --description "app-data-key" --query 'KeyMetadata.KeyId' --output text)
@@ -218,6 +243,10 @@ payload — this is envelope encryption in practice, and it's why KMS can protec
 datasets despite its own `Encrypt`/`Decrypt` API being capped at 4KB per call.
 
 ## Lab 6 — Cognito user pool sign-up/sign-in flow (Task 2.1)
+
+**Why this lab:** candidates frequently mix up which of the three JWTs (ID, access, refresh)
+actually gets validated at the API Gateway authorizer — running a real sign-in and inspecting all
+three tokens in the response removes the ambiguity that a diagram alone can leave.
 
 ```bash
 # 1. Create a user pool and an app client

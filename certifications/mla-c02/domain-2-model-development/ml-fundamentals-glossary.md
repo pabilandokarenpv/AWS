@@ -279,29 +279,6 @@ right conceptual bucket. A short map, in plain English, of what each family is a
   and flag records that don't fit, without needing labeled "anomalous" examples in advance — the
   right family when fraud/defect examples are too rare or too varied to label comprehensively.
 
-## Classic ML algorithm families — a plain-English map
-
-Domain 2's decision tree (in the domain README) assumes you can place an algorithm family in the
-right conceptual bucket. A short map, in plain English, of what each family is actually doing:
-
-- **Linear models** (linear/logistic regression, Linear Learner) — fit a straight line/plane
-  through the data; fast, interpretable, high bias/low variance; a strong first baseline before
-  reaching for anything more complex.
-- **Tree-based models** (decision trees, random forests, XGBoost/gradient boosting) — learn a
-  series of "if this, then that" splits; handle non-linear relationships and mixed data types
-  well without manual feature engineering; XGBoost in particular is the strongest default
-  baseline for tabular data on both SageMaker and in general ML practice.
-- **Neural networks / deep learning** — layers of simple mathimatical units that combine to learn
-  very complex, non-linear patterns; shine on unstructured data (images, audio, raw text) where
-  hand-engineering features is impractical; need more data and compute than the two families
-  above, and are more prone to overfitting without careful regularization.
-- **Clustering (unsupervised, no labels)** — K-Means and similar algorithms group similar records
-  together without being told the "correct" grouping in advance; useful for customer segmentation
-  or exploratory structure-finding, not prediction against a known label.
-- **Anomaly detection** — Random Cut Forest and similar algorithms learn what "normal" looks like
-  and flag records that don't fit, without needing labeled "anomalous" examples in advance — the
-  right family when fraud/defect examples are too rare or too varied to label comprehensively.
-
 ## Ensemble methods — why "many weak models" often beats "one strong model"
 
 **Plain English:** asking one expert for an opinion is useful; averaging the independent opinions
@@ -499,6 +476,119 @@ It's introduced here, in the glossary, specifically because "explainability" as 
 alongside accuracy/bias as one of the three questions you should always be able to answer about
 a finished model: is it accurate, is it fair, and can it explain itself.
 
+## NEW skill 2.3.8 — NLP evaluation metrics for generative AI: BLEU, ROUGE, BERTScore, semantic similarity
+
+Everything in the "Evaluation Metrics" section above (accuracy, precision, recall, F1, AUC,
+RMSE) assumes the model produces a single discrete label or number with one unambiguous correct
+answer. **Generative AI breaks that assumption** — a foundation model asked to summarize a
+document can produce many differently-worded summaries that are all equally "correct," so none
+of the classic metrics above apply directly. This is new, genuinely distinct C02 content: a
+separate family of metrics exists specifically for scoring *generated text* against a reference.
+
+**Plain English, all four, before any formula:** imagine grading an essay against a model answer.
+**BLEU** asks "how many of the exact same short phrases (n-grams) appear in both the generated
+text and the reference?" — like checking how many identical 2-4 word chunks overlap. **ROUGE**
+asks almost the same question but from the reference's point of view — "how much of the
+reference's content did the generated text manage to cover?" **BERTScore** doesn't require exact
+word overlap at all — it compares the *meaning* of each word/phrase using embeddings, so a
+generated sentence that's correctly paraphrased (different words, same meaning) can still score
+well. **Semantic similarity** generalizes BERTScore's idea to whole sentences/documents: embed
+both the generated text and the reference (the exact mechanism from
+`embeddings-and-rag-data-prep.md`) and compare how close their vectors are.
+
+| Metric | What it measures | Sensitive to paraphrasing? | Typical use |
+|---|---|---|---|
+| **BLEU (Bilingual Evaluation Understudy)** | N-gram precision: what fraction of the generated text's phrases appear in the reference | No — penalizes correct paraphrases that use different wording | Machine translation (its original use case), and any task with one fairly fixed "correct" phrasing |
+| **ROUGE (Recall-Oriented Understudy for Gisting Evaluation)** | N-gram recall: what fraction of the reference's phrases appear in the generated text | No — same paraphrase-sensitivity issue as BLEU, just measured from the opposite direction | Summarization (its original use case) — "did the summary capture the reference summary's key phrases" |
+| **BERTScore** | Token-level semantic similarity using contextual embeddings, not exact string match | Yes — a correct paraphrase scores well | Any generation task where correct answers can be worded many different ways |
+| **Semantic similarity (embedding-based)** | Whole-text embedding distance between generated output and reference | Yes — this is its entire purpose | Comparing a generated answer's overall meaning against a reference answer, or scoring RAG answer relevance against the retrieved context |
+
+**The exam-relevant trap:** BLEU and ROUGE look rigorous (they're mathematical, with real
+formulas) but systematically *penalize correct paraphrases* — a generated summary that's
+perfectly accurate but worded completely differently from the reference can score poorly on both.
+A scenario describing "the generated text is clearly accurate but scores low on an automated
+metric" is testing whether you recognize this exact BLEU/ROUGE paraphrase-blindness, with the fix
+being BERTScore or semantic similarity (or human evaluation, below), not concluding the model
+itself is bad.
+
+**A worked numeric intuition (no exact formula required):** reference: "The return window is 30
+days." Generated A: "Customers have 30 days to return items." Generated B: "The return window is
+30 days." Generated B shares far more exact words/phrases with the reference, so it scores much
+higher on BLEU/ROUGE despite being no more *correct* than Generated A — Generated A, a valid
+paraphrase, would score noticeably lower on BLEU/ROUGE while scoring comparably high to Generated
+B on BERTScore/semantic similarity, which is the entire point of having both metric families.
+
+## NEW skill 2.3.9 — AI evaluation: LLM-as-a-judge, content quality, and bias detection in outputs
+
+**Plain English:** once you accept that BLEU/ROUGE/BERTScore are all still comparing against one
+fixed reference answer, a deeper problem remains — for many generative tasks (open-ended
+customer support replies, creative content, multi-step reasoning) there often *is no single
+reference answer to compare against at all*. **LLM-as-a-judge** solves this by using a second,
+typically more capable foundation model to *read and score* the first model's output directly,
+against a rubric, instead of comparing strings.
+
+```mermaid
+flowchart LR
+    A["Model under test<br/>generates a response"] --> B["Judge LLM<br/>(often a larger/different model)"]
+    C["Scoring rubric<br/>(e.g., accuracy, tone,<br/>helpfulness, safety)"] --> B
+    B --> D["Score + written rationale<br/>per response"]
+    D --> E{"Score trend<br/>over many samples"}
+    E -->|"Consistently high"| F["Ship / keep in production"]
+    E -->|"Declining or low"| G["Flag for human review<br/>and/or retraining"]
+```
+
+- **Why use a different (often larger) model as judge** — a model judging its own output tends to
+  rate itself favorably (a form of self-preference bias); using a separate, typically more
+  capable judge model reduces (though doesn't eliminate) this bias, and lets you run evaluation
+  at a scale no human review team could sustain.
+- **Content quality validation** — the judge model is given an explicit rubric (accuracy,
+  completeness, tone, safety) rather than a vague "is this good" prompt, producing a structured,
+  comparable score across many outputs rather than a single subjective impression.
+- **Bias detection in generated output** — the same LLM-as-a-judge pattern can be pointed at a
+  specific bias question (e.g., "does this response describe the male and female candidate
+  equally favorably given equivalent qualifications") — a direct GenAI-era extension of
+  `responsible-ai-and-guardrails.md`'s classic-ML bias-metric content, applied to free-text
+  generation where there's no simple numeric "approval rate" to compare across groups.
+- **Human evaluation frameworks (human-in-the-loop) — task statement 2.3.7** — LLM-as-a-judge
+  scales cheaply but isn't infallible; mature evaluation pipelines sample a percentage of
+  responses for actual human review, using the same rubric the judge model uses, specifically to
+  (a) calibrate/validate that the judge model's scores track real human judgment and (b) catch
+  the cases a judge model itself might systematically miss (subtle factual errors in a domain the
+  judge model also doesn't know well, for instance). Amazon SageMaker Ground Truth supports this
+  human-review workflow directly, routing a sample of model outputs to human labelers against a
+  defined rubric, the same mechanism it uses for classic ML labeling tasks (Domain 1), now applied
+  to evaluating generated text quality instead of labeling raw training data.
+- **The exam-relevant layering to remember:** automated string-overlap metrics (BLEU/ROUGE) →
+  automated semantic metrics (BERTScore/semantic similarity) → automated rubric-based judgment
+  (LLM-as-a-judge) → human review (the ground-truth check on all of the above) — each layer is
+  cheaper and faster than the one below it, and each layer the exam can test as the *wrong* answer
+  when a scenario's actual need is one layer deeper (e.g., using only BLEU when the real concern
+  is tone/safety, which needs LLM-as-a-judge or human review, not a string-overlap metric at all).
+
+## NEW skill 2.3.10 — Configuring RAG system monitoring, including retrieval accuracy
+
+A RAG system (Domain 1/3) can fail in two independent places — the **retrieval** step and the
+**generation** step — and task statement 2.3.10 specifically names monitoring the *retrieval*
+half, which classic model-quality monitoring (Domain 4's drift detection) doesn't cover at all.
+
+- **Retrieval accuracy metrics** — **Precision@K** (of the top-K retrieved chunks, what fraction
+  are actually relevant to the query) and **Recall@K** (of all the genuinely relevant chunks that
+  exist in the corpus, what fraction made it into the top-K) — directly analogous in spirit to
+  classic precision/recall above, just measured against "was this chunk relevant" instead of "was
+  this label correct."
+- **Why generation-quality metrics alone can hide a retrieval failure** — a generated answer can
+  score well on BERTScore/semantic similarity against a reference *and still be wrong*, if by
+  coincidence the model's pretrained general knowledge happened to produce a plausible answer
+  despite retrieval returning irrelevant chunks — monitoring retrieval accuracy directly, not only
+  the final generated answer's quality, is what catches this specific failure mode.
+- **Monitoring retrieval accuracy in production** — logging which chunks were retrieved per query
+  alongside periodic human or LLM-as-a-judge relevance scoring of a sample of those retrievals,
+  tracked over time the same way Domain 4's Model Monitor tracks drift — a sustained drop in
+  retrieval relevance (even with generation quality looking stable) is the leading indicator that
+  the underlying corpus has grown stale, a chunking/embedding configuration has degraded, or the
+  vector index needs re-tuning — see `../domain-4-monitoring-security/README.md` for where this
+  connects to the domain that owns ongoing production monitoring broadly.
+
 ## A quick self-test — can you answer these without looking back?
 
 Before moving to `labs.md`, these five questions are a fast way to check whether the plain-
@@ -576,6 +666,43 @@ together, where a feature with a naturally larger numeric range would dominate u
     precision than the other"** → accuracy alone can't distinguish genuinely different
     error-tradeoff profiles; always check precision/recall (or F1/AUC) before declaring two
     models "equally good" based on accuracy alone.
+
+## Use Cases — Real Scenarios
+
+1. A machine-translation team reports BLEU scores on every model release, specifically because
+   translation genuinely does have a fairly fixed "correct" phrasing per language pair — exactly
+   the use case BLEU was designed for.
+2. A summarization team discovers ROUGE scores dropped after a model update, investigates, and
+   finds the new model produces equally accurate but differently-worded summaries — confirmed by
+   running BERTScore on the same outputs and seeing it stay flat, correctly separating "wording
+   changed" from "quality dropped."
+3. A customer-service QA team uses LLM-as-a-judge to score 100% of generated chat responses for
+   tone and policy compliance daily, since no human review team could read every conversation,
+   while routing a random 2% sample to actual human reviewers weekly to confirm the judge model's
+   scores still track real human judgment.
+4. A hiring-platform team runs LLM-as-a-judge specifically on a bias rubric ("are equally
+   qualified candidates of different genders described with equally positive language") across
+   thousands of generated candidate summaries, a scale no manual review process could sustain.
+5. A legal-document RAG assistant's generation-quality scores look stable month over month, but a
+   separate Precision@5 retrieval-accuracy check reveals the vector index is increasingly
+   returning outdated clauses — caught only because retrieval was monitored as its own metric,
+   not inferred from the (currently fine-looking) generated answers.
+6. A company evaluating three candidate foundation models for a summarization task runs all three
+   against the same reference summaries using ROUGE, BERTScore, and a human-rated rubric
+   side-by-side, specifically to see whether the models' rankings agree or diverge across metric
+   families before committing to one.
+7. An ML team fine-tunes a smaller, specialized model and validates it's "good enough" against
+   the much larger foundation model it's replacing using semantic similarity scoring on a held-out
+   set of real production queries, rather than assuming parity from training loss curves alone.
+8. A content-moderation team builds a human evaluation framework specifically for edge cases an
+   automated toxicity classifier flags with low confidence, routing only the genuinely ambiguous
+   cases to human reviewers rather than every single flagged item.
+9. A RAG system's support team sets up an alert when Recall@K on a sampled query set drops below
+   a threshold, treating it exactly like a SageMaker Model Monitor drift alarm — an automatic,
+   proactive signal rather than waiting for users to complain that answers feel less accurate.
+10. A research team deliberately compares BLEU and BERTScore on the same set of paraphrased
+    answers to build their own intuition for the paraphrase-blindness trap before ever answering
+    an exam question about it.
 
 ## Related Terms
 

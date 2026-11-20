@@ -30,6 +30,16 @@ The C02 exam guide groups Domain 1 into these task statements. Each maps to a li
 | **1.2 — Transform data and perform feature engineering** | Cleaning, deduplication, normalization/standardization, encoding categoricals, handling missing values; building and serving reusable features | [`services/analytics/glue.md`](../../../services/analytics/glue.md), [`services/machine-learning-ai/sagemaker-data-wrangler-and-feature-store.md`](../../../services/machine-learning-ai/sagemaker-data-wrangler-and-feature-store.md) |
 | **1.3 — Ensure data integrity and prepare for modeling (bias, compliance)** | Detecting class imbalance, labeling quality, bias in training data, train/validation/test splitting, shuffling, data augmentation | [`services/analytics/data-lake-concepts.md`](../../../services/analytics/data-lake-concepts.md) (governance/cataloging side) |
 | **1.4 — NEW: Prepare data for generative AI / RAG** | What an embedding is, chunking documents, vector stores, why foundation models need retrieval instead of retraining | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md) *(new doc, written for this domain)* |
+| **1.1.7 — NEW: Configure scalable vector databases** | Choosing/configuring OpenSearch Service, Amazon RDS with pgvector, or Amazon S3 vector search for a given scale/latency/budget spec | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md#vector-database-deep-comparison----opensearch-service-vs-amazon-rds-pgvector-vs-amazon-s3-vector-search) and this doc's ["Vector Database Options"](#new-skill-11--configuring-scalable-vector-databases-for-ai-applications) section below |
+| **1.1.8 — NEW: Ingest/store diverse data types** | Text, image, and audio ingestion/storage for AI/ML, not just tabular data | this doc's ["Ingesting Multimodal Data"](#new-skill-118--ingesting-and-storing-diverse-data-types-text-images-audio) section below |
+| **1.2.5 — NEW: Embedding models for text/image** | Configuring and using embedding models to turn raw content into numeric vectors | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md) |
+| **1.2.6 — NEW: Advanced text pre-processing** | Tokenization, domain-specific text augmentation beyond basic cleaning | this doc's ["Advanced Text Pre-processing"](#new-skill-126--advanced-text-pre-processing-tokenization--domain-specific-augmentation) section below |
+| **1.2.7 — NEW: Prepare documents for RAG** | Chunking strategies, metadata extraction | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md) |
+| **1.2.8 — NEW: Mask/redact/anonymize data** | PII detection and removal before data reaches training or a foundation model | this doc's ["Masking, Redacting, and Anonymizing Data"](#new-skill-128--masking-redacting-and-anonymizing-sensitive-data) section below |
+| **1.2.9 — NEW: Prepare data for FM fine-tuning/pre-training/distillation** | Prompt-completion pair formatting, continuous pre-training corpora, teacher/student distillation datasets | this doc's ["Preparing Data for FM Fine-Tuning"](#new-skill-129--preparing-data-for-fm-fine-tuning-continuous-pre-training-and-model-distillation) section below |
+| **1.3.4 — NEW: Multimodal bias metrics** | Checking bias across numeric, text, and image data together, not only tabular features | this doc's ["Multimodal Bias Metrics"](#new-skill-134--optimizing-multimodal-data-distributions-with-bias-metrics) section below |
+| **1.3.6 — NEW: Validate AI training data integrity** | Prompt-response pair validation, content safety screening before fine-tuning | this doc's ["Validating AI Training Data Integrity"](#new-skill-136--validating-ai-training-data-integrity) section below |
+| **1.3.7 — NEW: Clean data** | Outlier detection, imputation, deduplication | this doc's ["Cleaning Data"](#new-skill-137--cleaning-data-outlier-detection-imputation-deduplication) section below |
 
 ## Linked service docs — the deep dives
 
@@ -67,6 +77,296 @@ Don't duplicate content here; read the linked doc for depth. This README is the 
   stores, chunking strategies, and why generative AI needs a different kind of "data prep" than
   classic ML. This concept doesn't belong to one AWS service (it spans S3, Bedrock, OpenSearch,
   and SageMaker), so it gets its own doc rather than being buried inside `bedrock.md`.
+
+## NEW skill 1.1.7 — Configuring scalable vector databases for AI applications
+
+The official C02 guide names this as its own task statement rather than folding it into
+"embeddings and RAG" generically — it specifically expects you to be able to **choose and
+configure the vector database itself** against a stated scale/latency/budget spec, not just know
+that "a vector store" is needed somewhere. The full side-by-side comparison with pricing/
+operational tradeoffs lives in
+[`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md#vector-database-deep-comparison----opensearch-service-vs-amazon-rds-pgvector-vs-amazon-s3-vector-search)
+— this section gives the Domain 1 "configure it correctly" framing specifically:
+
+| Configuration decision | OpenSearch Service/Serverless | Amazon RDS/Aurora + `pgvector` | Amazon S3 Vector Buckets |
+|---|---|---|---|
+| Capacity model | Provisioned (Service) or auto-scaling OCUs (Serverless) | Provisioned DB instance (vCPU/RAM you size) | Fully serverless, no capacity to size at all |
+| Index type to configure | HNSW or IVF (k-NN plugin) | HNSW or IVFFlat (`pgvector` index types) | Managed internally, no index tuning exposed |
+| Typical config knobs tested | Shard count, `ef_search`/`ef_construction` (HNSW recall/speed tradeoff), replica count | `lists` (IVFFlat) or `m`/`ef_construction` (HNSW), `maintenance_work_mem` for index builds | Bucket/vector-index name, dimension, distance metric only |
+| Scale ceiling | Very high (billions of vectors, horizontally shardable) | Bound by a single instance's vertical scaling (still high, but not horizontally sharded like OpenSearch) | Designed for very large, cost-sensitive corpora; AWS's newest, most "just works" option |
+| When the exam expects this answer | "Needs to scale to hundreds of millions of vectors with tunable recall/latency tradeoffs" | "Already has relational data and wants vectors joined to it in the same SQL queries" | "Wants the lowest-ops, lowest-cost option and doesn't need sub-10ms latency" |
+
+The configuration-specific exam trap: a scenario naming a *specific* recall/latency requirement
+(e.g., "95%+ recall within 20ms, at a scale of 50M vectors") is testing whether you'd reach for
+OpenSearch's `ef_search` tuning knob (raising it improves recall at a latency cost) — not whether
+you can merely name "OpenSearch" as the service.
+
+## NEW skill 1.1.8 — Ingesting and storing diverse data types (text, images, audio)
+
+**Plain English:** classic ML data prep assumes rows and columns. GenAI data prep routinely has
+to ingest and store three structurally different kinds of raw content side by side — free text
+(documents, tickets, chat logs), images (product photos, scanned forms, medical images), and
+audio (call-center recordings, voice assistant input) — often for the *same* downstream use case
+(e.g., a multimodal support assistant that can read a photo of a damaged product AND a customer's
+typed description of what went wrong).
+
+```mermaid
+flowchart TD
+    A["Text sources<br/>(docs, tickets, chat)"] --> D[("S3 — organized by<br/>modality + source,<br/>same raw/curated zone pattern")]
+    B["Image sources<br/>(photos, scans, forms)"] --> D
+    C["Audio sources<br/>(call recordings,<br/>voice input)"] --> D
+    D --> E{"Needs text extracted<br/>before embedding?"}
+    E -->|"Image with text"| F["Amazon Textract<br/>(OCR)"]
+    E -->|"Audio"| G["Amazon Transcribe<br/>(speech-to-text)"]
+    E -->|"Already text"| H["Straight to chunking<br/>(see embeddings-and-rag-data-prep.md)"]
+    F --> H
+    G --> H
+    B --> I{"Needs image<br/>understanding, not just OCR?"}
+    I -->|Yes| J["Amazon Rekognition /<br/>multimodal embedding model<br/>(e.g., Titan Multimodal Embeddings)"]
+    H --> K[("Vector store")]
+    J --> K
+```
+
+Step by step: (1) every modality still lands in S3 first, organized by source and modality (not
+dumped into one undifferentiated prefix — a scenario describing "we can't tell which bucket
+prefix holds call-center audio vs. product photos" is a storage-organization failure, not a
+modeling one); (2) text-bearing non-text content gets converted to text first — **Amazon
+Textract** for scanned documents/forms/images containing text, **Amazon Transcribe** for audio —
+before it can be chunked and embedded the same way as native text; (3) content that needs to be
+*understood visually* rather than just read (e.g., "does this product photo show visible damage")
+uses **Amazon Rekognition** for pre-built detection tasks or a **multimodal embedding model**
+(e.g., Bedrock Titan Multimodal Embeddings) when the goal is similarity search across images
+directly, not text extraction. The exam-relevant distinction: OCR (Textract) answers "what text
+is in this image," while a multimodal embedding model answers "what does this image mean/look
+like, comparable to other images or text" — picking Textract when the real need is visual
+similarity search (or vice versa) is exactly the kind of wrong-tool trap this task statement
+tests.
+
+## NEW skill 1.2.6 — Advanced text pre-processing: tokenization & domain-specific augmentation
+
+**Tokenization, plain English:** before any text reaches an embedding model or an LLM, it has to
+be chopped into **tokens** — not necessarily whole words. A word like "unbelievable" might become
+three tokens (`un`, `believ`, `able`) under common subword tokenization schemes. This matters for
+two very practical reasons: (1) foundation models bill and limit context by *token* count, not
+word or character count, so the same sentence can cost meaningfully different amounts depending
+on tokenizer efficiency; (2) a tokenizer trained mostly on English text badly over-fragments
+non-English text or niche technical jargon (e.g., chemical compound names, legal citations),
+inflating token counts and sometimes losing meaning at sub-word boundaries.
+
+- **Byte-Pair Encoding (BPE)** and **WordPiece** — the two dominant subword tokenization
+  algorithms behind most modern LLMs; both build a vocabulary of common sub-word fragments from a
+  large corpus so rare/compound words still decompose into familiar pieces rather than becoming a
+  single opaque "unknown" token.
+- **Domain-specific tokenization risk** — a tokenizer never exposed to a domain's vocabulary
+  during its own training (e.g., a general-purpose tokenizer seeing pharmaceutical compound
+  names, legal case citations, or a company's internal product SKUs for the first time) will
+  fragment those terms into many small, low-information tokens, inflating cost and sometimes
+  degrading retrieval/generation quality — a real reason a scenario might call for choosing a
+  domain-adapted embedding/foundation model over a general-purpose one.
+- **Domain-specific text augmentation** — plain English: artificially creating more training
+  examples by rephrasing existing ones in ways realistic for the target domain, rather than
+  generic augmentation (random word swaps). Examples: back-translation (translate a customer
+  support ticket to another language and back, producing a natural paraphrase), synonym
+  substitution scoped to domain vocabulary (swapping "myocardial infarction" with "heart attack"
+  in a *medical* dataset, but not introducing that swap into an unrelated dataset), and
+  template-based augmentation for structured domains (generating many realistic variations of
+  "My order #{id} hasn't arrived" from one template). This is the direct generative-AI-era
+  evolution of Domain 2's classic image-rotation/flipping augmentation, applied to text and
+  intentionally scoped to a specific business domain's realistic vocabulary and phrasing rather
+  than generic, domain-agnostic transformations.
+
+## NEW skill 1.2.8 — Masking, redacting, and anonymizing sensitive data
+
+**Plain English:** before any document, transcript, or table reaches a training job or a
+foundation model's context window, personally identifiable information (PII) and other sensitive
+content often has to be found and either removed (**redaction** — deleted entirely), replaced
+with a realistic-but-fake placeholder (**masking/anonymization** — e.g., replacing a real name
+with a consistent fake name so referential structure survives), or flagged for human review.
+
+```mermaid
+flowchart LR
+    A[("Raw text/documents<br/>(may contain PII)")] --> B["Amazon Comprehend<br/>PII detection<br/>(names, SSNs, emails,<br/>addresses, phone numbers)"]
+    A --> C["Amazon Macie<br/>(S3-wide sensitive-data<br/>discovery & classification)"]
+    B --> D{"Redact or mask?"}
+    D -->|"Redact (delete)"| E["Placeholder: [REDACTED]<br/>or removed entirely"]
+    D -->|"Mask (replace, keep structure)"| F["Consistent synthetic<br/>replacement (fake name,<br/>fake but valid-format SSN)"]
+    E --> G[("Sanitized data,<br/>safe for training/FM context")]
+    F --> G
+    C --> H["Classification report:<br/>which S3 objects/buckets<br/>contain sensitive data"]
+    H --> B
+```
+
+- **Amazon Comprehend's PII detection** — a pre-built NLP service that finds and labels PII
+  entities (names, emails, SSNs, credit card numbers, addresses, phone numbers) directly in text,
+  usable both for one-off redaction jobs and as a step inside a Glue/Data Wrangler pipeline.
+- **Amazon Macie** — operates at the S3/account level rather than per-document: scans buckets to
+  discover and classify where sensitive data *exists* in the first place (a prerequisite audit
+  step before you even know what needs masking), distinct from Comprehend's per-document
+  detection-and-redaction role. A scenario asking "how do we even know which of our 200 S3
+  buckets contain sensitive data" is Macie; "redact the PII inside this specific set of
+  documents before they're embedded" is Comprehend (or Bedrock Guardrails' sensitive-information
+  filters, applied at the GenAI input/output boundary rather than the data-prep stage — see
+  Domain 4's `responsible-ai-and-guardrails.md`).
+- **Masking vs. redaction — the choice matters for downstream utility:** redaction is simpler and
+  safer but destroys information a model might legitimately need (e.g., deleting a name entirely
+  can break a chatbot evaluation scenario that needs *a* name, just not the *real* one); masking
+  with consistent synthetic substitutes (the same fake name every time the real name appears)
+  preserves referential structure for training/evaluation while still protecting the real
+  individual — the right choice depends on whether downstream tasks need the *presence* of an
+  entity of that type, not just its absence.
+- **Why this is a Domain 1 skill, not only a Domain 4 one:** Domain 4's Guardrails filter content
+  at inference time, per-request, as a safety net — but by the time an LLM request reaches
+  Guardrails, the underlying training/RAG corpus may have already had PII baked into stored
+  embeddings or a fine-tuning dataset. Masking/redaction during data prep (this section) is the
+  upstream fix; Guardrails (Domain 4) is the downstream safety net — mature pipelines use both,
+  not one instead of the other.
+
+## NEW skill 1.2.9 — Preparing data for FM fine-tuning, continuous pre-training, and model distillation
+
+These three GenAI-era training modes each need **differently shaped** source data — conflating
+them (treating all three as "just feed it documents") is the exact trap this task statement tests.
+
+| Technique | What it needs, in plain English | Typical data format | Typical data volume |
+|---|---|---|---|
+| **Supervised fine-tuning** | Examples of exactly the input→output behavior you want the model to learn | **Prompt-completion pairs** — JSONL, one `{"prompt": "...", "completion": "..."}` object per line | Hundreds to low thousands of high-quality, representative pairs |
+| **Continuous pre-training** | A large volume of raw, domain-specific *unlabeled* text, to extend the base model's knowledge of a domain's vocabulary/style before any task-specific fine-tuning | Raw text corpus (no prompt/completion structure needed) — e.g., a company's full internal documentation, cleaned but unlabeled | Large — hundreds of thousands to millions of tokens, closer to classic pre-training scale than fine-tuning scale |
+| **Model distillation** | Example outputs from a larger "teacher" model, used to train a smaller "student" model to approximate the teacher's behavior at a fraction of the inference cost | Prompt + the teacher model's own generated response as the target completion (not human-written ground truth) | Enough examples to cover the task's input variety — often similar order of magnitude to supervised fine-tuning |
+
+- **Prompt-completion pair quality matters more than quantity** — a few hundred genuinely
+  representative, correctly-formatted examples reliably outperform a much larger set containing
+  inconsistent formatting, contradictory examples, or examples that don't match the real
+  production distribution of requests (see "Validating AI Training Data Integrity" below for the
+  checks that catch this before a fine-tuning job wastes money on bad data).
+- **Continuous pre-training is the right call when the gap is *vocabulary/style*, not task
+  behavior** — e.g., a foundation model that's never seen a company's internal jargon-heavy
+  documentation benefits from continuous pre-training on that raw corpus before fine-tuning it to
+  perform a specific task on top of that newly-absorbed vocabulary; skipping straight to
+  fine-tuning on a small labeled set when the real gap is vocabulary produces weaker results than
+  pre-training first.
+- **Distillation's data-prep-specific twist** — the "ground truth" completions come from running
+  the expensive teacher model over a representative prompt set and capturing its own outputs,
+  **not** from human-written answers; this makes distillation data prep cheaper to generate (no
+  human labeling needed) but entirely dependent on the teacher model's own quality — a student
+  distilled from a teacher with a systematic blind spot inherits that exact blind spot.
+- **A format mismatch is the most common real-world failure** — a fine-tuning job expecting
+  `{"prompt": ..., "completion": ...}` JSONL silently produces a poorly-performing model (not an
+  outright error) if fed data in a different shape (e.g., raw unstructured chat logs with no
+  clear prompt/completion boundary) — validating the actual data format against the target
+  service's expected schema is a real, testable pre-flight step, not a formality.
+
+## NEW skill 1.3.4 — Optimizing multimodal data distributions with bias metrics
+
+Task statement 1.3's classic-ML bias checking (class imbalance, label-rate disparities) extends,
+in C02, to **multimodal** assets — a dataset combining numeric/tabular fields, free text, and
+images together needs bias checked across *all* of those asset types, not just the tabular
+columns Domain 2's `ml-fundamentals-glossary.md` and SageMaker Clarify traditionally focus on.
+
+- **Numeric bias metrics** — the familiar class imbalance and disparate-label-rate checks from
+  task statement 1.3's classic form, unchanged.
+- **Text bias metrics** — checking whether certain demographic groups are described using
+  systematically different *sentiment* or *vocabulary* in free-text fields feeding a model (e.g.,
+  performance-review text describing women using more "communal" language and men using more
+  "agentic" language for comparable achievements, which a downstream promotion-prediction model
+  could absorb as a biased signal even if no numeric field names gender at all).
+- **Image bias metrics** — checking whether an image dataset's class/demographic representation
+  is skewed (e.g., a facial-recognition training set drawn overwhelmingly from one skin-tone
+  range), which produces a model that's measurably less accurate for underrepresented groups in
+  production even though the training process itself had no "bug."
+- **Why this matters as a distinct skill, not just "run Clarify again":** a single-modality bias
+  check can pass cleanly while a cross-modality one fails — e.g., tabular fields alone might show
+  no demographic skew, while the free-text complaint descriptions paired with those same records
+  carry a sentiment skew that a tabular-only bias report would never surface; the multimodal
+  checking task statement exists specifically because a model trained on text+tabular+image
+  together can absorb bias from *any* of the three, and checking only one is a false sense of
+  security.
+
+## NEW skill 1.3.6 — Validating AI training data integrity
+
+Separate from checking data for *bias* (above), this task statement is about checking data for
+basic *soundness* before it's trusted for fine-tuning or as a RAG source — two concrete checks:
+
+- **Prompt-response pair validation** — before a fine-tuning job runs, validate that every
+  prompt-completion pair is actually well-formed and internally consistent: the completion
+  genuinely answers the prompt (not a mismatched pair from a data-pipeline bug), required fields
+  aren't empty, formatting matches the target service's expected schema exactly, and there are no
+  exact-duplicate or near-duplicate pairs inflating the effective weight of a handful of examples
+  (see "Cleaning Data" below for the deduplication mechanics). A fine-tuning job that "succeeds"
+  on malformed or inconsistent pairs doesn't error out — it just quietly produces a worse model,
+  which is exactly why this has to be checked *before* the training job, not diagnosed after the
+  fact from a confusing evaluation result.
+- **Content safety screening** — scanning training/fine-tuning data itself (not just model
+  *output*, which is Domain 4's Guardrails territory) for content that shouldn't be reinforced
+  into a model's learned behavior at all — hate speech, graphic violence, or other disallowed
+  content accidentally present in a scraped or user-generated training corpus. Amazon
+  Comprehend's toxicity/content-moderation detection and Bedrock Guardrails' standalone
+  `ApplyGuardrail` API (see Domain 4) can both be run *against a prepared dataset itself*, as a
+  data-prep gate, not only at live inference time — the same mechanism, applied one stage
+  earlier in the pipeline.
+- **The exam-relevant distinction between this and task statement 1.3's bias checking:** bias
+  checking asks "is the *distribution* of outcomes/representation fair across groups"; integrity
+  validation asks "is each individual record *correctly formed and safe*, independent of any
+  group comparison" — a dataset can pass every bias metric while still containing malformed
+  prompt-completion pairs or unsafe content, which is why both checks are named as distinct task
+  statements rather than one combined step.
+
+## NEW skill 1.3.7 — Cleaning data: outlier detection, imputation, deduplication
+
+Task statement 1.3 also names general data-cleaning mechanics explicitly, worth treating as their
+own checklist distinct from the bias/integrity checks above, since they answer a more basic
+question: is each value plausible, present, and not a redundant copy of another record?
+
+- **Outlier detection** — plain English: finding values so far outside the normal range that
+  they're more likely a data-entry error or a sensor malfunction than a genuine extreme
+  observation. **IQR (interquartile range) method**: flag anything more than 1.5× the IQR beyond
+  the 25th/75th percentile — simple, interpretable, a reasonable default for roughly
+  single-peaked numeric distributions. **Isolation Forest** / **Random Cut Forest**: tree-based
+  anomaly detection that handles multi-dimensional outliers (a record that's only unusual when
+  *several* features are considered jointly, even though no single feature looks extreme alone) —
+  the right choice when outliers aren't simply "one column has a crazy number" but "this
+  combination of otherwise-normal-looking values together is implausible."
+- **Imputation** — filling in missing values rather than dropping incomplete records outright
+  (dropping is only safe when missingness is rare and random; dropping aggressively on data where
+  missingness correlates with something real silently biases the remaining dataset). Common
+  choices: **mean/median imputation** (simple, fast, reasonable for data missing at random),
+  **mode imputation** for categorical fields, and **a separate "was this value missing" indicator
+  feature** alongside the imputed value — preserving the fact that something was originally
+  missing, which can itself be predictive (e.g., a skipped survey question often correlates with
+  the very outcome being predicted).
+- **Deduplication** — **exact deduplication** (byte-identical records, the easy case) versus
+  **near-duplicate detection** (records that are almost but not quite identical — a support
+  ticket submitted twice with a typo fixed, or two product descriptions differing only in
+  formatting). Near-duplicate detection for text at scale commonly uses **MinHash/LSH (Locality-
+  Sensitive Hashing)** for fast approximate matching across millions of documents, or comparing
+  **embedding similarity** directly (two chunks whose embeddings are nearly identical are very
+  likely near-duplicates) — directly reusing the embeddings infrastructure from
+  `embeddings-and-rag-data-prep.md` as a deduplication tool, not only a retrieval tool.
+- **Why deduplication matters specifically for GenAI data prep:** a RAG corpus or fine-tuning
+  dataset with many near-duplicate documents doesn't just waste storage — it skews retrieval
+  (the same near-duplicate content dominates top-K results, crowding out genuinely different
+  relevant chunks) and skews fine-tuning (over-represented near-duplicate examples get
+  disproportionate influence on the fine-tuned model's behavior, a text-data analog of the class
+  imbalance problem covered elsewhere in this domain).
+
+## How This Domain's Services Work Together — The Big Picture
+
+Zooming out from each individual task statement above, Domain 1's services form one continuous
+pipeline with two parallel tracks that converge at the model-development boundary (Domain 2).
+**Track one (structured/classic ML):** raw records land in S3, get crawled and cataloged by Glue,
+transformed by Glue ETL/DataBrew/Data Wrangler, checked for bias and class imbalance, cleaned
+(outlier detection, imputation, deduplication), and written to Feature Store's offline/online
+split. **Track two (unstructured/GenAI):** raw documents, images, and audio also land in S3,
+get OCR'd/transcribed into text where needed, sanitized of PII (Comprehend/Macie), chunked,
+tokenized and embedded (with domain-specific augmentation applied where vocabulary demands it),
+written into a vector database sized and configured for the application's actual scale (OpenSearch,
+RDS pgvector, or S3 vector search), and — for teams going further than RAG alone — also shaped
+into prompt-completion pairs or raw corpora for fine-tuning, continuous pre-training, or
+distillation, each validated for integrity and safety before ever reaching a training job. Both
+tracks share the same underlying philosophy (raw → validated/cleaned → shaped for the specific
+consumer) even though the concrete services differ, and a mature real-world pipeline routinely
+runs both tracks over the *same* source systems simultaneously — the MegaMart case study below
+shows exactly this, with one company's clickstream data flowing through Track one while its
+policy documents flow through Track two, converging only when both outputs reach a shared
+customer-facing product surface.
 
 ## How It Works — raw data to feature store, step by step
 
@@ -266,6 +566,48 @@ Kinesis" or "use Feature Store's Online Store" as universal defaults — it rewa
 are present in a given scenario and picking the configuration that actually fits those
 constraints, even when it means deliberately NOT reaching for the more sophisticated-sounding
 option.
+
+## Use Cases — Real Scenarios
+
+1. A grocery delivery app ingests continuous clickstream via Kinesis to power near-real-time
+   "customers also bought" features, while a separate nightly Glue job builds slower-changing
+   features like `lifetime_order_count` — two ingestion speeds for two different feature
+   freshness needs, both landing in the same Feature Store.
+2. A law firm's internal chatbot needs to cite the exact clause of the exact contract it answers
+   from — chunked and embedded contract text in OpenSearch, with metadata (`client_id`,
+   `matter_id`) filtering every query so one client's contracts never leak into another's answer.
+3. An insurance company masks policyholder SSNs and names with Amazon Comprehend PII detection
+   before any claims-adjustment-notes text is embedded into a RAG knowledge base, while keeping a
+   separate, tightly access-controlled unmasked copy for the legally-mandated audit trail.
+4. A telecom provider fine-tunes a foundation model on a curated set of 800 prompt-completion
+   pairs built from its best historical customer-service transcripts, after first running
+   continuous pre-training on its full (unlabeled) technical support wiki so the model already
+   understands telecom-specific jargon before the task-specific fine-tuning begins.
+5. A photo-sharing marketplace ingests user-submitted product photos and descriptions together,
+   using Textract to pull any visible text off photographed labels and a multimodal embedding
+   model so a shopper's text search ("blue vintage lamp") can retrieve visually matching listings
+   even when the listing's written description never used the word "vintage."
+6. A hospital system runs SageMaker Clarify-style bias checks not only on its numeric readmission
+   features but also on the free-text discharge notes feeding the same model, discovering that
+   notes for one demographic group systematically omit a risk-relevant detail clinicians
+   routinely included for other groups — a text-modality bias finding a tabular-only check would
+   have missed entirely.
+7. A customer support team deduplicates five years of ticket history using MinHash before
+   building a RAG knowledge base, after discovering the same canned response had been pasted into
+   thousands of near-identical tickets, which was silently dominating every similarity search's
+   top-K results regardless of the actual question asked.
+8. A fintech startup distills a large, expensive foundation model into a small, cheap model
+   specialized only for categorizing transaction descriptions, generating its distillation
+   training set by running the large model over a year of real (sanitized) transaction text and
+   capturing its categorizations as the training targets.
+9. A logistics company stands up a small-scale RDS PostgreSQL + `pgvector` vector store (not
+   OpenSearch) specifically because its RAG application needs to join retrieved shipment-policy
+   chunks against live relational shipment-status rows in the same SQL query — a case where the
+   "already have relational data, want vectors joined to it" decision factor is the deciding one.
+10. A nonprofit with no dedicated data-engineering team adopts Amazon S3 Vector Buckets for its
+    small (under 100K document) grant-guideline knowledge base specifically because it needs
+    zero database administration and the lowest possible fixed cost, trading away OpenSearch's
+    sub-10ms latency ceiling it doesn't actually need for occasional staff lookups.
 
 ## Troubleshooting / Common Issues
 

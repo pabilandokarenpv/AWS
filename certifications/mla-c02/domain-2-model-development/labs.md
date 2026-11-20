@@ -16,6 +16,8 @@ of paid SageMaker infrastructure.*
 | 4 | Reproduce overfitting/underfitting on a real learning curve | scikit-learn, matplotlib | Task 2.3 |
 | 5 | Prompt a local open model, then "fine-tune" conceptually | Hugging Face `transformers` | Task 2.1/2.2 (FM) |
 | 6 | A minimal local Model Registry | MLflow or a CSV stand-in | Task 2.4 |
+| 7 | Compute BLEU, ROUGE, and BERTScore on real generated text | `evaluate`, `rouge-score`, `bert-score` | Task 2.3.8 — NLP eval metrics |
+| 8 | A local LLM-as-a-judge evaluation harness | Hugging Face `transformers` | Task 2.3.9 — AI evaluation |
 
 ## Lab 1 — What Floci can do here
 
@@ -213,6 +215,81 @@ browser — the same conceptual "version, compare, and (with MLflow's Model Regi
 approve/stage" workflow SageMaker's Model Registry provides, running entirely locally and for
 free.
 
+## Lab 7 — Computing BLEU, ROUGE, and BERTScore on real generated text
+
+```bash
+pip install evaluate rouge-score bert-score nltk
+```
+
+```python
+import evaluate
+
+reference = ["The return window is 30 days."]
+generated_literal = ["The return window is 30 days."]
+generated_paraphrase = ["Customers have 30 days to return items."]
+
+bleu = evaluate.load("bleu")
+rouge = evaluate.load("rouge")
+bertscore = evaluate.load("bertscore")
+
+for label, gen in [("Literal match", generated_literal), ("Valid paraphrase", generated_paraphrase)]:
+    bleu_score = bleu.compute(predictions=gen, references=[reference])
+    rouge_score = rouge.compute(predictions=gen, references=reference)
+    bert_score = bertscore.compute(predictions=gen, references=reference, lang="en")
+    print(f"\n{label}:")
+    print("  BLEU:", round(bleu_score["bleu"], 3))
+    print("  ROUGE-L:", round(rouge_score["rougeL"], 3))
+    print("  BERTScore F1:", round(bert_score["f1"][0], 3))
+```
+
+Run this and confirm the pattern `ml-fundamentals-glossary.md`'s NLP eval metrics section
+describes exactly: the literal match scores high on all three, but the valid paraphrase scores
+noticeably *lower* on BLEU/ROUGE while staying much closer to the literal match's score on
+BERTScore — direct, numeric proof of why BLEU/ROUGE penalize correct paraphrases and BERTScore
+doesn't.
+
+## Lab 8 — A local LLM-as-a-judge evaluation harness
+
+```bash
+pip install transformers torch
+```
+
+```python
+from transformers import pipeline
+import re
+
+judge = pipeline("text2text-generation", model="google/flan-t5-base")
+
+RUBRIC = """Rate the following customer support response on a scale of 1-5 for helpfulness and
+politeness. Respond with only a single number.
+
+Customer question: {question}
+Support response: {response}
+Score (1-5):"""
+
+def llm_as_judge(question, response):
+    prompt = RUBRIC.format(question=question, response=response)
+    result = judge(prompt, max_new_tokens=5)[0]["generated_text"]
+    match = re.search(r"\d", result)
+    return int(match.group()) if match else None
+
+samples = [
+    ("Where is my order?", "I don't know, check the website yourself."),
+    ("Where is my order?", "I'm sorry for the wait! Your order is out for delivery and should arrive today."),
+]
+
+for question, response in samples:
+    score = llm_as_judge(question, response)
+    print(f"Response: {response!r} -> Judge score: {score}")
+```
+
+This is a deliberately small, free stand-in for a real Bedrock-based LLM-as-a-judge pipeline — a
+small open model plays the "judge," given an explicit rubric and asked for a structured score,
+exactly the pattern `ml-fundamentals-glossary.md`'s task statement 2.3.9 section describes. Try
+rewriting the rubric to specifically score for *bias* (e.g., "does this response treat the
+customer respectfully regardless of how they phrased their complaint") to practice the bias-
+detection variant of the same technique.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
@@ -222,7 +299,42 @@ free.
 | Diagnose overfitting/underfitting on a real training curve | ❌ not emulated | Train any small model locally with **scikit-learn** or **PyTorch** on a public dataset (e.g., `sklearn.datasets`) and plot train vs. validation loss with `matplotlib` — the exact curves `ml-fundamentals-glossary.md` describes |
 | Access/fine-tune a foundation model (Bedrock/JumpStart) | ❌ no Bedrock/JumpStart emulation | **Hugging Face free inference** (`transformers` library, small open models like `distilbert`/`flan-t5-small` run on CPU) to practice the *concept* of prompting and lightweight fine-tuning; **SageMaker JumpStart's free-tier-eligible smaller models** via Studio Lab for something closer to the real AWS workflow |
 | Register/version models (Model Registry) | ❌ not emulated | Treat a local `models/` folder with a simple CSV/JSON "registry" (model name, version, metrics, approval status) as a stand-in for the concept — or use **MLflow** (free, local or Docker) which has a real, open-source Model Registry with the same approve/stage/version workflow |
-| Detect bias in a trained model's predictions (Clarify-style) | ❌ not emulated | **Fairlearn** (free, local, `pip install fairlearn`) — see Domain 1's `labs.md` Lab 3 for a worked example of the same technique |
+| Detect bias in a trained model's predictions (Clarify-style) | ❌ not emulated | **Fairlearn** (`pip install fairlearn`) — see Domain 1's `labs.md` Lab 3 for a worked example of the same technique |
+| Run Bedrock evaluation jobs with built-in BLEU/ROUGE/human-eval tooling | ❌ not emulated | **Lab 7's `evaluate`/`bert-score` libraries** (the actual open-source libraries most NLP metric tooling, including many managed offerings, build on) for real BLEU/ROUGE/BERTScore numbers |
+
+## Use Cases — Real Scenarios
+
+1. A new ML engineer runs Lab 2's classifier training twice, once with `max_depth=None` and once
+   with `max_depth=1`, specifically to personally see the overfitting and underfitting learning
+   curves before trusting the glossary's description of either pattern from text alone.
+2. A hiring manager timing candidates' Optuna/GridSearchCV results from Lab 3 uses the actual
+   wall-clock numbers to explain to a non-technical stakeholder why Bayesian tuning is worth the
+   setup complexity on an expensive real training job, grounding the abstract "sample efficiency"
+   claim in a number their team can see.
+3. A solo developer practices few-shot prompting in Lab 5 on a free local model before ever
+   touching a paid Bedrock API call, confirming the prompting pattern works before spending money.
+4. A small team builds Lab 6's MLflow registry to track model versions for an internal project
+   that doesn't yet justify SageMaker Model Registry's cost, with a clear upgrade path once it
+   does.
+5. An ML team preparing a Bedrock model-selection decision runs Lab 7's BLEU/ROUGE/BERTScore
+   comparison against their own three candidate models' outputs on real representative prompts,
+   rather than relying solely on public benchmark leaderboards that may not reflect their domain.
+6. A support-quality lead builds Lab 8's LLM-as-a-judge harness to triage a backlog of flagged
+   chatbot conversations by severity before assigning any to a human reviewer, cutting review time
+   dramatically despite running on a small free local model rather than a production-grade judge.
+7. A student deliberately feeds Lab 7 a wildly wrong "generated" answer (unrelated to the
+   reference) to see all three metrics — BLEU, ROUGE, and BERTScore — agree it's bad, building
+   confidence that the metrics converge on genuinely poor outputs even while diverging on valid
+   paraphrases.
+8. A fine-tuning team uses Lab 5's few-shot prompting exercise as a required first step before
+   approving any real fine-tuning budget request, since the domain README's decision diagram
+   treats prompting as the mandatory cheapest-lever-first check.
+9. A platform engineer extends Lab 8's rubric to score for policy-compliance language instead of
+   politeness, reusing the exact same judge-model mechanism for a completely different evaluation
+   dimension, demonstrating the rubric (not the underlying mechanism) is what changes per use case.
+10. A data science manager runs Lab 4's learning-curve exercise with a junior team member live,
+    using it as an onboarding exercise specifically because it's faster and cheaper than waiting
+    for the junior engineer to encounter and debug a real overfitting problem unsupervised.
 
 ## Recommended real-AWS free tier path
 

@@ -151,6 +151,38 @@ a single service swap** — real production workloads nearly always blend multip
 models/tiers across different parts of the same system, matched piece by piece to each piece's
 actual pattern, rather than picking one model for the whole workload.
 
+## How This Domain's Services Work Together (End-to-End Walkthrough)
+
+Trace one request through the same e-commerce platform from the Domain 2 walkthrough, now viewed
+purely through the cost lens — the same services, a different question asked of each one. A
+customer loads the product page. (1) **CloudFront** serves the page's images and scripts from the
+edge — besides the latency win, every one of those cached responses is a request that *never
+reaches the origin*, directly shrinking the origin's billed data-transfer-out line item. (2) The
+request that does reach the origin hits an **ALB** and lands on an **Auto Scaling group running a
+mixed-instances policy** — a steady baseline of instances covered by a **Compute Savings Plan**
+(purchased because Cost Explorer showed this baseline never drops below a known floor), with any
+burst above that baseline served by **Spot Instances**, since the web tier is stateless and
+tolerates an occasional interruption gracefully. (3) The app needs the product catalog, which it
+reads from **S3** through a **VPC Gateway Endpoint** rather than a **NAT Gateway** — a free network
+path instead of a metered one, for traffic that would otherwise rack up NAT Gateway data-processing
+charges on every single product-image fetch. (4) The order itself writes to **Aurora**, provisioned
+with **Reserved pricing** because order volume has a well-understood, stable floor; a separate,
+much spikier "recently viewed items" table lives in **DynamoDB on-demand** instead, because forcing
+that bursty, unpredictable access pattern into a permanently-provisioned relational instance would
+mean paying for capacity that sits idle most of the day. (5) That same order record, once written,
+eventually ages into **AWS Backup**'s retention policy, which doesn't just take the backup — it
+automatically transitions it from hot backup storage into cold storage as it ages past the point
+anyone would realistically restore from it, the same lifecycle-tiering idea S3 itself uses for the
+product-photo evidence objects sitting in its own bucket (Standard → IA → Glacier → Deep Archive as
+access frequency drops with age). (6) Separately, this company's four regional distribution-center
+VPCs reach the production VPC through a **Transit Gateway** hub rather than a growing mesh of
+individual peering connections, which became both an operational and cost problem once the VPC
+count passed a handful. Every one of these six decisions is the *same resource* the Domain 1-3
+walkthroughs already described — the ALB, the Aurora cluster, the S3 bucket, the VPC's data path —
+just asked a new question: given that this already works securely, resiliently, and fast enough,
+is there a cheaper way to buy the exact same capability? That reframing, applied consistently
+across storage/compute/database/network, is the entirety of Domain 4.
+
 ## Full Worked Case Study: GreenLedger Logistics — A Full-Stack Cost Optimization Pass
 
 **Company requirements.** GreenLedger runs a logistics-tracking platform that has grown
@@ -199,6 +231,57 @@ team wanted exposed to full Spot interruption risk, which is why only the *burst
 a Savings-Plan-covered baseline runs on Spot. This mirrors the "match the model to the actual
 pattern" principle this whole domain is built around, rather than reaching for whichever single
 discount mechanism sounds most aggressive.
+
+## Use Cases — Real Scenarios
+
+- **Podcast hosting network tiering five years of audio archives (Task 4.1).** Episodes older
+  than 90 days make up roughly 80% of total storage footprint but under 2% of monthly download
+  requests, so a lifecycle policy moves them from Standard through Standard-IA and into Glacier
+  Deep Archive by day 180, while the still-hot latest-month catalog stays on Standard for
+  instant playback — the same storage-shape-matches-access-pattern move as the domain's storage
+  framework, applied at archive scale.
+- **Regional bank's nightly fraud-review batch job migrating off a permanently-provisioned EC2
+  fleet (Task 4.2).** The job runs roughly 90 minutes nightly and tolerates interruption cleanly
+  (it checkpoints and resumes), so it moves onto AWS Batch backed by Spot Instances instead of a
+  fleet that sat idle the other 22.5 hours a day fully billed at On-Demand rates.
+- **Direct-to-consumer subscription box company splitting "recently viewed items" out of RDS
+  (Task 4.3).** A high-write, purely key-value feature that had been forced into the same
+  relational instance as the order database moves to DynamoDB on-demand, removing both an
+  engine mismatch and a chunk of RDS instance cost that was sized for the feature's rare peaks,
+  not its typical quiet traffic.
+- **Logistics company replacing a NAT Gateway bill dominated by S3 traffic with a free Gateway
+  Endpoint (Task 4.4).** A Cost Explorer review traces the single largest network line item to
+  application traffic reading shipment-label PDFs from S3 through a NAT Gateway; adding an S3
+  Gateway Endpoint eliminates nearly all of that charge with a one-line route-table change.
+- **Mid-market SaaS vendor combining all four levers during Series B due-diligence prep.** In one
+  quarter: stale log data gets a lifecycle policy (4.1), the steady API baseline gets a Savings
+  Plan while burst runs on Spot (4.2), a mis-sized dev/test RDS cluster loses its unnecessary
+  Multi-AZ setting (4.3), and NAT Gateway charges for S3/DynamoDB traffic are replaced with free
+  VPC endpoints (4.4) — four independent fixes investors can see reflected in one bill.
+- **Regional airline covering its steady 24/7 booking-engine baseline with a Savings Plan while
+  keeping holiday-week burst on Spot (Task 4.2).** Years of traffic data show the booking API
+  never drops below a known floor outside two annual holiday peaks, so the floor is covered by a
+  1-year Compute Savings Plan while the predictable, short-lived peaks run on Spot-backed burst
+  capacity in the same Auto Scaling group.
+- **University research computing center stretching a fixed annual grant across a full year of
+  GPU jobs (Task 4.2 + 4.1).** GPU training runs use Spot-backed instances with checkpointing to
+  survive interruption, and completed model artifacts move into S3 Standard-IA within a week of
+  a project's conclusion — together keeping the center inside its fixed grant instead of running
+  out of budget by Q3.
+- **E-commerce platform discovering a six-figure annual NAT Gateway bill was entirely S3 and
+  DynamoDB traffic (Task 4.4).** What looked like an unavoidable cost of doing business turned
+  out to be two missing free Gateway Endpoints — a fix that required no application code change
+  and had already paid for the entire cost-review engagement within the first month.
+- **Multinational retailer consolidating 12 regional AWS accounts under one Organization to
+  unlock shared Savings Plan discounts (Task 4.2, with Domain 1's multi-account strategy as the
+  prerequisite).** Each region had been separately buying Reserved Instances at its own smaller
+  volume; consolidated billing under one Organization pools that same spend into a larger,
+  better-discounted commitment with zero change to any individual workload.
+- **Healthcare SaaS vendor right-sizing a Warm Standby DR fleet down to its true minimum capacity
+  (Task 4.2, revisiting Domain 2's disaster-recovery choice).** Trusted Advisor flags the standby
+  Region's always-on Auto Scaling group as running well above the minimum capacity the DR runbook
+  actually requires; shrinking it to the documented floor cuts standing DR cost without changing
+  the RTO/RPO the business signed off on.
 
 ## Common exam scenarios
 

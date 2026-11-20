@@ -25,6 +25,17 @@ is really "what do you do once you've picked one of those two branches."
 | **2.2 — Train and tune a model (or fine-tune a foundation model)** | Epochs, batch size, learning rate, early stopping, distributed training, hyperparameter tuning (random/Bayesian search); for foundation models: prompt engineering, fine-tuning, RAG vs. fine-tune tradeoff | [`services/machine-learning-ai/sagemaker-training-and-tuning.md`](../../../services/machine-learning-ai/sagemaker-training-and-tuning.md), [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md) |
 | **2.3 — Evaluate a model** | Choosing the right metric, diagnosing overfitting/underfitting, detecting bias in model outputs | [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md) |
 | **2.4 — Manage model versions** | SageMaker Model Registry — versioning, approval workflows, lineage tracking | [`services/machine-learning-ai/sagemaker-model-monitor-and-registry.md`](../../../services/machine-learning-ai/sagemaker-model-monitor-and-registry.md) |
+| **2.1.1 — NEW: Evaluate/select FMs from Bedrock** | Choosing among available foundation models by task fit, performance, and cost | this doc's ["Selecting a Foundation Model from Bedrock"](#new-skill-211--evaluating-and-selecting-foundation-models-from-amazon-bedrock) section below |
+| **2.1.2 — NEW: Identify fine-tuning strategies** | Full fine-tuning vs. parameter-efficient fine-tuning (LoRA/PEFT) vs. instruction tuning | this doc's ["Fine-Tuning Strategies"](#new-skill-212--identifying-fine-tuning-strategies-for-pre-trained-fms) section below |
+| **2.1.4 — NEW: Custom vs. managed vs. pre-trained vs. FM tradeoffs** | Build-from-scratch vs. managed service vs. pre-trained model vs. foundation model decision | this doc's ["Build vs. Managed vs. Pretrained vs. FM"](#new-skill-214--evaluating-tradeoffs-custom-solutions-vs-managed-services-vs-pre-trained-models-vs-fms) section below |
+| **2.1.5 — NEW: Select RAG architecture patterns** | Naive RAG vs. advanced RAG (reranking) vs. agentic RAG, matched to use case | this doc's ["RAG Architecture Patterns"](#new-skill-215--selecting-rag-architecture-patterns-based-on-use-case) section below |
+| **2.1.7 — NEW: FM performance/latency/cost tradeoffs** | Balancing model capability against response speed and per-token cost | this doc's ["Performance, Latency, and Cost Tradeoffs"](#new-skill-217--assessing-tradeoffs-between-ai-model-performance-latency-and-cost) section below |
+| **2.2.8 — NEW: Customization techniques** | Task-specific prompt engineering and fine-tuning, applied deliberately | this doc's existing fine-tuning decision diagram, below |
+| **2.2.9 — NEW: Optimize retrieval components and embedding models** | Tuning top-K, reranking, and embedding model choice for better RAG quality | this doc's ["Optimizing Retrieval and Embedding Models"](#new-skill-229--optimizing-retrieval-components-and-embedding-models) section below |
+| **2.3.7 — NEW: Human evaluation frameworks** | Human-in-the-loop review of generated text quality | [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md#new-skill-239--ai-evaluation-llm-as-a-judge-content-quality-and-bias-detection-in-outputs) |
+| **2.3.8 — NEW: NLP evaluation metrics** | BLEU, ROUGE, BERTScore, semantic similarity | [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md#new-skill-238--nlp-evaluation-metrics-for-generative-ai-bleu-rouge-bertscore-semantic-similarity) |
+| **2.3.9 — NEW: AI evaluation (LLM-as-a-judge, bias detection)** | Automated rubric-based scoring of generated output quality and fairness | [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md#new-skill-239--ai-evaluation-llm-as-a-judge-content-quality-and-bias-detection-in-outputs) |
+| **2.3.10 — NEW: RAG system monitoring (retrieval accuracy)** | Precision@K/Recall@K and ongoing retrieval-quality monitoring | [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md#new-skill-2310--configuring-rag-system-monitoring-including-retrieval-accuracy) |
 
 ## Linked service docs — the deep dives
 
@@ -53,6 +64,111 @@ is really "what do you do once you've picked one of those two branches."
   are algorithm-agnostic and service-agnostic — they don't belong inside any single SageMaker doc
   — but they are the single most heavily tested *conceptual* knowledge in this domain, so they
   get a dedicated, plain-English-first doc.
+
+## NEW skill 2.1.1 — Evaluating and selecting foundation models from Amazon Bedrock
+
+**Plain English:** Bedrock offers access to several *families* of foundation models (e.g.,
+Anthropic Claude, Amazon Titan/Nova, Meta Llama, Mistral, Cohere Command) through one unified API
+— "developing a model" in C02 often means picking the right one from this catalog rather than
+training anything. Selection isn't a single "best overall" ranking; it's matching model
+characteristics to the task's actual requirements.
+
+| Selection factor | What to check | Exam-relevant signal |
+|---|---|---|
+| Task fit | Does the model family specialize in this task type (long-context document analysis, code generation, multilingual, vision-input)? | A scenario naming "analyze a 200-page document in one pass" points to a long-context-window model, not just "the most capable" one |
+| Context window size | Maximum tokens the model can accept in one request (prompt + retrieved context + conversation history combined) | A RAG pipeline retrieving many large chunks needs a model with a context window that can actually hold them all |
+| Output quality for the specific task | Benchmark scores and/or a small evaluation run (see `ml-fundamentals-glossary.md`'s NLP eval metrics) comparing candidate models on *your* representative prompts, not just generic leaderboards | A model that benchmarks well generally can still underperform on a narrow domain-specific task — always validate on representative data |
+| Latency | Larger/more capable models are typically slower per token generated | A scenario demanding sub-second response for a simple classification-style task may be better served by a smaller, faster model than the flagship one |
+| Cost | Per-token input/output pricing varies significantly across model families and sizes | See ["Performance, Latency, and Cost Tradeoffs"](#new-skill-217--assessing-tradeoffs-between-ai-model-performance-latency-and-cost) below |
+| Modality | Text-only vs. multimodal (text+image) input/output support | A scenario needing to reason about an uploaded photo needs a multimodal-capable model, not a text-only one, regardless of how strong its text performance is |
+
+**The exam-relevant discipline:** this task statement expects you to recognize selection as a
+genuine *evaluation process* (benchmark on your own representative prompts, compare context
+window and modality against the stated requirement) rather than defaulting to "pick the newest or
+largest model" — a smaller, cheaper, faster model that clears the task's actual bar is very often
+the correct answer over a larger one that merely clears it with more room to spare.
+
+## NEW skill 2.1.2 — Identifying fine-tuning strategies for pre-trained FMs
+
+The domain's existing fine-tuning decision diagram (below) answers *whether* to fine-tune; this
+task statement goes one level deeper into *how*, since more than one fine-tuning strategy exists
+and they have real cost/data/outcome tradeoffs:
+
+| Strategy | Plain English | What it changes | Data needed | Relative cost |
+|---|---|---|---|---|
+| **Full fine-tuning** | Retrain all (or nearly all) of the model's internal parameters on your examples | The entire model | Largest — most expensive, most prone to catastrophic forgetting if overdone | Highest |
+| **Parameter-efficient fine-tuning (PEFT) / LoRA** | Freeze the base model entirely; train only a small set of additional "adapter" parameters inserted alongside it | A small add-on layer, not the base model itself | Can work with meaningfully less data than full fine-tuning | Much lower — fewer parameters to train and store per fine-tuned version |
+| **Instruction tuning** | Fine-tune specifically on (instruction, correct response) pairs to improve how well a model follows explicit directions in general, not just one narrow task | The model's general instruction-following behavior | Broad, diverse instruction/response pairs across many task types | Moderate — this is closer to how base "instruct" model variants are themselves produced |
+| **RLHF-style preference tuning** | Fine-tune using *comparisons* between two candidate responses (human or model preferred one over the other) rather than single correct-answer examples | The model's output style/preferences toward what evaluators rated more favorably | Preference-labeled pairs rather than single ground-truth completions | High — requires a preference-labeling process on top of standard fine-tuning infrastructure |
+
+**The exam-relevant distinction most commonly tested:** LoRA/PEFT is the practical default answer
+whenever a scenario emphasizes limited budget, limited labeled data, or needing multiple
+different fine-tuned variants of the same base model cheaply (since only the small adapter
+differs per variant, not the entire model) — full fine-tuning is reserved for scenarios explicitly
+describing a need to change deep, pervasive model behavior where a lightweight adapter wouldn't
+be sufficient.
+
+## NEW skill 2.1.4 — Evaluating tradeoffs: custom solutions vs. managed services vs. pre-trained models vs. FMs
+
+This generalizes the domain's build-vs-adopt fork (below) into a four-way decision, since "adopt"
+itself splits into two meaningfully different options:
+
+```mermaid
+flowchart TD
+    A{"How novel/specific<br/>is this problem?"} -->|"Highly novel,<br/>no existing model fits"| B["Build custom<br/>(train from scratch)"]
+    A -->|"Common problem type,<br/>fully-managed service exists"| C["Use a managed AI service<br/>(e.g., Amazon Comprehend,<br/>Rekognition, Textract)"]
+    A -->|"General ML task,<br/>want to own the model"| D["Use a pre-trained model<br/>(JumpStart) and fine-tune"]
+    A -->|"Language/reasoning/<br/>generation task"| E["Use a foundation model<br/>(Bedrock), with or<br/>without fine-tuning"]
+    C --> F{"Managed service doesn't<br/>quite fit the exact need?"}
+    F -->|Yes| D
+```
+
+| Option | When it wins | What you give up |
+|---|---|---|
+| **Custom (build from scratch)** | A genuinely novel problem with abundant labeled data and no existing model/service comes close | Full engineering cost and time; highest maintenance burden |
+| **Managed AI service** (Comprehend, Rekognition, Textract, Transcribe) | A common, well-defined task (sentiment, OCR, entity extraction) a pre-built service already handles well | Customization — you can't retrain a managed service's internals, only configure its parameters |
+| **Pre-trained model (JumpStart), fine-tuned** | A general ML task where you want to own/customize the actual model, with moderate data | More operational ownership than a fully-managed service, less than building from scratch |
+| **Foundation model (Bedrock)** | A language/reasoning/generation task, with or without RAG/fine-tuning | Per-token cost scales with usage; less deep customization ceiling than full fine-tuning of an owned model |
+
+**Exam-relevant trap:** reaching for a foundation model (the "exciting" new option) when a
+managed AI service already solves the stated problem more cheaply and reliably — e.g., a scenario
+asking only "extract entities like dates and names from documents" is a Comprehend/Textract
+problem, not a reason to stand up a Bedrock RAG pipeline; conversely, a scenario needing
+open-ended natural-language generation or reasoning is *not* solvable by a managed AI service at
+all, regardless of how tempting "just use Comprehend, it's cheaper" sounds.
+
+## NEW skill 2.1.7 — Assessing tradeoffs between AI model performance, latency, and cost
+
+Three variables, and improving one generally costs you one of the other two — this is the GenAI-
+era analog of the bias-variance tradeoff, with the same "can't have all three for free" shape.
+
+```mermaid
+flowchart LR
+    A["Larger, more<br/>capable model"] -->|"buys"| B["Higher output quality"]
+    A -->|"costs"| C["Higher latency<br/>per token"]
+    A -->|"costs"| D["Higher $/token"]
+    E["Smaller, faster model"] -->|"buys"| F["Lower latency,<br/>lower cost"]
+    E -->|"costs"| G["Lower ceiling on<br/>task difficulty handled well"]
+```
+
+- **When latency dominates the decision** — a real-time, user-facing interaction (live chat,
+  voice assistant) where users perceive multi-second delays as broken, even if a larger model
+  would answer somewhat better; the correct answer trades some quality ceiling for a model fast
+  enough to feel responsive.
+- **When cost dominates** — very high request volume where even a small per-token price
+  difference compounds into a large total bill; a scenario emphasizing massive scale over
+  per-response sophistication favors a smaller, cheaper model, possibly paired with a smaller
+  model handling the bulk of requests and a larger model reserved only for requests a routing
+  layer flags as genuinely complex (a tiered-model architecture).
+- **When performance/quality dominates** — a low-volume, high-stakes task (legal analysis,
+  medical summarization) where an incorrect or low-quality answer is far costlier than a slower,
+  more expensive one; the correct answer is the most capable model that clears the task's bar,
+  with latency/cost treated as secondary.
+- **The exam-relevant discipline:** a question naming two or three of these constraints
+  explicitly (e.g., "must respond in under 2 seconds, budget is tight, and some quality loss is
+  acceptable") is testing whether you correctly rank which constraint is binding and route to the
+  model/architecture that satisfies the *stated* priorities — not simply picking the most
+  technically impressive-sounding option by default.
 
 ## How It Works — the train/evaluate/tune loop (classic ML) and where fine-tuning fits
 
@@ -152,6 +268,95 @@ The exam-relevant point this diagram makes explicit: **prompt engineering is alw
 lever to try first**, before reaching for RAG or fine-tuning — a scenario that hasn't mentioned
 attempting better prompting yet shouldn't be assumed to need the heavier-weight fix.
 
+## NEW skill 2.1.5 — Selecting RAG architecture patterns based on use case
+
+Domain 1's `embeddings-and-rag-data-prep.md` covers the basic chunk→embed→retrieve→generate
+pipeline; this task statement tests choosing *which architecture pattern* fits a given use case,
+since "RAG" isn't one single fixed architecture:
+
+| Pattern | Plain English | Adds on top of naive RAG | Use when |
+|---|---|---|---|
+| **Naive RAG** | Retrieve top-K chunks by similarity, hand them straight to the generator | Nothing — the baseline pipeline | Simple Q&A over a well-structured, non-noisy corpus |
+| **Advanced RAG (with reranking)** | Retrieve a larger candidate set, then use a second, more accurate model to re-score and reorder before generation | A reranking step between retrieval and generation | The corpus is large/noisy enough that plain vector similarity surfaces technically-close-but-not-actually-useful chunks |
+| **Agentic RAG** | An agent decides, per query, *whether* to retrieve at all, *which* knowledge base/tool to query, and can issue multiple retrieval rounds before answering | Reasoning/planning layer that controls retrieval dynamically, not a fixed always-retrieve step | Multi-step questions needing information from more than one source, or questions that don't need retrieval at all (a greeting shouldn't trigger a knowledge-base lookup) |
+| **Graph RAG** | Retrieval traverses a knowledge graph of entity relationships, not just chunk similarity | Structured relationship traversal on top of/instead of vector similarity | Questions depend on multi-hop relationships between entities (e.g., "which suppliers does the company that acquired our main vendor also work with") that plain chunk similarity can't connect |
+
+**The exam-relevant selection logic:** a scenario describing straightforward document Q&A is
+naive RAG; a scenario describing noisy/large corpora with quality complaints points to adding
+reranking; a scenario describing an assistant that needs to decide *whether and where* to look
+things up (and possibly call non-retrieval tools too) is agentic RAG — directly connecting to
+Domain 3's Bedrock Agent orchestration; a scenario describing relationship-heavy, multi-hop
+reasoning over connected entities is Graph RAG, the pattern most likely to be mistaken for a
+simple vector-search problem when it genuinely isn't one.
+
+## NEW skill 2.2.9 — Optimizing retrieval components and embedding models
+
+Once a RAG architecture pattern is chosen, task statement 2.2.9 covers *tuning* the retrieval
+half for quality — a distinct, ongoing optimization activity, not a one-time setup decision:
+
+- **Top-K tuning** — raising K retrieves more candidate chunks (more context, more chance of
+  including the right one) at the cost of prompt bloat and potentially burying the genuinely
+  relevant chunk among noise; lowering K tightens focus but risks missing relevant content spread
+  across more chunks than K allows — there's no universally correct K, only a tradeoff tuned
+  against real query/answer quality data.
+- **Reranking model choice** — a lightweight reranker (fast, cheap, modest quality lift) vs. a
+  heavier cross-encoder reranker (slower, more expensive, bigger quality lift) — the right choice
+  depends on whether the use case can tolerate the added latency a more thorough reranker
+  introduces.
+- **Embedding model swaps** — switching to a more domain-adapted or higher-dimensional embedding
+  model can measurably improve retrieval relevance, but (as `embeddings-and-rag-data-prep.md`'s
+  troubleshooting section stresses) requires re-embedding the *entire* corpus, not just new
+  documents — an optimization with a real one-time migration cost that has to be weighed against
+  the ongoing relevance improvement it buys.
+- **Chunking strategy revisits** — if retrieval optimization plateaus despite reranking and
+  embedding-model tuning, the next lever is often revisiting chunk size/overlap/strategy itself
+  (back in Domain 1), since a poorly-chunked corpus caps how good retrieval can ever get
+  regardless of how well-tuned the embedding model or reranker is.
+- **Measuring whether an optimization actually helped** — every lever above should be validated
+  against the retrieval-accuracy metrics (Precision@K/Recall@K) covered in
+  `ml-fundamentals-glossary.md`'s task statement 2.3.10 section, not just "it feels better" —
+  retrieval optimization without a measured before/after comparison is guessing, not tuning.
+
+
+## Use Cases — Real Scenarios
+
+1. A customer-insights team evaluates Claude, Titan, and Llama models on their own 50
+   representative support-ticket-summarization prompts, scoring each with ROUGE and a human
+   rubric, rather than trusting a generic public leaderboard to predict performance on their
+   specific jargon-heavy domain.
+2. A startup fine-tunes a foundation model using LoRA/PEFT specifically because it needs three
+   differently-branded chatbot variants (one per product line) and can't justify three full
+   fine-tuning runs' worth of storage and compute for what's really the same base model with
+   different adapters.
+3. A legal-tech company picks Graph RAG over naive RAG after realizing its contract-question
+   assistant needs to answer "which clauses in Contract B reference obligations defined in
+   Contract A," a multi-hop relationship plain chunk similarity search couldn't reliably surface.
+4. A high-volume e-commerce chatbot routes simple order-status questions to a small, fast,
+   cheap model and only escalates genuinely complex complaint-resolution conversations to a
+   larger, more expensive model — a tiered architecture directly trading cost for capability only
+   where it's needed.
+5. A manufacturer initially reaches for a Bedrock RAG assistant to extract part numbers and dates
+   from scanned invoices, then realizes Amazon Textract alone (a managed AI service) solves the
+   actual stated problem more cheaply and without any foundation-model cost at all.
+6. A media company's retrieval-quality metrics plateau after several rounds of reranking-model
+   upgrades; the team correctly diagnoses the real bottleneck as poor chunking (tables being cut
+   mid-row) rather than continuing to tune the reranker further.
+7. A fintech company builds an LLM-as-a-judge evaluation pipeline to score thousands of generated
+   transaction-dispute explanations daily for both accuracy and tone, reserving human review only
+   for a random audit sample and for any response the judge model itself flags as low-confidence.
+8. An enterprise software vendor fine-tunes a smaller open model via instruction tuning on a
+   broad, diverse set of internal task instructions, rather than narrow single-task fine-tuning,
+   specifically because the deployed assistant needs to handle many different request types
+   reliably, not just one.
+9. A healthcare documentation startup selects a foundation model primarily by context-window size
+   over raw benchmark scores, since its core use case (summarizing entire multi-page patient
+   encounters in one pass) is blocked entirely by a model that can't hold the full encounter in
+   context, regardless of how well that model otherwise benchmarks.
+10. A research team validates a newly distilled, much-smaller model against the original large
+    teacher model using semantic similarity scoring across a held-out query set before approving
+    the smaller model to replace the teacher in production, treating the comparison as a real
+    evaluation gate rather than an assumption.
+
 ## Full worked case study — building a content-moderation system for a marketplace
 
 **The business problem:** "CraftHaven," an online marketplace for handmade goods, needs to (1)
@@ -204,6 +409,28 @@ business (and sometimes a single exam case-study question) can require *both* br
 build-vs-adopt fork simultaneously, and that recognizing which branch a given sub-problem belongs
 to — not defaulting to "just use Bedrock for everything" or "just train everything from scratch"
 — is the actual skill being tested.
+
+## How This Domain's Services Work Together — The Big Picture
+
+Domain 2's services form a single decision funnel, not a flat toolbox: every project starts by
+walking the build-vs-managed-vs-pretrained-vs-FM fork (task 2.1.4), which routes to either
+SageMaker's training/tuning stack (built-in algorithms, script mode, Automatic Model Tuning) or
+Bedrock/JumpStart's model-selection stack (comparing FM families on task fit, context window,
+latency, and cost per task 2.1.1/2.1.7). If the FM branch is taken, a second fork decides whether
+prompting alone suffices, whether RAG is needed (handing off to Domain 1's embedding/vector-store
+pipeline and this domain's RAG-architecture-pattern selection and retrieval-optimization work),
+or whether fine-tuning is needed (routing to task 2.1.2's strategy choice — full fine-tuning,
+LoRA/PEFT, instruction tuning, or RLHF-style preference tuning — and consuming the prompt-
+completion pairs Domain 1 prepared). Whichever path a project takes, it converges on the same
+evaluation stage: classic metrics (precision/recall/F1/RMSE) for traditional models, NLP-
+generation metrics (BLEU/ROUGE/BERTScore/semantic similarity) and LLM-as-a-judge/human review for
+generative outputs, and bias/explainability checks for both — and every evaluated, approved
+version, regardless of which path produced it, lands in the same SageMaker Model Registry before
+handing off to Domain 3 for deployment. The practical consequence for the exam: a case-study
+question rarely tests one box in this funnel in isolation — it typically hands you a scenario
+already a few forks deep (e.g., "already decided to use a foundation model, already decided
+fine-tuning is needed") and tests whether you can correctly navigate the *remaining* forks rather
+than re-deriving the entire decision tree from scratch every time.
 
 ## Evaluating for bias, not just accuracy
 

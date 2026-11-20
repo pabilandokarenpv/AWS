@@ -182,6 +182,33 @@ describing "also take an action or look up live system state" needs an Agent on 
 - **Multimodal embeddings** — some embedding models (and Bedrock Knowledge Bases' newer "smart
   parsing" features) can embed images and tables extracted from documents alongside text, so a
   question can retrieve a relevant diagram or table, not only prose paragraphs.
+
+### Multimodal embeddings — images and audio, in the same vector space as text
+
+**Plain English:** a multimodal embedding model (e.g., Bedrock Titan Multimodal Embeddings) maps
+*both* images and text onto the same coordinate map described at the top of this document, so "a
+photo of a red sneaker" and the sentence "red running shoe" can land close together even though
+one is pixels and the other is words. This is what makes text-to-image search ("find photos
+matching this description") and image-to-image search ("find products that look like this photo")
+both possible using the exact same nearest-neighbor mechanism as text-only RAG.
+
+- **Audio isn't embedded directly in most AWS workflows today** — the standard pattern is
+  **Amazon Transcribe** converts speech to text first, and *that* text is embedded with a normal
+  text embedding model; a scenario describing "search call-center recordings by what was said"
+  is a transcribe-then-embed pipeline, not a direct audio-embedding model, in the overwhelming
+  majority of real and exam scenarios.
+- **Images with embedded text** (a scanned form, a product label) still usually go through
+  **Amazon Textract** first if the goal is to search the *text content* of the image; a
+  multimodal embedding model is the right tool specifically when the goal is visual similarity
+  (what the image *looks like*), not text extraction (what the image *says*) — conflating these
+  two is the most common multimodal exam trap.
+- **A concrete worked example:** an interior-design marketplace wants shoppers to upload a photo
+  of a room they like and get back similar-looking furniture listings. This is a pure image-to-
+  image similarity search — Textract would find zero relevant text (there's no text to find), so
+  the correct pipeline is: embed the uploaded photo and every listing photo with the *same*
+  multimodal embedding model, then run nearest-neighbor search exactly as described earlier in
+  this document, just with image vectors instead of text vectors.
+
 - **Hybrid search** — combining traditional keyword search (exact-term matching, useful for
   product codes, names, or acronyms that embeddings alone might blur together) with vector
   similarity search in the same query, improving recall for queries that mix a precise term with
@@ -204,6 +231,34 @@ constraint. A quick reference:
 | "Need serverless, pay-per-use vector search with no cluster management" | OpenSearch Serverless or Bedrock Knowledge Bases (both scale down automatically) |
 | "Need hybrid keyword + vector search in one query" | OpenSearch (supports both natively) |
 | "Experimenting locally, no AWS account/cost yet" | FAISS (free, local, in-memory — see `labs.md`) |
+
+### Vector Database Deep Comparison — OpenSearch Service vs. Amazon RDS (pgvector) vs. Amazon S3 Vector Search
+
+The quick-reference table above is enough for most scenario questions, but the official C02 guide
+names **configuring** a vector database (task statement 1.1.7) as its own skill — meaning the
+exam can test *operational* and *pricing* tradeoffs between these three options, not only "which
+one fits this use case." A full side-by-side:
+
+| Dimension | Amazon OpenSearch Service/Serverless | Amazon RDS (or Aurora) PostgreSQL + `pgvector` | Amazon S3 Vector Search (S3 Vector Buckets) |
+|---|---|---|---|
+| What it fundamentally is | A purpose-built search engine with a vector (k-NN) plugin | A general-purpose relational database with a vector extension bolted on | Object storage (S3) with a native, serverless vector index feature |
+| Best-fit mental model | "A search engine that also happens to do vectors" | "A SQL database that also happens to do vectors" | "Cheap, massive-scale object storage that also happens to do vectors" |
+| Setup/ops burden | Moderate (Service: cluster sizing/patching; Serverless: zero capacity planning) | Low-moderate if you already run RDS/Aurora; real DBA overhead if not | Lowest — no cluster, no instance, no capacity planning at all |
+| Query flexibility | Vector similarity + full-text/keyword hybrid search in one query | Vector similarity *and* arbitrary SQL joins against relational tables in one query | Vector similarity search only — no joins, no keyword hybrid |
+| Latency profile | Lowest, most consistently tunable (via `ef_search`, shard count) | Good, but shares the instance's general query load/resources | Higher and less tunable than the other two — optimized for cost/scale over minimum latency |
+| Cost shape | Pay for provisioned capacity (Service) or OCU-hours (Serverless) | Pay for the underlying RDS/Aurora instance, whether used for vectors heavily or not | Pay per request + storage, true pay-as-you-go with no idle floor |
+| Scale ceiling | Very high — designed to shard horizontally to billions of vectors | Bound by a single database instance's vertical limits | Very high — S3's underlying storage scale, by design |
+| Picks this when scenario says... | "hybrid search," "already on OpenSearch," "need the lowest, most tunable latency" | "already relational," "need vectors joined with other business data," "small-to-mid team already comfortable with Postgres" | "lowest ops," "lowest fixed cost," "very large corpus," "latency isn't the binding constraint" |
+| Exam trap to watch for | Assuming OpenSearch is *always* the default RAG answer — it's the right answer only when hybrid search or sub-10ms latency is actually named | Assuming pgvector can't scale — it scales fine for the large majority of real workloads, just not to OpenSearch's horizontal-sharding ceiling | Assuming S3 vector search is "not a real vector database" — in the current guide it's a first-class, explicitly testable option, not a workaround |
+
+**A worked configuration scenario:** "A retailer's product-recommendation RAG assistant needs to
+combine a vector similarity search over product descriptions with an exact-match filter on
+`in_stock = true` and `price < 50`, joined against a live inventory table that updates every few
+minutes." Walking the table above: this needs relational joins against frequently-changing
+structured data *in the same query* as a vector search — the deciding factor is the join
+requirement, not raw scale or latency, so **RDS/Aurora + `pgvector`** is the correct configuration
+choice here, even though OpenSearch could technically also serve the vector half alone.
+
 
 ### Worked example — sizing a RAG pipeline for a real company
 
@@ -231,6 +286,29 @@ exam question is testing — not exact numbers, but the *qualitative* fact that 
 update cost scales with how much content changed, while fine-tuning's cost resets to "the whole
 training job" regardless of how small the change was.
 
+## Advanced Text Pre-processing for Embeddings — Tokenization & Domain-Specific Augmentation
+
+Before chunking and embedding even begin, raw text goes through pre-processing that's easy to
+skip over conceptually but is itself a tested skill (task statement 1.2.6):
+
+- **Tokenization choice affects both chunk sizing and cost** — chunk size (discussed above in
+  tokens, not characters or words) is only meaningful once you know *how* text is tokenized;
+  the same 500-word passage can be, say, 650 tokens under one tokenizer and 900 under another
+  less-efficient one for that language/domain, directly changing how many chunks a document
+  produces and what it costs to embed.
+- **Domain vocabulary and tokenizer mismatch** — a general-purpose embedding model's tokenizer
+  fragments unfamiliar domain terms (drug names, legal citations, internal product codes) into
+  many small sub-word tokens; this doesn't break retrieval outright, but it dilutes how precisely
+  that specific term is represented in the resulting vector, which is a real, diagnosable reason
+  a domain-heavy corpus sometimes retrieves worse than a general-content corpus using the exact
+  same embedding model and chunking strategy.
+- **Domain-specific augmentation for retrieval, not just fine-tuning** — generating paraphrased
+  variants of frequently-asked questions (e.g., "how do I return an item" / "what's your return
+  process" / "can I send this back") and embedding them alongside the canonical chunk improves
+  recall for queries phrased differently than the source document's own wording — a lightweight,
+  data-prep-side improvement that doesn't require touching the embedding model or vector store
+  configuration at all.
+
 ## Troubleshooting / Common Issues
 
 - **Retrieved chunks are relevant by topic but the generated answer is still wrong or vague.**
@@ -255,7 +333,7 @@ training job" regardless of how small the change was.
   fixed-size splitting breaks meaningful structural units (tables, numbered lists, code) rather
   than forcing every document type through the same naive splitter.
 
-## Use Cases — When to Use It
+## Use Cases — Real Scenarios
 
 - A support chatbot needs to answer questions using your product documentation, which changes
   weekly → RAG, because retraining a model weekly is impractical.
@@ -270,6 +348,24 @@ training job" regardless of how small the change was.
 - An internal search tool needs to let employees find the right internal wiki page using natural
   language rather than exact keyword matches → RAG's retrieval half alone (without necessarily
   generating a synthesized answer) is a legitimate standalone use case.
+- An interior-design marketplace lets shoppers upload a photo of a room and get back visually
+  similar furniture listings → multimodal embeddings mapping both the uploaded photo and every
+  listing photo into the same vector space, with no text extraction step involved at all.
+- A call center wants supervisors to search thousands of hours of recorded calls by topic ("find
+  every call where a customer mentioned cancelling") → Amazon Transcribe converts audio to text
+  first, then the transcript is chunked and embedded exactly like any other text source.
+- A pharmaceutical company's RAG assistant over clinical trial documents performs worse than a
+  similar assistant built over general news articles, using the identical embedding model and
+  chunk size → investigate tokenizer fragmentation of domain-specific drug/compound names before
+  assuming the retrieval architecture itself is at fault.
+- A retailer wants a RAG system that can also filter by `in_stock` and `price` against a live,
+  frequently-updated inventory table in the same query as the similarity search → RDS/Aurora with
+  `pgvector`, chosen specifically for the relational join capability OpenSearch and S3 vector
+  search don't offer.
+- A nonprofit with a small, slow-changing grant-guidelines corpus and no dedicated infrastructure
+  team wants the cheapest possible RAG backend with zero cluster management → Amazon S3 Vector
+  Buckets, accepting a higher latency ceiling than OpenSearch in exchange for near-zero ops
+  overhead and true pay-per-use pricing.
 
 ## When NOT to Use It / Alternatives
 

@@ -174,6 +174,39 @@ from a naive queue setup — without a DLQ, one malformed message can consume wo
 indefinitely (constantly retried, never succeeding, never cleared), silently degrading the whole
 pipeline's throughput exactly like the tight-coupling failures this domain is built to prevent.
 
+## Use Cases — Real Scenarios (these labs' skills applied for real)
+
+- **On-call engineer diagnosing why a backlog of orders isn't being processed.** Lab 1's
+  `ApproximateNumberOfMessages` check is the exact first command a real on-call engineer runs when
+  a team reports "orders seem stuck" — confirming whether the problem is an empty queue (upstream
+  issue) or a growing one (downstream/worker issue) before looking anywhere else.
+- **Startup replacing a fragile, hand-rolled Lambda-calls-Lambda payment workflow.** Lab 2's
+  mini state machine is the pattern a team reaches for the first time they experience "we need to
+  retry step 2 without re-running step 1" — exactly the operational pain Step Functions exists to
+  remove.
+- **Database team explaining to a product manager why reporting queries are slow.** Lab 3's
+  primary/read-replica setup is the live demonstration used in that conversation — pointing the
+  reporting tool at the replica's own endpoint instead of the primary's is often the entire fix.
+- **Platform team building a "broadcast this event to every subscribed team" internal tool.**
+  Lab 4's SNS-fan-out-to-SQS pattern is the exact architecture behind a self-service internal
+  events platform where any team can subscribe their own queue to a shared topic without needing
+  the publishing team's involvement.
+- **Incident postmortem after one malformed message silently clogged a queue for six hours.**
+  Lab 5's dead-letter-queue exercise reproduces the exact failure mode from the postmortem,
+  building the muscle memory to configure a redrive policy *before* that incident happens again
+  rather than after.
+- **Consultant auditing a client's "resilient" architecture that turns out to have no DLQs
+  anywhere.** The capstone lab's combination of a main queue, DLQ, and redrive policy is the
+  concrete checklist item the consultant adds to every subsequent architecture review.
+- **SRE team writing a runbook for "the order-processing queue is backing up" pages.** Lab 1's
+  `ApproximateNumberOfMessages` check and Lab 5's redrive-policy mechanics become the two
+  diagnostic steps the on-call runbook tells a paged engineer to check first, in that order,
+  before escalating further.
+- **Fintech team validating a multi-step payment workflow's retry behavior before launch.** Lab 2's
+  mini state machine is extended into a pre-launch test plan that deliberately fails one step to
+  confirm Step Functions retries it correctly without re-running the already-completed steps —
+  exactly the behavior a production incident would otherwise surface the hard way.
+
 ## Honest limitation
 
 Floci does not simulate true cross-AZ network failure, Route 53 health-check-driven failover, or

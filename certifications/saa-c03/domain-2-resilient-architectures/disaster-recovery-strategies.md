@@ -139,6 +139,42 @@ Standby is the correct answer**, chosen specifically because Pilot Light's typic
 is too close to the stated ceiling to be a safe fit, while Active/Active would be the wrong,
 over-engineered answer for a 30-minute/2-minute requirement that Warm Standby already satisfies.
 
+## Use Cases — Real Scenarios
+
+- **Regional airline's reservation system choosing Warm Standby.** A 4-hour RTO and 10-minute RPO
+  mandate from the board (set after a competitor's multi-day outage made headlines) rules out
+  Backup & Restore outright; the airline runs a minimum-capacity standby fleet continuously in a
+  second Region, scaling to full capacity only when a disaster is declared.
+- **Online brokerage legally required to prove near-zero data loss.** Securities regulators
+  effectively mandate an RPO measured in seconds for trade data, which only Multi-Site Active/
+  Active or a tightly-coupled Warm Standby with synchronous-enough replication can satisfy — Pilot
+  Light's minutes-level RPO is explicitly ruled out during the architecture review.
+- **Regional grocery chain's e-commerce platform accepting a longer RTO to control cost.** Online
+  grocery ordering can tolerate a documented 6-hour outage without major revenue impact (customers
+  shop in-store instead), so the company deliberately chooses Pilot Light over Warm Standby,
+  accepting a slower recovery in exchange for materially lower standing infrastructure cost.
+- **Government unemployment-benefits portal preparing for a legally mandated uptime SLA during
+  a recession.** Anticipating a surge in both traffic and public scrutiny, the agency temporarily
+  upgrades from its normal Pilot Light posture to Warm Standby for the recession's duration, then
+  steps back down once demand normalizes — treating the DR tier itself as seasonally adjustable.
+- **Independent software vendor serving a single enterprise customer with a strict contractual
+  RTO.** The contract specifies a 30-minute RTO penalty clause; the vendor's architecture team uses
+  this doc's ladder to show the customer in writing why Warm Standby (not the cheaper Pilot Light)
+  is the only tier that reliably satisfies the penalty clause's numbers.
+- **Media company's live-sports-streaming platform running Multi-Site Active/Active.** Because a
+  Regional outage during a live, un-repeatable sporting event would be commercially catastrophic
+  (no "we'll just recover it tomorrow" option exists for a live broadcast), the near-zero-RTO cost
+  of full duplicate capacity in two Regions is judged worth it specifically for this workload, while
+  the same company's back-office systems run on cheaper Pilot Light.
+- **Mid-size manufacturer testing its DR plan for the first time in three years.** A scheduled
+  "game day" failover drill discovers the pre-baked AMIs referenced in their Pilot Light runbook
+  are two major OS versions out of date — exposing that an untested DR plan is not a real DR plan,
+  regardless of which rung of the ladder it claims to be on.
+- **Payment processor replicating with DynamoDB Global Tables for a Multi-Site setup.** Rather
+  than hand-rolling cross-Region replication logic, the processor's transaction-ledger table uses
+  DynamoDB Global Tables' built-in multi-Region active-active replication as the data layer
+  underneath its Multi-Site Active/Active application tier.
+
 ## Common Mistakes (what wrong answers look like)
 
 - Treating Multi-AZ as sufficient disaster recovery for a stated "entire Region" outage

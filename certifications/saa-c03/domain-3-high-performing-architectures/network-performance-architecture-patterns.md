@@ -116,6 +116,40 @@ combination.
   Gateway endpoint, shaving the round-trip a NAT Gateway + Internet Gateway path would otherwise
   add.
 
+## Use Cases — Real Scenarios
+
+- **Global SaaS company serving static marketing content plus a dynamic per-tenant API.** The
+  marketing site sits fully behind CloudFront (cacheable); the per-tenant API, which can never be
+  cached because every response differs by customer, rides Global Accelerator instead — the two
+  services deliberately coexisting for two different traffic shapes within the same product.
+- **Online multiplayer game needing a fixed IP for a console manufacturer's network allowlist.**
+  The console platform's firewall requires allowlisting a specific, unchanging IP address, which an
+  ALB cannot provide — the team places an NLB (or Global Accelerator) in front instead, specifically
+  because of the static-IP requirement, not raw throughput.
+- **Payments processor connecting to a bank's data center with a strict uptime SLA.** A primary
+  Direct Connect circuit through one colocation facility is paired with a second Direct Connect
+  circuit through a different facility/provider as the resilient, high-performance path the SLA
+  demands — recognizing that a single DX circuit is itself a single point of failure.
+- **Enterprise with 40 regional office VPCs that used to rely on a growing peering mesh.** As the
+  VPC count crossed into the dozens, the peering mesh's quadratically growing connection count
+  became both a performance-troubleshooting and management burden; migrating to a Transit Gateway
+  hub-and-spoke model simplified routing to one hop per VPC.
+- **API gateway company splitting traffic by path to scale independently.** `/v1/search/*` and
+  `/v1/checkout/*` are routed to separate ALB target groups, each with its own Auto Scaling policy,
+  so a traffic spike on the search path (far more common) doesn't force the checkout path's fleet
+  to scale unnecessarily.
+- **Private cloud-connected manufacturing plant needing predictable, low-jitter control-system
+  latency.** The plant's real-time equipment-control traffic rides a dedicated Direct Connect link
+  rather than a VPN, because the control loop's tolerance for latency variance (not just average
+  latency) rules out the public internet's inherent jitter.
+- **Serverless data-processing pipeline avoiding NAT Gateway latency for S3 access.** Lambda
+  functions in private subnets reach S3 through a Gateway VPC Endpoint rather than a NAT Gateway,
+  shaving a network hop off every invocation — a performance win that happens to also be free.
+- **Streaming analytics company needing millions of requests per second with minimal latency
+  overhead.** An NLB, not an ALB, fronts the ingestion tier specifically because the stated
+  throughput number (millions of req/sec) and latency sensitivity rule out Layer-7 processing
+  overhead that isn't actually needed for this traffic (no path-based routing requirement exists).
+
 ## Common Mistakes
 
 - Choosing Global Accelerator for content that's actually cacheable — CloudFront is both cheaper

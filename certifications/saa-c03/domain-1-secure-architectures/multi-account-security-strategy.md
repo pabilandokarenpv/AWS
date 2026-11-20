@@ -142,6 +142,48 @@ customization of the baseline Control Tower already gave you.
   though even short projects benefit from being born inside an existing Sandbox OU if one already
   exists.
 
+## Use Cases — Real Scenarios
+
+- **Global law firm with 15 regional offices.** Each office's client-matter documents live in its
+  own member account (attorney-client privilege and conflict-of-interest walls enforced at the
+  account boundary, not just folder permissions), while a single management account handles
+  consolidated billing across all 15 — satisfying both the confidentiality requirement and the
+  CFO's desire for one invoice.
+- **Biotech company running clinical trials across multiple pharma sponsors.** Each sponsor's
+  trial data sits in its own account under a "Sponsors" OU with an SCP preventing any cross-sponsor
+  data egress, so a single compromised researcher credential in one trial's account structurally
+  cannot reach a competing sponsor's trial data — a requirement no IAM policy alone could prove to
+  an external auditor.
+- **Gaming company separating "live ops" from "new title development."** The live, revenue-
+  generating game's production account has strict SCPs (no new Region deployment without a change
+  ticket); the Sandbox OU for prototyping new titles allows broad experimentation with only a cost
+  ceiling guardrail — different trust tiers for genuinely different risk profiles.
+- **University IT department managing hundreds of individual research grants.** Control Tower's
+  Account Factory vends a pre-governed, pre-logged account automatically whenever a new grant is
+  approved, instead of IT manually provisioning each one over days — meeting both the speed
+  researchers want and the baseline security posture compliance requires.
+- **Retail bank separating its core banking system from its marketing website.** The marketing
+  site (far lower sensitivity, public-facing, frequently updated by an external agency) sits in a
+  completely separate account from core banking, so a marketing-site compromise (the more exposed,
+  more frequently changed surface) has zero network or IAM path into the banking systems.
+- **Private equity firm managing newly-acquired portfolio companies' AWS footprints.** Each
+  acquisition's existing AWS account is invited into the firm's Organization under a "Portfolio"
+  OU with baseline guardrail SCPs applied immediately, without needing to first migrate or
+  re-architect the acquired company's workloads.
+- **Defense contractor running both unclassified and controlled-unclassified-information (CUI)
+  workloads.** The CUI workload sits in an account with a far stricter SCP set (no public IP
+  addresses permitted anywhere in the account, enforced at the Organization level) than the
+  unclassified side, with IAM Identity Center permission sets kept entirely separate so no
+  engineer's access spans both tiers by default.
+- **Fast-growing SaaS company that outgrew "one big account."** What started as a single account
+  with increasingly complex IAM policies trying to separate dev/staging/prod is migrated into
+  Control Tower with one account per environment — the team reports the actual IAM policies got
+  *simpler*, not more complex, once the account boundary did the separation work instead.
+- **Media conglomerate consolidating billing after years of each subsidiary paying AWS
+  separately.** Bringing all subsidiary accounts under one Organization immediately unlocks
+  shared-tier S3 and Savings Plan discounts across the combined spend, without requiring any
+  subsidiary to migrate a single workload.
+
 ## Why It's Important
 
 **Real-world:** the account boundary is the strongest, least-bypassable isolation AWS offers —

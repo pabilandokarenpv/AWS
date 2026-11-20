@@ -150,6 +150,38 @@ query-optimized shape that a dashboard or API can read quickly and cheaply, whic
 reason the PixelForge Analytics case study in the domain README moves off scanning raw CSV
 directly.
 
+## Use Cases — Real Scenarios (these labs' skills applied for real)
+
+- **IoT platform engineer sizing Kinesis shard count for a new product launch.** Lab 1's
+  shard-iterator/get-records exercise builds the mental model needed to reason about why a
+  consumer "falls behind" the producer when shard count is undersized for the actual write rate.
+- **Startup choosing a DynamoDB billing mode for a brand-new, unproven feature.** Lab 2's
+  on-demand-table exercise is literally the decision a team makes on day one of a new feature with
+  no usage data yet — on-demand first, revisit provisioned once traffic is well understood.
+- **DevOps engineer building the launch-template foundation for a future Auto Scaling group.**
+  Lab 3's launch-template exercise is the exact artifact a real Auto Scaling group references when
+  it scales out — understanding its structure is the prerequisite for tuning any scaling policy
+  later.
+- **Backend engineer implementing cache-aside for the first time.** Lab 4's manual "check cache,
+  fall back to database, populate cache" walkthrough is the mental checklist every cache-aside
+  implementation in a real codebase follows, regardless of language or framework.
+- **Data engineer building their first ingestion-to-query pipeline end to end.** The capstone lab's
+  stream-to-table flow is a miniature version of the exact Kinesis → Glue → S3 → Athena pipeline a
+  real data engineering team stands up when a product manager asks for "a dashboard of what's
+  happening right now."
+- **SRE diagnosing why a Kinesis consumer is falling behind during a traffic spike.** Lab 1's
+  shard-iterator exercise is the exact mental model used to confirm whether the fix is "add more
+  shards" or "fix a slow consumer" — reading the shard iterator and get-records cadence manually
+  once makes the automated CloudWatch alarm's meaning obvious afterward.
+- **Growth team deciding whether a new feature's DynamoDB table should start on-demand.** Lab 2's
+  provisioned-vs-on-demand comparison is run as a literal bake-off before a feature launch,
+  with the team defaulting to on-demand for the first month and only moving to provisioned once
+  real traffic data from that first month exists to size it against.
+- **Platform engineer onboarding new hires to the cache-aside pattern.** Lab 4's manual "check
+  cache, fall back to database, populate cache" walkthrough is used as a short onboarding exercise
+  for every new backend hire, specifically because the pattern is simple to state but easy to
+  implement with a subtle bug (e.g., forgetting the TTL) the first time.
+
 ## Honest limitation
 
 Floci does not model real network latency, true multi-shard Kinesis throughput limits, or

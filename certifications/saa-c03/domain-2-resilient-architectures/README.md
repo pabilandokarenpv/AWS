@@ -165,6 +165,40 @@ This is Task 2.2's most expensive, fastest-recovery answer — included here so 
 directly against the Backup/Pilot Light/Warm Standby ladder in `disaster-recovery-strategies.md`
 rather than treating it as an unrelated, separate fact.
 
+## How This Domain's Services Work Together (End-to-End Walkthrough)
+
+Trace one complete order through a resilient e-commerce platform, the same continuous story the
+two diagrams above are each a partial view of. A customer on their phone taps "place order."
+(1) **Route 53** has already resolved the app's domain to the healthy Region/endpoint — if this
+were a disaster-recovery drill, this is the exact point where Route 53's health check would have
+silently redirected the customer to a standby Region instead, with no visible difference to them.
+(2) The request reaches an **ALB** that spans two Availability Zones; it happens to land on an
+**ECS task running in AZ-A**, one of several identical tasks an **Auto Scaling group** keeps
+running across both AZs. (3) That app task does the one thing that genuinely must happen
+synchronously before the customer can be told "order placed" — it writes the order record to the
+**RDS primary**, which is running Multi-AZ, meaning a synchronous standby in AZ-B is already
+holding an identical copy of that write, ready to take over automatically if AZ-A's primary ever
+fails, with zero data loss and no human intervention. (4) Everything else about this order —
+sending a confirmation email, updating the recommendation engine, notifying the warehouse — does
+not need to happen before the customer gets their "order placed" response, so the app task
+**enqueues each of those as a message in SQS** and immediately returns 200 OK to the client. (5)
+Separately and independently, a **worker fleet** (its own Auto Scaling group, scaling purely on
+SQS queue depth, not CPU) polls that queue whenever it's ready, processes each message, and only
+deletes it from the queue after successfully completing the work — so if a worker crashes mid-task,
+the message simply becomes visible again for another worker to pick up, losing no work. (6) A
+read-heavy reporting dashboard elsewhere in the company queries this same order data constantly,
+but it's pointed at a separate **asynchronous read replica**, not the primary — keeping reporting
+load from ever competing with the synchronous order-writing path for the same database capacity.
+(7) Nightly, **AWS Backup** takes a scheduled snapshot of the primary and replicates a copy
+cross-Region — the deliberate, planned disaster-recovery layer that exists entirely separately
+from the automatic, routine Multi-AZ failover in step 3; losing one AZ is handled by step 3 alone,
+in seconds, with no human decision, while losing the entire Region is the scenario this backup
+copy (and the standby Region infrastructure it feeds) is sized to recover from, on a much longer,
+deliberately-chosen timeline. That single order touches scalability/loose coupling (ALB, Auto
+Scaling, SQS, worker fleet) and availability/fault tolerance (Multi-AZ RDS, Route 53 health checks,
+cross-Region backup) simultaneously — which is exactly why Domain 2's two task statements, while
+conceptually distinct, show up together in nearly every real request.
+
 ## Full Worked Case Study: StreamVista Media — Scaling a Monolith Into a Resilient System
 
 **Company requirements.** StreamVista runs a video-on-demand platform currently as a single EC2
@@ -211,6 +245,49 @@ Warm Standby's already-running minimum fleet removes that risk at a known, bound
 Multi-Site Active/Active was rejected because it roughly doubles standing compute cost for a
 requirement (4-hour RTO, not near-zero) that Warm Standby already satisfies — a textbook
 "don't over-engineer past the stated requirement" lesson the exam rewards.
+
+## Use Cases — Real Scenarios
+
+- **Airline booking platform decoupling seat-hold from payment processing.** When a customer
+  selects a seat, the hold is written synchronously (must be instant, must prevent double-booking);
+  the loyalty-points calculation, email itinerary, and partner-airline codeshare notification all
+  move through SQS, so a slow codeshare-partner API never makes seat selection feel sluggish.
+- **Food delivery app's driver-assignment system surviving a restaurant-partner API outage.**
+  Order placement and payment stay synchronous and fast; "notify the restaurant's POS system" goes
+  through SQS with a dead-letter queue, so a restaurant's flaky point-of-sale integration being down
+  for an hour delays only that restaurant's order notifications, not the entire platform's checkout.
+- **Regional hospital system's patient-portal database surviving a routine AZ maintenance
+  event.** RDS Multi-AZ promotes the standby automatically during a planned AWS maintenance window,
+  and because the application already reconnects via the same DB endpoint, patients scheduling
+  appointments at 2am never notice the failover happened.
+- **Streaming service rolling out a new Region for European users.** Rather than one single global
+  Region absorbing both US and EU traffic (adding transatlantic latency for EU users and
+  concentrating all risk in one Region), the service deploys Multi-Region active/active with Route
+  53 latency-based routing, so a US-Region outage never affects EU subscribers at all.
+- **Insurance claims-processing company recovering from a declared regional AWS outage.** Their
+  documented Pilot Light strategy — a continuously-replicated Aurora cross-Region read replica plus
+  pre-baked AMIs for the claims-processing app tier — is activated during an actual Regional event,
+  and the team hits their 45-minute RTO target because the data layer was already warm.
+- **B2B SaaS company's reporting dashboard overwhelming its production OLTP database.** A read
+  replica is added specifically for the reporting service's queries, immediately removing reporting
+  load from the primary that handles live customer transactions, with zero changes to the write
+  path.
+- **Concert ticketing platform surviving an on-sale traffic spike for a sold-out stadium show.**
+  SQS buffers the burst of "attempt purchase" requests; a worker fleet scales out based on queue
+  depth, processing purchases at a sustainable rate instead of the database connection pool being
+  overwhelmed by tens of thousands of simultaneous synchronous write attempts.
+- **Logistics company's package-tracking event pipeline reacting to the same scan event from
+  multiple internal teams.** A single "package scanned" event published to EventBridge is
+  independently consumed by the customer-notification team, the analytics team, and the fraud-
+  detection team — each new consumer added later with zero change to the scanning service itself.
+- **Online learning platform's video-processing pipeline recovering from a worker crash mid-
+  transcode.** Because transcoding jobs are SQS-queued rather than directly invoked, a worker
+  instance that crashes mid-job simply returns the message to visibility after its timeout, and a
+  healthy worker picks it back up — no lost uploads, no manual re-queue needed.
+- **Regional grocery chain's order-fulfillment system choosing Warm Standby over Pilot Light.**
+  Given a stated 20-minute RTO requirement — tighter than Pilot Light's typical tens-of-minutes
+  recovery window — the architecture team specifically selects Warm Standby's already-running
+  minimum fleet, accepting its higher idle cost as the price of reliably meeting the tighter number.
 
 ## Common exam scenarios
 

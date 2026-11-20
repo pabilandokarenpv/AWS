@@ -202,6 +202,45 @@ This mini-case maps directly onto "Key Decision Points" above — recognizing wh
 genuinely synchronous (steps that must complete before responding) versus which can be deferred
 (everything else) is the actual skill Task 2.1 tests.
 
+## Use Cases — Real Scenarios
+
+- **Food delivery marketplace fanning out an "order placed" event to five independent teams.**
+  The payments team, the restaurant-notification team, the courier-dispatch team, the loyalty-
+  points team, and the fraud-detection team all subscribe to the same EventBridge event
+  independently — a sixth team can be added next quarter with zero change to the order service.
+- **Online learning platform decoupling video upload from transcoding.** An instructor's raw video
+  upload completes instantly from their perspective (synchronous S3 PUT); the actual transcoding
+  into multiple resolutions happens via an SQS-queued worker fleet that auto-scales with the queue,
+  so a flood of uploads during a course launch never makes individual uploads feel slow.
+- **Insurance company processing claims through a multi-step approval workflow.** "Validate claim
+  → check fraud score → route to adjuster → await adjuster decision → disburse or deny" is modeled
+  as a Step Functions state machine with built-in retries and a human-approval wait state, replacing
+  what used to be a fragile chain of Lambda functions calling each other directly.
+- **Ride-sharing app buffering surge-pricing recalculation during a sudden demand spike.** Ride
+  requests themselves stay synchronous and fast; the computationally heavier surge-pricing model
+  recalculation is decoupled onto SQS so a citywide event (concert letting out) doesn't slow down
+  the core "request a ride" flow even as pricing briefly uses slightly stale surge multipliers.
+- **B2B logistics platform integrating with dozens of partner carriers' APIs of wildly varying
+  reliability.** Each carrier integration lives behind its own SQS queue with its own dead-letter
+  queue and retry policy, so one carrier's API having a bad day never backs up shipments destined
+  for a different, healthy carrier.
+- **News publisher's comment-moderation pipeline.** A posted comment is saved instantly (synchronous
+  write, fast user experience); automated toxicity scoring and the "notify moderators of flagged
+  content" step both happen asynchronously via EventBridge, decoupling the publishing experience
+  from the (occasionally slow, ML-model-backed) moderation pipeline.
+- **IoT smart-thermostat manufacturer processing millions of device telemetry events.** Device
+  readings publish into EventBridge; a "software update available" rule routes only devices on an
+  old firmware version to an update-notification service, while a separate "anomaly detected" rule
+  routes unusual readings to a support-alert service — one event stream, multiple independently
+  evolving downstream consumers.
+- **Healthcare scheduling platform separating appointment booking from reminder SMS delivery.**
+  Booking an appointment is synchronous; scheduling the 24-hours-before SMS reminder goes through
+  SQS with a delay, so a third-party SMS provider outage delays reminders, never bookings.
+- **Enterprise HR SaaS company's payroll-run orchestration.** "Calculate gross pay → apply tax
+  withholding → run compliance checks → disburse via ACH → generate pay stubs" runs as a Step
+  Functions workflow with an explicit rollback branch if the compliance-check step fails, rather
+  than a monolithic payroll script that's difficult to partially retry.
+
 ## Why It's Important
 
 **Exam mapping:** SAA-C03 Domain 2, Task 2.1 is built entirely around this synthesis — "scalable

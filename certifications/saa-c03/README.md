@@ -189,6 +189,77 @@ treating any other domain's keywords as constraints narrowing the answer, not se
 6. [`practice-questions/`](practice-questions) once all four domains are covered, to stress-test
    recall across mixed-domain scenarios the way the real exam mixes them
 
+## Use Cases — Real Scenarios (seeing all four domains applied together)
+
+The exam always tests one domain's lens at a time, but real architecture decisions pull from all
+four at once — these ten vignettes show the same kind of full-stack thinking the domain-level
+"Full Worked Case Study" sections go into individually, but zoomed out to where a company's single
+business requirement touches Security, Resilience, Performance, and Cost simultaneously.
+
+1. **Regional hospital network migrating off on-prem.** A 12-hospital group moving patient
+   records to AWS needs HIPAA-eligible encryption and account isolation per facility (Domain 1),
+   a documented 4-hour RTO for its records system (Domain 2), sub-second chart lookup during ER
+   admission (Domain 3), and a capped monthly spend the board already approved (Domain 4) — the
+   same KMS-encrypted, Multi-AZ Aurora cluster behind ElastiCache, in its own account per facility
+   under one Organization, Warm Standby in a second Region, Reserved Instance baseline pricing.
+2. **Seed-stage fintech building its first production app.** A 6-person payments startup needs
+   PCI-DSS-aligned network isolation (Domain 1) without the overhead of a full landing zone yet,
+   basic Multi-AZ resilience (Domain 2) rather than multi-Region (too expensive for their stage),
+   acceptable (not maximal) performance (Domain 3), and near-zero idle cost (Domain 4) — pointing
+   to a single well-structured account with a three-tier VPC, RDS Multi-AZ, and serverless compute
+   (Lambda/Fargate) rather than a standing EC2 fleet.
+3. **National retailer's Black Friday readiness review.** Security team mandates WAF/Shield
+   Advanced ahead of the traffic spike (Domain 1); the resilience team mandates an Auto Scaling
+   group that's already warmed up before the spike, not reacting to it (Domain 2); the performance
+   team mandates CloudFront + ElastiCache in front of the catalog service (Domain 3); the finance
+   team mandates Spot-backed burst capacity above a Savings-Plan-covered baseline so Black Friday
+   doesn't 10x the November bill (Domain 4) — all four requirements land on the identical ALB/ASG/
+   ElastiCache/Aurora stack, just reviewed by four different teams in the same planning meeting.
+4. **University research lab's genomics pipeline.** Needs each grant-funded project's data
+   isolated in its own account for audit purposes (Domain 1), no resilience requirement beyond
+   "don't lose data mid-run" because compute jobs are naturally re-runnable (Domain 2, explicitly
+   a non-requirement here), maximum throughput for EMR/Glue batch processing (Domain 3), and Spot-
+   backed compute since jobs checkpoint and tolerate interruption (Domain 4) — a case where
+   Domain 2's usual answer (Multi-AZ, DR) is correctly *absent* because the workload's own
+   re-runnability substitutes for infrastructure-level resilience.
+5. **Insurance company's quarterly actuarial reporting.** Strict least-privilege IAM roles per
+   analyst team (Domain 1), no real-time availability requirement since reports run monthly
+   (Domain 2 mostly irrelevant here), Redshift/Athena tuned for large complex joins across years of
+   claims data (Domain 3), and S3 Glacier Deep Archive for the 15 years of historical claims data
+   regulators require retained but that's never queried directly (Domain 4) — illustrating that not
+   every workload touches every domain with equal weight.
+6. **Gaming studio launching a global multiplayer title.** Cognito-backed player authentication and
+   DDoS protection at the edge given gaming is a common attack target (Domain 1), multi-Region
+   active/active for near-zero downtime during a launch weekend (Domain 2), Global Accelerator for
+   the non-cacheable, latency-sensitive UDP game traffic (Domain 3), and a mixed Spot/On-Demand
+   fleet for the inherently bursty launch-week traffic curve (Domain 4) — a case where Domain 2's
+   most expensive option (active/active) is actually justified by the stated near-zero-downtime
+   launch requirement, not over-engineering.
+7. **Logistics company's IoT fleet-tracking platform.** Device certificates and least-privilege IoT
+   policies per truck (Domain 1), the system must keep accepting location pings even if one AZ's
+   ingestion path fails (Domain 2), Kinesis Data Streams sized correctly for thousands of trucks'
+   location updates per second (Domain 3), and DynamoDB on-demand billing because truck activity
+   (and therefore write volume) swings hugely by time of day (Domain 4).
+8. **Media company's video-on-demand catalog.** Signed CloudFront URLs so only paying subscribers
+   can stream content (Domain 1), origin failover group so a single S3 origin outage doesn't take
+   down playback (Domain 2), CloudFront edge caching for the actual video performance (Domain 3),
+   and S3 Intelligent-Tiering for a catalog whose long-tail titles have genuinely unpredictable
+   viewing spikes when older content suddenly trends (Domain 4).
+9. **Government agency's citizen-facing benefits portal.** FedRAMP-aligned account structure and
+   mandatory MFA for all staff access (Domain 1), the portal legally cannot be down during
+   open-enrollment season so Pilot Light DR is upgraded to Warm Standby for that window only
+   (Domain 2), read replicas added ahead of the predictable enrollment-season traffic spike
+   (Domain 3), and the Warm Standby fleet is scaled back down to Pilot Light once enrollment season
+   ends to stop paying for standby capacity the rest of the year (Domain 4) — showing that the
+   Domain 2/4 tradeoff can be a *seasonal*, not permanent, architecture decision.
+10. **SaaS startup consolidating after acquiring a smaller competitor.** Merging the acquired
+    company's AWS account into the parent's AWS Organization under its own OU with inherited SCPs
+    (Domain 1), reconciling the acquired product's single-AZ database into the parent's Multi-AZ
+    standard before the next renewal (Domain 2), right-sizing the acquired product's over-
+    provisioned EC2 fleet using Compute Optimizer before deciding on any purchasing commitment
+    (Domain 3 and 4 together) — a realistic scenario where a Domain 1 action (account structure)
+    is the very first step that makes every later domain's cleanup possible.
+
 ## Common Exam-Day Pitfalls (across all domains)
 
 - **Picking the most "advanced-sounding" service** instead of the right-sized one for the stated

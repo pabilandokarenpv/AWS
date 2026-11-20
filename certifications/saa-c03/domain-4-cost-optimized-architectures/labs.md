@@ -145,6 +145,42 @@ domain's four task statements (4.1 storage, 4.2 compute, 4.3 database, 4.4 netwo
 together to one system, the same synthesis the domain README's case study walks through in
 narrative form.
 
+## Use Cases — Real Scenarios
+
+- **Mid-size retailer's year-one cost optimization pass.** The quarterly cost review mandated by a
+  new CFO closely mirrors this folder's GreenLedger Logistics case study — a storage lifecycle
+  audit, a compute purchasing-model review, a database engine/billing-mode check, and a NAT
+  Gateway/VPC-endpoint network review, run as one coordinated pass rather than four separate
+  projects.
+- **Startup preparing its AWS bill for investor due diligence.** Ahead of a funding round, the
+  founding engineer runs through exactly this labs.md checklist — lifecycle policies, billing
+  modes, VPC endpoints, orphaned volumes — to be able to tell investors confidently that spend is
+  deliberately managed, not simply "whatever it ended up being."
+- **Agency managing cost across a dozen client AWS accounts.** The same five-lab pattern (storage
+  tiering, billing-mode review, endpoint configuration, EBS cleanup, consolidated audit) is run as
+  a standardized monthly checklist against every client account, rather than being reinvented per
+  client.
+- **New cloud engineer's first assigned ticket: "why is our AWS bill so high."** Working through
+  these labs in order mirrors the actual diagnostic path a junior engineer is coached through —
+  check storage tiering first (often the biggest easy win), then database billing mode, then
+  network routing, then orphaned resources.
+- **Finance team requesting monthly evidence that cost-optimization recommendations were actually
+  implemented, not just identified.** The capstone lab's final "audit complete" checklist format is
+  the exact structure a FinOps team uses to report back to finance that each flagged item was
+  resolved, not merely acknowledged.
+- **SaaS company standardizing a quarterly FinOps review around this exact checklist.** What began
+  as an ad-hoc cost cleanup becomes a recurring calendar item — Lab 1 through Lab 4's four checks,
+  run in the same order every quarter, so cost drift (a new NAT-routed service, a forgotten EBS
+  volume) gets caught within three months instead of accumulating silently for a year.
+- **Non-profit stretching a limited annual AWS credit grant across a full fiscal year.** With a
+  fixed, non-renewable credit balance, the organization runs Lab 1's lifecycle policy and Lab 2's
+  billing-mode review every month rather than once, since every dollar saved directly extends how
+  long the grant covers the organization's operations.
+- **Solo consultant auditing a legacy AWS account inherited from a previous developer.** With no
+  documentation to go on, the consultant runs this file's five labs in order against the real
+  account as a fast, structured first pass — surfacing a dormant NAT Gateway, an unmonitored
+  provisioned DynamoDB table, and a stack of orphaned EBS volumes within the first afternoon.
+
 ## Honest limitation
 
 Floci does not model actual AWS billing, Spot interruption behavior, or Reserved

@@ -128,6 +128,64 @@ disambiguator: if the question is about a *developer* using a tool to write/test
 code, it's the first column; if it's about an *application feature* built on a generative AI
 model that end users interact with, it's the second.
 
+## Use Cases — Real Scenarios
+
+Cross-domain scenarios showing how the four domains actually interact on one piece of real work —
+useful because most real sprints (and the exam's harder scenario questions) don't stay inside one
+domain's task statements:
+
+1. **App type:** Flash-sale e-commerce checkout. **Requirement:** absorb a 50x traffic spike,
+   never lose an accepted order, never double-charge on retry. **Cross-domain path:** Domain 1
+   picks DynamoDB + conditional writes for the data layer, Domain 2 secures the execution role and
+   encrypts order data at rest, Domain 3 ships it via blue/green with an alarm-based rollback, and
+   Domain 4 instruments it with X-Ray/custom metrics *before* the sale, not after a 2am incident.
+2. **App type:** B2B SaaS support chatbot on Bedrock, multi-tenant. **Requirement:** tenant
+   isolation, no training-data leakage, auditable chatbot interactions. **Cross-domain path:**
+   Domain 1 builds the Lambda orchestrator calling Bedrock, Domain 2's Task 2.3 scopes IAM/VPC
+   endpoints/Guardrails around it, Domain 3 gates any change to the agent's action groups behind a
+   human approval, Domain 4's observability doc governs what's safe to log from the model's I/O.
+3. **App type:** Regulated healthcare records API migrating off a legacy monolith.
+   **Requirement:** encrypt everything at rest with an auditable key, keep Lambda inside a private
+   VPC reaching an existing RDS instance, and prove compliance after the fact.
+   **Cross-domain path:** Domain 1's VPC-attached Lambda pattern, Domain 2's KMS CMK + key policy,
+   Domain 3's template-validated IaC deployment, Domain 4's CloudTrail/Config pairing for the
+   compliance audit trail.
+4. **App type:** Containerized checkout microservice CI/CD pipeline. **Requirement:** every merge
+   to `main` deploys automatically, but nothing destructive reaches production without a human
+   approval informed by an AI risk summary. **Cross-domain path:** this is almost entirely Domain
+   3, but the AI-risk-summary step is the Domain-1-cross-cutting "AI-assisted development" pattern
+   showing up inside a Domain 3 pipeline — recognizing that overlap is exactly what the repo's
+   "two cross-cutting topics" table above is for.
+5. **App type:** Clickstream analytics platform with an AI-generated anomaly summary.
+   **Requirement:** ingest a high-throughput event stream, detect anomalies, and let an AI tool
+   propose a likely cause without a human blindly trusting it. **Cross-domain path:** Domain 1's
+   Kinesis ingestion pattern, Domain 4's X-Ray Insights/CloudWatch anomaly detection, and the
+   "AI proposes, human verifies" rule from the cross-cutting AI-assisted-development doc gating
+   whether the proposed cause gets acted on.
+6. **App type:** Internal AI coding assistant rollout across an engineering org. **Requirement:**
+   speed up development without creating a new security or compliance blind spot.
+   **Cross-domain path:** Domain 1's AI-assisted-development doc covers the workflow (generation,
+   review, test-gen), while Domain 2's Task 2.3 doc covers a *different* risk entirely if that same
+   assistant is itself acting as an agent with AWS access — the repo's disambiguator table exists
+   specifically because this pairing gets confused on first read.
+7. **App type:** Legacy inventory system's first serverless feature. **Requirement:** a new Lambda
+   function must reach an existing private-subnet RDS instance, ship through the same pipeline as
+   everything else, and be debuggable like every other function once live. **Cross-domain path:**
+   Domain 1's VPC-attached Lambda, Domain 3's externalized-config pattern so the new function
+   fits the existing promotion pipeline, Domain 4's instrumentation checklist applied on day one
+   instead of retrofitted after the first incident.
+8. **App type:** Cost-conscious scale-up reviewing its serverless bill. **Requirement:** cut cost
+   without regressing latency or breaking the deployment pipeline's existing safety nets.
+   **Cross-domain path:** Domain 4's memory/duration cost math identifies the lever, Domain 3's
+   CI/CD pipeline deploys the memory-size change through the same validated, rollback-protected
+   path as any other change — a reminder that even a Domain-4 "optimization" still goes through
+   Domain 3's deployment discipline, not a one-off console edit.
+9. **App type:** Prospective DVA-C03 candidate planning study time. **Requirement:** 65 questions,
+   130 minutes, four domains of uneven weight (30/26/22/22). **Cross-domain path:** the Study
+   order section below sequences the domains so each one's prerequisite knowledge (IAM vocabulary,
+   the data stores Domain 2 secures, the code Domain 3 deploys) is already in place before you
+   reach the domain that assumes it.
+
 ## How to use this repo day to day
 
 ```mermaid

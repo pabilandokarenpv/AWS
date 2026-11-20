@@ -121,6 +121,43 @@ on top of keeping the traffic off the public-facing Internet Gateway path entire
   — any architectural change that keeps traffic inside AWS (endpoints, same-Region replication,
   CloudFront caching) is reducing exposure to that most expensive tier specifically.
 
+## Use Cases — Real Scenarios
+
+- **SaaS analytics company's NAT Gateway bill dominated by S3 traffic.** Adding a free S3 Gateway
+  Endpoint removes nearly the entire NAT Gateway data-processing charge overnight, since almost all
+  of that traffic was the app tier reading/writing S3 objects that never needed to transit a NAT
+  Gateway at all.
+- **Enterprise consolidating a sprawling VPC-peering mesh connecting 25 regional offices.** What
+  had grown into dozens of individual peering connections (each one a separate thing to manage and
+  troubleshoot) is replaced with a single Transit Gateway hub, cutting both the management overhead
+  and, at that VPC count, the aggregate cost of the connectivity itself.
+- **Manufacturing company choosing between Direct Connect and VPN for a new factory's connection.**
+  A smaller, newly-acquired factory with modest, intermittent data needs connects via Site-to-Site
+  VPN rather than paying for a dedicated Direct Connect circuit whose fixed port-hour cost wouldn't
+  be justified by that factory's actual traffic volume.
+- **Media company reducing cross-AZ data transfer charges for a chatty microservices
+  architecture.** A review finds two frequently-communicating services deliberately split across
+  AZs purely out of habit, racking up continuous cross-AZ transfer charges with no real availability
+  benefit for that specific service pair — consolidating them into the same AZ (where the
+  availability requirement genuinely permits it) removes that recurring cost.
+- **Logistics platform replacing NAT-routed SNS publishing with an Interface Endpoint.** Lambda
+  functions publishing frequently to SNS from private subnets switch to an SNS Interface Endpoint,
+  which costs a small hourly-plus-per-GB fee but still comes in cheaper than the NAT Gateway path
+  it replaces, while also keeping that traffic off the public-facing Internet Gateway route.
+- **Global retailer auditing its single biggest network cost line item.** A Cost Explorer deep-dive
+  finds NAT Gateway data processing is the single largest network charge, traced to both S3 traffic
+  (fixed with a free Gateway Endpoint) and SQS polling traffic from a dozen Lambda functions (fixed
+  with an SQS Interface Endpoint) — two fixes addressing what looked like one problem.
+- **Startup initially over-engineering with Direct Connect before it had the traffic volume to
+  justify it.** An early-stage company paying for a Direct Connect circuit sized for traffic it
+  hadn't yet grown into switches back to Site-to-Site VPN, reversing the decision once the numbers
+  showed the dedicated circuit's fixed cost wasn't yet paying for itself.
+- **Telehealth platform revisiting its NAT Gateway bill after a second-Region expansion.** Standing
+  up a Warm Standby DR Region (per Domain 2's disaster-recovery framework) doubled NAT Gateway
+  spend overnight, since the standby Region's app tier was wired up the same way as production —
+  adding Gateway Endpoints in the new Region at launch time, instead of discovering the gap months
+  later, keeps the DR Region from silently costing more per byte than production for no benefit.
+
 ## Common Mistakes
 
 - Routing all private-subnet traffic to AWS services through a NAT Gateway without checking

@@ -103,6 +103,41 @@ tested skill, not memorizing family names.
   compatible workloads — a scenario optimizing for both cost and performance simultaneously, with
   a workload that can run on ARM, often points here.
 
+## Use Cases — Real Scenarios
+
+- **Video-rendering studio's nightly batch farm.** Hundreds of rendering jobs are CPU-bound and
+  run on a fleet of C-family instances orchestrated by AWS Batch with Spot-backed compute
+  environments, since each frame-rendering job is independently retriable and tolerant of
+  interruption.
+- **Real-time fraud-detection service needing consistently fast response under bursty load.** A
+  Lambda function backed by Provisioned Concurrency keeps execution environments warm so a sudden
+  burst of transactions never experiences a cold-start latency spike during the exact moment fraud
+  detection matters most.
+- **In-memory analytics engine for a hedge fund holding a full day's market data in RAM.** An
+  R-family (memory-optimized) instance is selected specifically because CloudWatch shows memory
+  utilization pegged near capacity while CPU sits comfortably underused — the textbook memory-bound
+  signature.
+- **HPC weather-simulation cluster needing the lowest possible inter-node latency.** A cluster
+  placement group packs the simulation's tightly-coupled nodes physically close together within one
+  AZ, accepting the fault-isolation tradeoff because the simulation itself is checkpointed and
+  restartable if the (unlikely) single-AZ failure occurs.
+- **Multi-tenant SaaS platform isolating a small number of dedicated-tier customers' instances.**
+  A spread placement group ensures each of these customers' critical instances lands on genuinely
+  distinct underlying hardware, so a single hardware failure can never simultaneously take down
+  more than one premium customer's instance.
+- **Mobile backend API migrating from EC2 to Fargate to remove patching overhead.** The team was
+  spending significant engineering time on EC2 AMI patching for a containerized API that didn't
+  need custom kernel tuning or GPU access — moving to ECS on Fargate removes the server-management
+  layer entirely while keeping the same container images.
+- **ARM-compatible microservice fleet cutting costs via Graviton.** A stateless Java microservice,
+  already confirmed compatible with ARM, is migrated from `m5` to `m7g` (Graviton) instances,
+  improving price-performance without any architecture change — a direct Task 3.2 lever that's also
+  a Domain 4 win.
+- **Retailer's checkout service missing failing instances under its old health-check setup.** EC2
+  status checks showed instances as healthy while the application itself was returning 500 errors
+  under load; switching the Auto Scaling group to ELB (application-aware) health checks let it
+  correctly detect and replace the failing instances instead of leaving them in rotation.
+
 ## Common Mistakes
 
 - Defaulting to a bigger general-purpose instance instead of diagnosing whether the bottleneck is

@@ -214,6 +214,58 @@ flowchart TD
   environment — the exact same container image runs in staging and production, with the
   environment-appropriate config injected at runtime rather than baked into two different images.
 
+## Use Cases — Real Scenarios
+
+Concrete developer/DevOps situations where Task 3.1/3.2/3.3 decisions actually get made, with app
+type / requirement / implementation decision spelled out:
+
+1. **App type:** Multi-environment SaaS API (dev/staging/prod on the same codebase).
+   **Requirement:** the exact same tested build must be promotable across all three environments
+   without a rebuild, and a config mistake in one environment must not be able to leak into
+   another. **Decision:** build one immutable container image tagged with the commit SHA, and
+   read all environment-specific values (DB host, feature flags) from Parameter Store/Secrets
+   Manager keyed by environment at container startup — never bake config into the image.
+2. **App type:** Payments microservice on ECS Fargate. **Requirement:** a bad deployment must be
+   undoable within seconds, even if that means briefly running double capacity.
+   **Decision:** blue/green deployment via CodeDeploy using a second ALB target group — the only
+   one of the three strategies with a true instant full-rollback flip point, worth the temporary
+   duplicate-capacity cost for a payments-critical path.
+3. **App type:** High-traffic content API serving millions of daily reads. **Requirement:** limit
+   the blast radius of a bad deploy to a small percentage of real users before committing to a
+   full rollout, without provisioning a complete duplicate environment. **Decision:** canary
+   deployment (e.g. `LambdaCanary10Percent5Minutes`), accepting a smaller resource overhead than
+   blue/green in exchange for a built-in automatic "pause and evaluate" step.
+4. **App type:** Internal cost-sensitive batch-processing service. **Requirement:** deploy safely
+   but without justifying the expense of a duplicate environment for every release.
+   **Decision:** rolling deployment — slower to roll back (instance by instance, no single flip
+   point) but no extra capacity cost, an acceptable tradeoff for a non-customer-facing workload
+   that can tolerate a brief mixed-version window.
+5. **App type:** Regulated fintech deployment pipeline. **Requirement:** no infrastructure change
+   can reach production without both an automated template-validation check and a documented human
+   sign-off, even when an AI tool says the diff is low-risk. **Decision:** `cdk diff`/`sam validate`
+   runs in the CodeBuild stage as a hard gate, and a CodePipeline manual approval action (informed
+   by, but not replaced by, an AI risk summary) gates the deploy stage.
+6. **App type:** Team migrating a monolith's first feature to serverless. **Requirement:** write
+   automated tests for a new Lambda handler without needing a live API Gateway, DynamoDB table, or
+   deployed stack just to exercise the handler's logic. **Decision:** hand-crafted/console-template
+   test events plus `sam local invoke`, so the handler's parsing/response-shaping logic is verified
+   entirely locally before anything is deployed.
+7. **App type:** Container-based checkout service (see the full case study above).
+   **Requirement:** an automatic rollback must trigger on a genuine production error spike, not
+   just when a deployment script itself fails to run. **Decision:** associate a CloudWatch alarm
+   (5xx rate over a 5-minute window) with the CodeDeploy deployment group specifically — the
+   deployment-failure trigger alone wouldn't catch "deployed fine, now erroring in production."
+8. **App type:** Platform team standardizing Lambda packaging across 40 functions.
+   **Requirement:** stop every team from committing different versions of the same third-party
+   SDK, bloating deployment packages and causing version drift. **Decision:** a shared Lambda
+   layer for the common dependency, versioned centrally, so updating it once propagates to every
+   function on their next deploy rather than 40 separate dependency bumps.
+9. **App type:** Image-processing pipeline moving from Lambda zip packaging to containers.
+   **Requirement:** old, untagged, or vulnerability-flagged container images must be purged
+   automatically instead of accumulating in ECR indefinitely. **Decision:** an ECR lifecycle
+   policy expiring untagged images after N days, combined with scan-on-push, rather than a
+   manual cleanup script someone has to remember to run.
+
 ## Task 3.2 in practice: validating before you ever deploy
 
 Three concrete validation techniques the exam expects you to recognize by behavior, not just name:

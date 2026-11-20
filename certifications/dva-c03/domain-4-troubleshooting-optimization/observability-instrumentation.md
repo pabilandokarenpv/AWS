@@ -149,6 +149,57 @@ def handler(event, context):
 - Filtering traces by a specific business dimension (customer ID, order ID, feature flag) using
   annotations, when "show me every slow trace for this one customer" is a real support question.
 
+## Use Cases — Real Scenarios
+
+Concrete developer situations where Task 4.1/4.2 instrumentation decisions actually get made, with
+app type / requirement / implementation decision spelled out:
+
+1. **App type:** Multi-service checkout flow (API Gateway → Lambda → DynamoDB → external payment
+   gateway). **Requirement:** find out which of four hops is adding the most latency during a
+   reported slowdown, without manually cross-referencing four separate CloudWatch log groups by
+   timestamp. **Decision:** enable active X-Ray tracing on every hop and read the resulting service
+   map's per-node latency, rather than relying on raw logs to reconstruct cross-service timing.
+2. **App type:** Customer-support tooling team. **Requirement:** a support agent needs to pull up
+   every slow trace for one specific customer's account when they file a complaint, not just
+   "traces from around that time." **Decision:** tag the relevant subsegment with a `customerId`
+   annotation (not metadata) at write time, so traces become filterable by that field later.
+3. **App type:** Order-processing Lambda function with no current logging discipline.
+   **Requirement:** during the *next* incident, be able to reconstruct one failing request's full
+   story across every log line it touched, not just whichever error message happened to get
+   printed. **Decision:** add a correlation/request ID to every structured JSON log line now,
+   before any incident happens — instrumentation has to exist in advance, it can't be retrofitted
+   onto an incident already in progress.
+4. **App type:** Internal analytics service reporting business-specific failures (e.g. "payment
+   declined" vs. generic 500s). **Requirement:** know *how often* a specific business failure mode
+   is occurring, distinct from generic invocation/error counts Lambda already reports by default.
+   **Decision:** emit a custom CloudWatch metric (e.g. `PaymentFailures`) from application code via
+   `PutMetricData` or the embedded metric format — default Lambda metrics don't know what a
+   "payment failure" means to this specific business.
+5. **App type:** Team debugging a trace with an unexplained gap between two services that should
+   be connected. **Requirement:** figure out why a downstream third-party API call never shows up
+   as a segment in the trace at all. **Decision:** confirm whether the downstream service runs its
+   own X-Ray instrumentation (or at minimum honors the propagated `X-Amzn-Trace-Id` header) — X-Ray
+   can't retroactively trace a hop that never reported data, regardless of how the calling side is
+   configured.
+6. **App type:** High-volume public API (millions of requests/day). **Requirement:** some requests
+   that clearly errored according to CloudWatch Metrics have no matching X-Ray trace at all, and
+   the on-call engineer needs to know if that's a bug. **Decision:** check the sampling rule first
+   — not every request is traced by default at volume; raise the sampling rate (or set it to 100%)
+   for the specific endpoint if full trace coverage is genuinely required there.
+7. **App type:** Platform team rolling out tracing to a legacy service for the first time.
+   **Requirement:** confirm active tracing is actually working before relying on it during the next
+   incident. **Decision:** verify both that `TracingConfig: Active` is set AND that the execution
+   role has `xray:PutTraceSegments`/`AWSXRayDaemonWriteAccess` — a function can look "configured"
+   and still silently emit zero trace data if the IAM permission is missing.
+8. **App type:** SRE team monitoring dozens of services. **Requirement:** get notified of an
+   unusual cluster of failing requests without manually watching a service map all day.
+   **Decision:** rely on X-Ray Insights' automatic anomaly detection against its learned baseline
+   fault rate, rather than expecting a human to notice a gradual fault-rate increase by eye.
+9. **App type:** On-call engineer mid-incident across logs, metrics, and traces for one service.
+   **Requirement:** avoid pivoting between the X-Ray console and the CloudWatch console
+   separately while under time pressure. **Decision:** use ServiceLens/the CloudWatch Trace Map,
+   which surfaces a given node's logs, metrics, and traces together on one map.
+
 ## When NOT to Use It / Alternatives
 
 - For a single-function, no-downstream-calls workload, X-Ray's distributed tracing is of limited

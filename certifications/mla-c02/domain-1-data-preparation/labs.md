@@ -16,6 +16,10 @@ below for anything that needs real ML compute.*
 | 4 | Local RAG pipeline (chunk → embed → search) | sentence-transformers, FAISS | Task 1.4 — RAG prep |
 | 5 | SageMaker Studio Lab: real Data Wrangler-style exploration | SageMaker Studio Lab (free) | Tasks 1.2/1.3 on real infra |
 | 6 | Feature Store online/offline mental model | plain Python | Task 1.2 — reusable features |
+| 7 | `pgvector`-on-Docker vs. FAISS — the real vector-DB tradeoff | Docker, Postgres + pgvector | Task 1.1.7 — configure vector DBs |
+| 8 | PII detection and masking/redaction | Microsoft Presidio | Task 1.2.8 — mask/redact/anonymize |
+| 9 | Outlier detection + near-duplicate text detection | scipy, datasketch (MinHash) | Task 1.3.7 — clean data |
+| 10 | Build + validate FM fine-tuning prompt-completion pairs | plain Python, jsonschema | Task 1.2.9 / 1.3.6 — FM data prep & integrity |
 
 ## Lab 1 — What Floci can do here
 
@@ -192,6 +196,176 @@ This over-fetch-then-filter pattern is a simplified stand-in for what a real vec
 native metadata filtering does in one step — useful for understanding the *concept* before using
 OpenSearch's or Bedrock Knowledge Bases' built-in filtering.
 
+## Lab 7 — `pgvector`-on-Docker vs. FAISS, the real vector-DB configuration tradeoff
+
+```bash
+docker run --name pgvector-demo -e POSTGRES_PASSWORD=demo -p 5432:5432 -d ankane/pgvector
+pip install psycopg2-binary sentence-transformers
+```
+
+```python
+import psycopg2
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+conn = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password="demo")
+cur = conn.cursor()
+cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+cur.execute("CREATE TABLE IF NOT EXISTS chunks (id serial PRIMARY KEY, content text, embedding vector(384));")
+
+chunks = [
+    "The return policy allows refunds within 30 days of purchase.",
+    "Shipping typically takes 3-5 business days within the country.",
+    "Gift cards do not expire and are non-refundable.",
+]
+for c in chunks:
+    emb = model.encode(c).tolist()
+    cur.execute("INSERT INTO chunks (content, embedding) VALUES (%s, %s)", (c, emb))
+conn.commit()
+
+# Build an HNSW index -- the real configuration knob task statement 1.1.7 tests
+cur.execute("CREATE INDEX IF NOT EXISTS chunks_hnsw ON chunks USING hnsw (embedding vector_cosine_ops);")
+conn.commit()
+
+query_emb = model.encode("How long do I have to return something?").tolist()
+cur.execute("SELECT content, embedding <=> %s::vector AS distance FROM chunks ORDER BY distance LIMIT 1;",
+            (query_emb,))
+print("pgvector nearest match:", cur.fetchone())
+```
+
+This is the real `pgvector` HNSW index-creation step described in
+`embeddings-and-rag-data-prep.md`'s vector database comparison — notice it required standing up a
+real Postgres instance and an explicit `CREATE INDEX` statement, versus Lab 4's FAISS version
+which needed neither a server nor an index-creation step. Running both labs back to back is the
+fastest way to internalize *why* the comparison table calls `pgvector` "DBA overhead if you don't
+already run Postgres" — you just did that overhead yourself, in miniature.
+
+## Lab 8 — PII detection and masking/redaction (the real alternative to Comprehend PII + Macie)
+
+```bash
+pip install presidio-analyzer presidio-anonymizer
+python -m spacy download en_core_web_lg
+```
+
+```python
+from presidio_analyzer import AnalyzerEngine
+from presidio_anonymizer import AnonymizerEngine
+from presidio_anonymizer.entities import OperatorConfig
+
+text = "Hi, this is John Smith, SSN 078-05-1120, calling about my claim. Email me at john.smith@example.com."
+
+analyzer = AnalyzerEngine()
+results = analyzer.analyze(text=text, language="en")
+print("Detected entities:", [(r.entity_type, r.start, r.end) for r in results])
+
+anonymizer = AnonymizerEngine()
+
+# Redaction -- delete entirely
+redacted = anonymizer.anonymize(text=text, analyzer_results=results,
+                                 operators={"DEFAULT": OperatorConfig("redact")})
+print("Redacted:", redacted.text)
+
+# Masking -- consistent, realistic-looking synthetic replacement
+masked = anonymizer.anonymize(text=text, analyzer_results=results,
+                               operators={"PERSON": OperatorConfig("replace", {"new_value": "Jane Doe"}),
+                                          "DEFAULT": OperatorConfig("replace", {"new_value": "[MASKED]"})})
+print("Masked:", masked.text)
+```
+
+Presidio (Microsoft's free, open-source PII toolkit) runs the exact same two-step pattern —
+detect entities, then apply a redaction or masking operator — that Amazon Comprehend's PII
+detection API performs as a managed service; this lab is a real, hands-on way to see the
+redact-vs-mask distinction `README.md`'s "Masking, Redacting, and Anonymizing Data" section
+describes, rather than only reading about it.
+
+## Lab 9 — Outlier detection and near-duplicate text detection
+
+```bash
+pip install scipy datasketch
+```
+
+```python
+import numpy as np
+from scipy import stats
+
+# Outlier detection via IQR -- the simple, single-feature method
+values = np.array([42, 45, 41, 44, 43, 400, 46, 40])  # 400 is an obvious data-entry error
+q1, q3 = np.percentile(values, [25, 75])
+iqr = q3 - q1
+lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+outliers = values[(values < lower) | (values > upper)]
+print("IQR bounds:", lower, upper, "-- outliers found:", outliers)
+```
+
+```python
+from datasketch import MinHash, MinHashLSH
+
+docs = {
+    "ticket_1": "My order hasn't arrived and it's been two weeks.",
+    "ticket_2": "My order has not arrived, it has been two weeks now.",   # near-duplicate of ticket_1
+    "ticket_3": "I want to change my shipping address before it ships.",  # genuinely different
+}
+
+lsh = MinHashLSH(threshold=0.6, num_perm=128)
+minhashes = {}
+for key, text in docs.items():
+    mh = MinHash(num_perm=128)
+    for word in text.lower().split():
+        mh.update(word.encode("utf8"))
+    minhashes[key] = mh
+    lsh.insert(key, mh)
+
+print("Near-duplicates of ticket_1:", lsh.query(minhashes["ticket_1"]))
+```
+
+Run this and confirm `ticket_2` (a near-identical paraphrase) is flagged as a near-duplicate of
+`ticket_1` while `ticket_3` is not — this is the exact MinHash/LSH mechanism
+`README.md`'s "Cleaning Data" section names as the scalable alternative to exact-match
+deduplication, here running on three documents instead of millions, but the same algorithm.
+
+## Lab 10 — Building and validating FM fine-tuning prompt-completion pairs
+
+```python
+import json
+
+# Build a small, deliberately-malformed-in-one-place fine-tuning dataset,
+# to practice the integrity validation task statement 1.3.6 describes.
+raw_pairs = [
+    {"prompt": "Summarize: Our return policy allows 30-day refunds.", "completion": "30-day refund policy."},
+    {"prompt": "Summarize: Shipping takes 3-5 business days.", "completion": "3-5 day shipping."},
+    {"prompt": "Summarize: Gift cards never expire.", "completion": ""},   # empty completion -- a real defect
+    {"prompt": "Summarize: Our return policy allows 30-day refunds.", "completion": "30-day refund policy."},  # exact duplicate of pair 1
+]
+
+def validate_pairs(pairs):
+    seen = set()
+    errors = []
+    for i, pair in enumerate(pairs):
+        if not pair.get("prompt") or not pair.get("completion"):
+            errors.append(f"Pair {i}: empty prompt or completion -- drop before training.")
+        key = (pair.get("prompt"), pair.get("completion"))
+        if key in seen:
+            errors.append(f"Pair {i}: exact duplicate of an earlier pair -- drop before training.")
+        seen.add(key)
+    return errors
+
+issues = validate_pairs(raw_pairs)
+for issue in issues:
+    print("VALIDATION FAILURE:", issue)
+
+clean_pairs = [p for i, p in enumerate(raw_pairs)
+               if p.get("prompt") and p.get("completion")
+               and raw_pairs.index(p) == i]  # keep only first occurrence of each pair
+with open("fine_tune_data.jsonl", "w") as f:
+    for p in clean_pairs[:2]:  # the two genuinely valid, unique pairs
+        f.write(json.dumps(p) + "\n")
+print("Wrote validated fine-tuning dataset: fine_tune_data.jsonl")
+```
+
+This deliberately reproduces both failure modes task statement 1.3.6 names — an empty/malformed
+pair and an exact-duplicate pair — so you can see a validation script catch them *before* they'd
+silently degrade a real Bedrock or SageMaker JumpStart fine-tuning job's quality.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
@@ -202,6 +376,41 @@ OpenSearch's or Bedrock Knowledge Bases' built-in filtering.
 | Generate text embeddings | ❌ no Bedrock emulation | **`sentence-transformers`** (free, local, `pip install sentence-transformers`, e.g. `all-MiniLM-L6-v2` model) — produces real embeddings on your own machine, same concept as Titan Embeddings |
 | Vector similarity search | ❌ not emulated | **FAISS** (free, local, `pip install faiss-cpu`) or Postgres + `pgvector` in a local Docker container |
 | Run a real Glue Crawler against actual data | ❌ not emulated | Any small **AWS Free Tier** account — Glue Crawlers have a modest free tier suitable for learning-scale datasets |
+| Configure a real OpenSearch/S3 Vector Buckets index at scale | ❌ not emulated | **Lab 7's local `pgvector`-on-Docker** for the real index-creation/configuration mechanics, or a small **AWS Free Tier** OpenSearch Serverless collection to see the managed-service console experience |
+| Run Amazon Comprehend PII detection or Macie classification | ❌ not emulated | **Presidio** (`pip install presidio-analyzer presidio-anonymizer`, Lab 8) — the real open-source PII detection/anonymization library with an equivalent detect-then-redact-or-mask workflow |
+
+## Use Cases — Real Scenarios
+
+1. A new hire studying this domain runs Lab 1's Glue Data Catalog commands to understand exactly
+   what a crawler registers, before ever touching a real AWS bill.
+2. A data engineer prototypes an ETL pipeline's imputation and encoding logic in Lab 2's pandas
+   script locally, in minutes, before committing to writing and running a paid Glue job.
+3. A fairness reviewer runs Lab 3's Fairlearn disparate-impact check against a synthetic loan
+   dataset to build intuition for what SageMaker Clarify's real pre-training bias report means,
+   before interpreting one on an actual regulated dataset.
+4. A solo developer builds Lab 4's local FAISS RAG pipeline to validate a chunking strategy on
+   their own documents for free, before provisioning any real OpenSearch or Bedrock Knowledge
+   Base infrastructure that starts billing immediately.
+5. A platform team runs Lab 6's offline/online store simulation to train new engineers on the
+   late-arriving-data gotcha before they ever touch a real SageMaker Feature Store and risk a
+   production incident from the same mistake.
+6. A compliance team uses Lab 7's `pgvector` index-creation exercise to decide, with real hands-on
+   evidence rather than a vendor's marketing claim, whether their team can realistically operate a
+   self-managed vector database or should default to a fully managed option instead.
+7. A healthcare startup runs Lab 8's Presidio PII detection against sample intake forms to
+   estimate, before any AWS spend, roughly how much manual review a real Comprehend PII rollout
+   would still require for edge cases the automated detector misses.
+8. A support operations lead runs Lab 9's MinHash deduplication against a sample of real
+   historical tickets to quantify, with actual numbers, how much a RAG knowledge base's retrieval
+   quality is currently being degraded by near-duplicate content before committing engineering
+   time to a full cleanup project.
+9. An ML engineer preparing a first Bedrock fine-tuning job runs Lab 10's validation script
+   against their actual candidate dataset first, catching malformed or duplicate pairs for free
+   instead of discovering the same problems only after a paid fine-tuning job underperforms.
+10. A student preparing for the exam deliberately breaks Lab 4's embedding-model consistency (one
+    model for chunks, a different one for the query) to personally witness the "mismatched
+    embedding spaces" failure mode the exam tests conceptually, rather than only memorizing that
+    it's a trap.
 
 ## Feature Store online/offline split, as a bridge to the dedicated Data Wrangler/Feature Store doc
 

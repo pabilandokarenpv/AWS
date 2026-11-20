@@ -214,6 +214,64 @@ sequenceDiagram
   sensitive content they caught; don't assume a security feature's own diagnostic output is
   automatically safe to log verbatim.
 
+## Use Cases — Real Scenarios
+
+Concrete developer/security decisions teams actually make when shipping an AI-powered feature,
+mapped to app type / requirement / implementation decision:
+
+1. **App type:** Internal engineering-docs search assistant built on Bedrock. **Requirement:**
+   only the three teams that own the docs should be able to invoke the model; everyone else in the
+   org should get an explicit deny, not just "no button in the UI." **Decision:** an IAM policy
+   scoped to specific model ARNs attached only to those teams' roles, with a separate
+   management-plane-vs-invoke-permission split so no runtime role can modify guardrail config.
+2. **App type:** Public-facing retail chatbot. **Requirement:** the bot must never discuss
+   competitor pricing or medical advice, no matter how a user phrases the question.
+   **Decision:** Bedrock Guardrails denied topics for both subjects, rather than relying on a
+   system-prompt instruction alone — denied topics are enforced at the guardrail layer regardless
+   of prompt wording.
+3. **App type:** Legal-document summarization tool for a law firm. **Requirement:** summaries must
+   never be used to improve the underlying vendor's model, per a client confidentiality clause.
+   **Decision:** explicitly verify and document the specific Bedrock model's training opt-out
+   behavior for the firm's compliance file, rather than assuming "AI services never train on my
+   data" as a blanket rule across every possible provider/tier.
+4. **App type:** Customer support bot with RAG over a knowledge base. **Requirement:** a
+   crafted support ticket shouldn't be able to make the bot ignore its instructions and reveal
+   internal pricing logic. **Decision:** keep system instructions and retrieved/user content in
+   clearly separated prompt sections, and enable Guardrails' prompt-attack filter category as a
+   second line of defense — not relying on prompt wording alone as the security boundary.
+5. **App type:** Internal ops assistant with tool access to restart services. **Requirement:** the
+   agent should diagnose issues autonomously but never restart a production service without a
+   human confirming. **Decision:** scope the agent's action group to read-only diagnostic tools,
+   and require a human-in-the-loop approval (Step Functions task-token pattern) before the
+   restart action executes.
+6. **App type:** Multilingual customer-service chatbot. **Requirement:** the company must be able
+   to update what counts as "harmful content" without redeploying the application whenever policy
+   changes. **Decision:** reference a Guardrail by ID/version at invocation time and update the
+   guardrail configuration independently — application code and content-policy changes become
+   decoupled deployments.
+7. **App type:** Document-processing pipeline that sends scanned forms to Bedrock for extraction.
+   **Requirement:** a security review must confirm no scanned document ever traverses the public
+   internet en route to the model. **Decision:** a VPC interface endpoint for `bedrock-runtime`
+   plus a security group on the endpoint restricting which Lambda functions can reach it — three
+   independent layers (no internet route, endpoint policy, security group) rather than relying on
+   TLS alone.
+8. **App type:** AI-assisted expense-report triage tool. **Requirement:** flagged "suspicious"
+   expense descriptions containing employee names/amounts must not end up verbatim in application
+   logs readable by the whole engineering team. **Decision:** redact/mask the specific PII fields
+   before the log line is ever written, rather than trusting that Guardrails' output filtering
+   alone will have already caught everything by the time logging code runs.
+9. **App type:** Startup prototyping a coding-assistant-powered internal tool with broad AWS access
+   "to move fast." **Requirement:** avoid becoming the team whose postmortem reads "the agent had
+   permission to do that because nobody scoped it down before the demo shipped."
+   **Decision:** start the agent's execution role with the minimum action group required for the
+   demo, and treat every subsequent capability addition as its own reviewed change, the same as an
+   IAM policy attachment would be reviewed.
+10. **App type:** Fraud-detection summarizer reading transaction logs. **Requirement:** confirm an
+    incident where a dollar amount and customer name appeared in a CloudWatch log line actually
+    originated from the pre-filter application code, not from a Guardrails bypass.
+    **Decision:** check the log-writing code path first (most likely cause: the raw prompt was
+    logged before Guardrails ever saw it), rather than assuming the guardrail itself failed.
+
 ## Worked mini-scenario: diagnosing a leaked-data incident
 
 A security team discovers that a Bedrock-powered internal tool's CloudWatch Logs contain a

@@ -181,6 +181,39 @@ hardware), so a scenario naming "lowest latency between nodes" versus "maximum f
 a small number of critical instances" is choosing between cluster and spread, not between
 placement groups and no placement group.
 
+## How This Domain's Services Work Together (End-to-End Walkthrough)
+
+Trace one request through a globally-used analytics dashboard, the same story the architecture
+diagram above lays out spatially. A sales manager in Tokyo opens the dashboard and it loads
+instantly. (1) The dashboard's JS/CSS/images are served from **CloudFront**, cached at an edge
+location physically near Tokyo — the manager never waits on a round trip to the origin Region at
+all for anything static. (2) The manager's "show me this week's top products" query, which can't be
+cached because it's dynamic and per-filter, travels over **Global Accelerator**, entering the AWS
+backbone network at the nearest edge location instead of crossing the public internet the whole
+way to the origin Region — shaving meaningful round-trip time purely from routing, before any
+compute even runs. (3) The request lands on an **ALB**, which forwards it to an **Auto Scaling
+group of C-family (compute-optimized) instances** — chosen specifically because profiling earlier
+showed this query path is CPU-bound, not memory- or I/O-bound. (4) The app checks **ElastiCache**
+first for this exact query's cached result; because "top products this week" is asked by dozens of
+managers throughout the day, it's very likely a cache hit, and the response comes back in
+sub-millisecond time with no database touched at all. (5) On a cache miss (say, it's the first
+request after the cache TTL expired), the app instead queries **Athena** directly against a data
+lake sitting in **S3**, structured as partitioned, columnar **Parquet** files rather than raw CSV —
+Athena only scans the relevant date partition's columns, not the entire multi-year dataset, which
+is what makes this sub-second instead of the 8-12 seconds the same query took against raw CSV
+before this pipeline existed. (6) That Parquet data itself didn't arrive in S3 by accident — a
+separate, continuous pipeline ingests raw event data through **Kinesis Data Streams**, and a
+**Glue ETL job** converts it from row-based CSV into partitioned Parquet on a schedule, which is
+the actual mechanism that makes step 5's fast query possible in the first place. (7) After the
+database/data-lake answer comes back, the app writes it into **ElastiCache** with a TTL before
+responding to the manager, so the *next* person who asks the same question gets the sub-millisecond
+cache-hit path from step 4 instead of repeating steps 5 and 6. This single dashboard load touches
+all five Domain 3 task statements in sequence — storage shape (Parquet vs. CSV), compute family
+match (C-family for a CPU-bound query path), database/cache layering (ElastiCache in front of
+Athena), network routing (CloudFront + Global Accelerator), and data ingestion/transformation
+(Kinesis + Glue) — which is exactly the PixelForge Analytics case study below, told as one
+continuous request instead of three separate problem statements.
+
 ## Full Worked Case Study: PixelForge Analytics — From Slow Dashboard to Sub-Second Queries
 
 **Company requirements.** PixelForge runs an internal analytics dashboard used by 200 employees.
@@ -221,6 +254,50 @@ per query; only the Parquet conversion and partitioning do. Similarly, in point 
 the Auto Scaling group's *size* without first identifying the CPU-bound nature of the workload
 could have thrown money at more of the wrong instance family; profiling first to confirm "CPU-
 bound, not memory- or I/O-bound" is what justified the C-family switch specifically.
+
+## Use Cases — Real Scenarios
+
+- **Mobile game studio's matchmaking service needing sub-10ms lookups.** Player profile and
+  skill-rating data sits in DynamoDB (not RDS) specifically because single-digit-millisecond,
+  at-any-scale latency is a stated hard requirement, not a nice-to-have, and the access pattern is
+  pure key-value.
+- **News publisher's real-time traffic-spike handling during a breaking story.** CloudFront caches
+  the article body and images at the edge within seconds of publication; ElastiCache holds the
+  "most-read articles right now" ranking, so neither a sudden 50x traffic spike touches the origin
+  database directly nor degrades the experience for readers worldwide.
+- **Genomics research lab running an EMR cluster for a one-time large-scale analysis.** A
+  thousand-node EMR cluster processes a multi-terabyte sequencing dataset over a weekend; C-family
+  or memory-optimized instances are chosen per-node based on whether the specific pipeline stage is
+  CPU-bound (alignment) or memory-bound (variant calling), then the whole cluster is torn down.
+- **Global trading firm's matching engine needing the lowest possible inter-instance latency.**
+  Matching-engine instances sit in a single cluster placement group within one AZ, specifically
+  trading away multi-AZ fault tolerance for the lowest achievable network latency between the
+  handful of instances that must coordinate on every trade.
+- **IoT agricultural sensor network ingesting millions of soil-moisture readings per minute.**
+  Kinesis Data Streams absorbs the ingestion burst with a shard count sized to the actual
+  aggregate write rate; a Glue job converts the raw stream into partitioned Parquet in S3 so a
+  farmer's dashboard query against six months of history stays fast instead of scanning raw JSON.
+- **Video-streaming platform serving both live and on-demand content globally.** Live, interactive-
+  feeling features (chat, reactions) that can't be cached ride Global Accelerator; the actual video
+  segments, which are highly cacheable, ride CloudFront — the same platform deliberately using both
+  services for two different traffic shapes within one product.
+- **Financial reporting system needing EFS for a shared, concurrently-written working directory.**
+  A fleet of 30 report-generation workers all read and write intermediate calculation files to the
+  same EFS file system simultaneously — a pattern EBS (one instance at a time) structurally cannot
+  support, making EFS the only fit regardless of cost.
+- **E-commerce retailer's Auto Scaling group that was scaling too late during flash sales.** CPU
+  utilization was the scaling trigger, but by the time CPU rose, response times had already
+  degraded — switching the scaling metric to request-count-per-target catches load earlier,
+  directly fixing the "scaling after the user already feels it" symptom.
+- **Weather-data company needing ultra-low-latency scratch space for in-progress model runs.**
+  Each forecast-model worker uses EC2 Instance Store for its temporary grid-computation buffers,
+  explicitly accepting that this data vanishes on instance stop because the final output is written
+  to S3 and the intermediate buffer was never meant to survive past the run.
+- **SaaS analytics company separating ad-hoc exploration from scheduled heavy reporting.** Analysts
+  run quick, exploratory one-off queries through Athena directly against the S3 data lake; a nightly
+  scheduled job that joins years of data across multiple large tables runs on Redshift instead,
+  because the join complexity and data volume at that point exceed what serverless ad-hoc querying
+  handles efficiently.
 
 ## Common exam scenarios
 

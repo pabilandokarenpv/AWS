@@ -212,6 +212,37 @@ demonstrate that **SSE-KMS-encrypted objects require both** — a role with `s3:
 matching `kms:Decrypt` grant gets `AccessDenied` on the read, which is one of the most common
 real-world (and exam) "why can't this role read an encrypted object" debugging scenarios.
 
+## Use Cases — Real Scenarios (these labs' skills applied for real)
+
+- **Payments startup's first SOC 2 audit.** The auditor asks to see evidence that database
+  credentials are never hardcoded — Lab 5's Secrets Manager rotation mechanic is exactly what the
+  engineering team demonstrates live during the audit walkthrough.
+- **Healthcare SaaS proving encryption-at-rest to a hospital customer's security team.** Lab 2's
+  KMS envelope-encryption exercise (encrypt, decrypt, enable rotation) is the hands-on proof point
+  behind the one-line claim "all data is encrypted at rest with automatically rotated keys."
+- **Mobile app startup choosing between IAM users and Cognito for its 50,000 end users.** Lab 3
+  is literally the decision this team has to make correctly on day one — the exam (and real
+  production security reviews) treat "we created IAM users for our app's customers" as a disqualifying
+  mistake, not a style choice.
+- **E-commerce company retrofitting a flat security group into tiers.** Lab 4's chained
+  alb-sg/app-sg/db-sg exercise is the exact mechanical change a consultant performs during a real
+  security remediation engagement after a penetration test finds `0.0.0.0/0` on the database port.
+- **Fintech engineer debugging "why can't my Lambda read this encrypted S3 object."** Lab 6's
+  capstone deliberately reproduces this exact real-world debugging scenario (S3 permission present,
+  KMS permission missing) so the muscle memory of checking *both* grants is already built before it
+  happens in production at 2am.
+- **Contractor onboarding to a client's AWS account for a two-week engagement.** Lab 1's
+  AssumeRole exercise is the mechanic behind the client issuing the contractor a narrowly-scoped,
+  time-boxed role instead of a standing IAM user — exactly the pattern a security-conscious client
+  insists on.
+- **Internal tools team building a self-service "create my own test bucket" portal.** The
+  least-privilege policy pattern from Lab 1 (scoped to one bucket's ARN, not `s3:*`) is the template
+  every auto-generated per-user policy in that portal is built from.
+- **Compliance team preparing evidence for a PCI-DSS assessment.** Being able to show live that
+  key rotation is enabled (Lab 2, step 4) and that a secret's rotation history shows AWSCURRENT/
+  AWSPREVIOUS staging (Lab 5) are both items a QSA (Qualified Security Assessor) will ask to see
+  direct evidence of, not just a policy document claiming it.
+
 ## Honest limitation
 
 Organizations/SCPs, Control Tower, GuardDuty, Macie, Shield, and WAF are real multi-account or

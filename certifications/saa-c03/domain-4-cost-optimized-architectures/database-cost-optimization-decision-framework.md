@@ -103,6 +103,47 @@ to On-Demand, not a reason to avoid Provisioned mode altogether.
   standard configuration's pay-per-I/O pricing once I/O volume crosses a certain threshold — a
   scenario describing unusually high I/O relative to compute size is pointing at this option.
 
+## Use Cases — Real Scenarios
+
+- **Mid-size insurer's policy-management database with a well-known steady load.** A 1-year RDS
+  Reserved Instance commitment is purchased for the core policy database after two years of stable
+  usage data confirm the baseline isn't going to shrink, locking in a meaningful discount for
+  capacity the company was paying full On-Demand price for out of inertia.
+- **Seasonal retailer's promotional-event database spiking only during flash sales.** Aurora
+  Serverless v2 scales from near-idle capacity up to the configured maximum automatically during a
+  flash sale announcement, then back down afterward, with no manual resize and no standing
+  reservation wasted the other 50 weeks of the year.
+- **Mobile app's "recently viewed" feature forced into RDS during an earlier, less-informed
+  design phase.** Migrating this pure key-value workload to DynamoDB removes a permanently-
+  provisioned RDS instance that was billing 24/7 for a workload DynamoDB can serve near-free during
+  its many quiet hours.
+- **Software company's dev/test RDS instances mirroring production unnecessarily.** Dev and test
+  databases previously ran Multi-AZ identically to production; removing Multi-AZ for non-production
+  environments (which don't carry production's availability requirement) roughly halves their
+  compute cost with no functional loss.
+- **High-growth startup's DynamoDB table outgrowing its initial provisioned capacity guesses.**
+  Early in the product's life, Provisioned capacity without Auto Scaling caused repeated throttling
+  during unexpected growth spurts; enabling Auto Scaling (or, for the least mature product stage,
+  switching to On-Demand entirely) removed both the throttling risk and the manual capacity-tuning
+  burden.
+- **Analytics company choosing DynamoDB Provisioned over On-Demand once traffic stabilized.**
+  After a year of On-Demand billing established a clear, steady traffic baseline, the team switches
+  to Provisioned capacity with Auto Scaling, capturing a lower per-request cost now that the
+  guesswork that On-Demand was protecting against is gone.
+- **Enterprise reporting workload moving to Aurora I/O-Optimized.** A reporting database with
+  unusually high I/O volume relative to its compute size sees its per-I/O charges exceed what a flat
+  I/O-Optimized configuration would cost — switching configurations (not instance size) directly
+  reduces the bill.
+- **Streaming platform's content-metadata table evaluated for DynamoDB Reserved Capacity.** Once a
+  year of On-Demand billing establishes a stable, well-understood baseline request volume, the
+  platform purchases DynamoDB Reserved Capacity sized to that floor, capturing a further discount
+  on top of the already-cheaper provisioned-mode rate for traffic that's no longer a guess.
+- **Multi-tenant HR SaaS company isolating one premium tier's data on Aurora Serverless v2 per
+  customer.** Rather than running one shared, permanently-provisioned Aurora cluster sized for the
+  sum of every tenant's peak, each premium tenant gets its own Serverless v2 cluster that scales to
+  near-zero between that specific customer's business hours — trading a small per-tenant overhead
+  for avoiding one cluster permanently sized for an aggregate peak that rarely actually occurs.
+
 ## Common Mistakes
 
 - Running a dev/test database identically to production (same instance size, Multi-AZ enabled,

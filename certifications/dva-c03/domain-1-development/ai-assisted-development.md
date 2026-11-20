@@ -139,6 +139,59 @@ Two distinct moments matter here, and the exam likes to test whether you can tel
 - Drafting a first version of documentation (README, runbook) from existing code/comments, which a
   human then edits for accuracy.
 
+## Use Cases — Real Scenarios
+
+Concrete developer situations where the "AI proposes, human verifies" pattern actually shows up in
+a sprint, mapped to app type / requirement / implementation decision:
+
+1. **App type:** Mid-size fintech API team, 15 microservices. **Requirement:** onboard a new hire
+   onto a Lambda-based ledger service they didn't write, in under a day instead of a week.
+   **Decision:** use the assistant's codebase Q&A capability ("where is the balance-reconciliation
+   logic implemented") to get oriented fast, then verify the answer against the actual code before
+   touching anything — the assistant accelerates orientation, it doesn't replace reading the code.
+2. **App type:** Early-stage startup, one backend developer. **Requirement:** stand up a CRUD API
+   for a new feature (Lambda + API Gateway + DynamoDB) in an afternoon instead of a day.
+   **Decision:** prompt the IDE assistant for the boilerplate handler/IAM policy/SAM template, then
+   manually scope the generated IAM policy down from its default broad-permission first draft
+   before it ships — generation saves the boilerplate, the developer still owns the security review.
+3. **App type:** E-commerce platform adding a "reorder previous purchase" endpoint. **Requirement:**
+   ship with reasonable test coverage without spending a full day hand-writing every test case.
+   **Decision:** ask the assistant to generate unit tests for the happy path and obvious edge
+   cases (no previous order), then add the business-specific edge case by hand (a referenced
+   product that's since been discontinued) that the assistant had no way to know mattered.
+4. **App type:** Regulated healthcare SaaS. **Requirement:** a pipeline change must never reach
+   production without a documented human approval, even when an AI tool says the diff looks safe.
+   **Decision:** wire the AI's diff-risk summary into the existing CodePipeline manual approval
+   step as additional context for the approver, not as an auto-approve condition — the approval
+   gate itself stays a human action, satisfying the compliance requirement.
+5. **App type:** On-call engineer at 2am, Lambda-backed checkout service alerting. **Requirement:**
+   get to a plausible root cause fast without reading a full night's worth of CloudWatch Logs line
+   by line. **Decision:** have an AI tool summarize the logs/X-Ray trace into a candidate root
+   cause, then spend five minutes confirming it against the actual raw data before applying any
+   fix — treating the summary as a fast hypothesis, not a diagnosis.
+6. **App type:** Cost-conscious scale-up with dozens of Lambda functions. **Requirement:** find
+   obvious memory/timeout over-provisioning without manually reviewing every function's metrics.
+   **Decision:** use AI-assisted optimization suggestions as a triage/prioritization pass across
+   many functions, then verify each flagged function's actual `Max Memory Used` and Duration
+   metrics in CloudWatch before changing any production configuration.
+7. **App type:** Security-conscious engineering org doing routine PR review. **Requirement:**
+   catch an obviously over-broad IAM statement (`Resource: "*"`) before it merges, without relying
+   solely on a human reviewer's attention at the end of a long review queue. **Decision:** an
+   automated AI code-review pass flags the overly broad statement as a PR comment; a human
+   reviewer still makes the actual accept/reject call, since false positives on this kind of
+   static-pattern check are common enough that blind auto-rejection would create noise.
+8. **App type:** Small team evaluating whether to adopt a spec-first workflow for a new service.
+   **Requirement:** lock down requirements and design before a single line of implementation code
+   exists, to avoid late-stage rework on a feature with ambiguous scope. **Decision:** use Kiro's
+   spec-first flow — generate the structured spec, have the team review/edit *that* before any
+   implementation is generated against it — making the human checkpoint structural rather than an
+   after-the-fact diff review.
+9. **App type:** Contractor doing a quick debugging session on an unfamiliar legacy function.
+   **Requirement:** get unstuck on a cryptic stack trace fast, without violating the client's data
+   handling policy. **Decision:** scrub the stack trace of the embedded database connection string
+   before pasting it into any chat assistant — never assume a chat tool's context window is a safe
+   place for a live credential, regardless of time pressure.
+
 ## When NOT to Use It / Limits
 
 - **Never feed secrets, credentials, customer PII, or proprietary source you don't have rights to

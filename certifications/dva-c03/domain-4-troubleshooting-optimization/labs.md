@@ -4,6 +4,11 @@ Hands-on exercises against the free local [Floci](../../../labs-floci/README.md)
 
 ## Lab 1 — Enable X-Ray tracing and read a trace (Task 4.1 / 4.2)
 
+**Why this lab:** "active tracing isn't on by default" is a frequent exam distractor and a real
+operational dead-end — enabling it, invoking the function, then actually pulling trace data makes
+the `Mode=Active` requirement (and what happens if you forget it) something you've verified
+yourself.
+
 ```bash
 # 1. Create a function with active tracing enabled
 cat > handler.py <<'EOF'
@@ -44,6 +49,10 @@ tracing on — forgetting it is why a function sometimes shows up with zero data
 console, a common first debugging dead-end.
 
 ## Lab 2 — CloudWatch Logs Insights query across an incident (Task 4.1)
+
+**Why this lab:** Task 4.1 expects you to quantify a failure ("how often is this actually failing")
+before chasing a root cause — writing a real Logs Insights query against generated log data
+practices exactly that discipline instead of letting you jump straight to the first error you see.
 
 ```bash
 # 1. Generate some log activity by invoking a function that logs structured JSON
@@ -86,6 +95,11 @@ happen to spot.
 
 ## Lab 3 — Lambda memory/performance tuning (Task 4.3)
 
+**Why this lab:** "should we raise or lower memory" is one of Domain 4's most commonly
+mis-answered question types because cost isn't monotonic with memory — timing the same CPU-bound
+function at two memory settings turns the memory×duration cost relationship into something you've
+measured, not just read as a formula.
+
 ```bash
 # 1. Deploy the same CPU-bound function at two memory settings and compare duration
 cat > cpuhandler.py <<'EOF'
@@ -121,6 +135,10 @@ higher, because duration drops enough to offset it. Always compute cost = (memor
 just eyeball the memory setting.
 
 ## Lab 4 — X-Ray annotations for filterable traces (Task 4.2)
+
+**Why this lab:** confusing annotations with metadata is a named exam trap — tagging the same trace
+with both, then proving only the annotation is filterable, removes any ambiguity about which one
+to reach for when a scenario needs traces searchable by a business field.
 
 Builds the annotation-vs-metadata distinction from
 [`observability-instrumentation.md`](observability-instrumentation.md#instrumenting-your-own-code-task-42).
@@ -171,6 +189,10 @@ annotation-vs-metadata exam trap.
 
 ## Lab 5 — Cost math: proving the memory/duration/cost relationship
 
+**Why this lab:** the README's cost table is illustrative; running the same workload at five real
+memory sizes and computing memory × duration yourself confirms the relationship holds (and shows
+you exactly where diminishing returns kick in) instead of asking you to trust a static table.
+
 Builds the [README's Lambda cost/performance math section](README.md#lambda-costperformance-math-concretely)
 with real numbers instead of an illustrative table.
 
@@ -195,6 +217,11 @@ function stops being CPU-bound, confirming the shape of the README's cost table 
 (emulated) numbers instead of taking it on faith.
 
 ## Lab 6 — AWS Config drift detection paired with CloudTrail (Task 4.1)
+
+**Why this lab:** Config and CloudTrail answer genuinely different questions about the same
+change, and that's easy to blur in the abstract — drifting a security group and then querying both
+services for the *same* event shows exactly which tool answers "what changed" versus "who changed
+it."
 
 Builds the [README's Config-vs-CloudTrail pairing](README.md#aws-config-drift-as-a-task-41-investigative-input).
 

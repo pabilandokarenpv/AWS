@@ -115,6 +115,39 @@ guarantee tied to one exact configuration, which Savings Plans do not provide.
   stop outside business hours (via Instance Scheduler or a scheduled Lambda) is a simple,
   frequently-tested cost lever distinct from purchasing-model choice entirely.
 
+## Use Cases — Real Scenarios
+
+- **Regional airline's flight-booking engine with a known, flat, 24/7 baseline.** Years of traffic
+  data show the booking API never drops below a floor of 40 instances' worth of load — a 3-year
+  Compute Savings Plan sized to that floor locks in a deep discount for capacity the airline was
+  always going to pay for anyway.
+- **University's annual course-registration system active only two weeks per semester.** Rather
+  than any standing compute commitment, the registration API runs entirely on Lambda, billing
+  essentially nothing the other fifty weeks of the year and scaling instantly during the two
+  registration windows.
+- **Game studio's matchmaking servers tolerating interruption during off-peak hours.** Overnight,
+  lower-player-count matchmaking capacity runs on Spot Instances, since a brief two-minute
+  interruption simply means a small number of matches get reshuffled rather than any real
+  user-facing failure, capturing a deep discount for capacity that's genuinely optional at that hour.
+- **Marketing agency's nightly batch report-generation job.** A two-hour nightly job that resizes
+  client ad creatives runs on AWS Batch with Spot-backed compute environments — short, bursty,
+  checkpoint-tolerant, and never justifying any standing reservation.
+- **Enterprise migrating off an over-provisioned fleet discovered during a cost review.**
+  Compute Optimizer flags that half the production fleet is running at under 15% average CPU
+  utilization; the team right-sizes to a smaller instance family *before* committing to a Savings
+  Plan, avoiding locking in a discount on wasted capacity.
+- **Media company's video-transcoding pipeline needing cost predictability for a 2-year content
+  deal.** Knowing transcoding volume is contractually guaranteed for two years, the compute fleet
+  behind it is covered by a 2-year EC2 Instance Savings Plan rather than left on-demand, which the
+  team had been doing out of habit from the pipeline's earlier, less-certain days.
+- **Retailer running identical dev/staging/prod EC2 fleets around the clock.** An Instance
+  Scheduler stops the dev and staging fleets outside business hours, cutting their compute cost by
+  roughly two-thirds for environments that have no legitimate reason to run unattended overnight.
+- **ARM-compatible internal tools team cutting its EC2 bill without any architecture change.** A
+  stateless internal reporting service, already confirmed to run cleanly on ARM, is switched to
+  Graviton instances purely for the better price-performance ratio, with zero code changes beyond a
+  recompile.
+
 ## Common Mistakes
 
 - Running a known, steady, 24/7 production workload entirely On-Demand instead of covering its

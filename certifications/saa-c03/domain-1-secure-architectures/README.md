@@ -110,6 +110,43 @@ control (Task 1.3) and a disaster-recovery mechanism (Domain 2) and a cost lever
 at once — expect the exam to test the same AWS Backup fact from three different angles across
 the paper.
 
+## How This Domain's Services Work Together (End-to-End Walkthrough)
+
+Before the individual diagrams below, here is the single continuous story they're each a zoomed-in
+view of — trace one real request from a mobile banking app through every Domain 1 service in
+order, the way a scenario question expects you to reconstruct it mentally. A customer opens the
+app and taps "transfer funds." (1) Their device already holds a session issued earlier when they
+logged in through **Cognito**, which authenticated them without the company ever managing a
+password database itself. (2) The request leaves their phone over TLS and hits **Shield**, which
+silently absorbs the background noise of constant internet-wide scanning and any attempted
+volumetric flood — the request in question is legitimate and passes through untouched. (3) It
+next hits **WAF**, attached to the **ALB**, which checks the request against managed rule groups
+for SQL injection and known bad signatures — again, a legitimate request, so it's forwarded. (4)
+The **ALB**, sitting in a public subnet, is the only thing in this entire path with a public IP;
+it terminates TLS using a certificate **ACM** issued and silently auto-renews, and forwards the
+request over re-encrypted HTTPS to the app tier. (5) The app tier lives in a **private subnet**,
+reachable only because its security group explicitly trusts the ALB's security group — not the
+whole VPC CIDR, not the internet. (6) To process the transfer, the app needs the database
+password; it calls **Secrets Manager**, which hands back the current credential (silently rotated
+on its own schedule, never hardcoded in the app's code). (7) The app writes the transfer to
+**RDS**, sitting in an even more isolated private data subnet with no route to any Internet
+Gateway at all, and the write lands on encrypted-at-rest storage because the instance's **KMS**
+customer-managed key was enabled when the database was created — the same key that also protects
+the Multi-AZ standby and every automated snapshot. (8) Every one of these steps — the Cognito
+authentication, the ALB request, the RDS write, the Secrets Manager call — emits an event into
+**CloudTrail**, which streams in real time into the centralized Security account from
+`multi-account-security-strategy.md`, where **GuardDuty** continuously evaluates it against known
+attack patterns and **Security Hub** aggregates the finding alongside every other account's
+signal. (9) Separately, the engineer who built this app tier never had a standing IAM user in this
+production account at all — they reached it once, during deployment, via **IAM Identity Center**
+handing them a short-lived **STS** credential into a role whose permissions are capped not only by
+that role's own policy but by an **SCP** attached at the Organizational Unit level that no
+administrator in this account, however senior, can override. That is the complete Domain 1 request
+lifecycle: identity (Cognito for the customer, Identity Center/STS/SCPs for the engineer), edge
+defense (Shield, WAF), network isolation (public/private subnet tiers, security groups), data
+protection (Secrets Manager, KMS), and detection (CloudTrail, GuardDuty, Security Hub) — all
+operating on the same single request, simultaneously, not as separate unrelated features.
+
 ## Architecture: A Secure Multi-Account VPC
 
 How these pieces compose into one real design — a company running a public web app with a
@@ -293,6 +330,51 @@ logging). A design using IAM users with rotated access keys would fail requireme
 lived only" bar, because even a 90-day rotated access key is a standing credential for up to 90
 days; only STS-issued, Identity-Center-brokered sessions satisfy "short-lived" in the strict sense
 the exam (and real compliance frameworks) mean.
+
+## Use Cases — Real Scenarios
+
+- **Regional bank's core banking modernization.** Moving from a mainframe to AWS, the bank puts
+  each business line (retail banking, credit cards, wealth management) in its own account under
+  Control Tower, with an org-wide SCP blocking any Region outside the two they're licensed to
+  operate in — satisfying a regulator's data-residency requirement structurally, not procedurally.
+- **Telehealth startup handling PHI under HIPAA.** Patient video sessions and chart data sit in a
+  dedicated account with its own KMS keys, Secrets Manager for provider-system API credentials,
+  and Macie continuously scanning the S3 bucket where uploaded lab results land, flagging any
+  accidental PII exposure in object metadata before an auditor ever would.
+- **Online education platform protecting a graded-exam API from scraping/DDoS.** Shield Standard
+  (free, always-on) handles routine volumetric noise; WAF rate-based rules specifically throttle
+  any single IP hammering the exam-submission endpoint, distinguishing a real DDoS attempt (Shield's
+  job) from a bot trying to brute-force exam answers (WAF's job).
+- **Enterprise SaaS vendor onboarding a new enterprise customer that demands SSO.** Rather than
+  building custom SAML handling per customer, the vendor's own IAM Identity Center federates with
+  each customer's corporate IdP, and the customer's end users authenticate through Cognito-backed
+  flows into the product itself — two different federation layers solving two different problems
+  (workforce access vs. end-customer app login).
+- **Government contractor achieving FedRAMP Moderate.** Every workload account enforces SCPs
+  blocking public S3 buckets and unencrypted EBS volumes org-wide; GuardDuty and Security Hub run
+  as delegated administrator from a dedicated Security account so the compliance team gets a single
+  pane of glass without being granted admin rights into each program's isolated workload account.
+- **Ad-tech company storing bidding logs with PII exposure risk.** Macie runs nightly across the
+  raw bid-log S3 bucket, automatically flagging any log line that accidentally captured a user's
+  email or phone number from an upstream integration bug — caught and remediated before it became
+  a compliance incident, not after a customer complaint.
+- **Manufacturing company separating OT (operational technology) from IT.** Factory-floor sensor
+  data and corporate IT systems get entirely separate AWS accounts, connected only through a single,
+  tightly-scoped cross-account IAM role an analytics Lambda assumes to read aggregated (never raw)
+  sensor data — a factory-floor compromise can't reach corporate systems, and vice versa.
+- **Nonprofit running a donor-payment page with a hardcoded Stripe key in legacy code.** An
+  incident response review flags the hardcoded secret; the fix moves it into Secrets Manager with
+  30-day automatic rotation, and a GitHub pre-commit hook is added to catch any future hardcoded
+  credential before it's ever pushed, closing the same class of mistake structurally.
+- **Multinational retailer standardizing TLS across 40 regional storefronts.** Rather than each
+  region's team manually tracking certificate expiry (and occasionally missing one, causing an
+  outage), ACM is adopted org-wide with auto-renewal, and a Config rule flags any ALB/CloudFront
+  distribution found using a manually-uploaded (non-ACM, non-auto-renewing) certificate instead.
+- **Energy utility isolating its SCADA monitoring dashboard.** The dashboard's VPC has no Internet
+  Gateway route at all — operators reach it exclusively via Site-to-Site VPN from the utility's own
+  network, and the underlying data pipeline reads from the OT network through a single, narrowly-
+  scoped interface rather than a broad network peering, satisfying a critical-infrastructure
+  security mandate that treats "no internet exposure, period" as non-negotiable.
 
 ## Common exam scenarios
 

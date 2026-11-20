@@ -15,6 +15,8 @@ nothing emulates actual model-serving infrastructure.*
 | 4 | Blue/green and canary traffic shifting, simulated locally | nginx or a small Python router | Task 3.1/3.3 |
 | 5 | A minimal local Agent (tool-calling) | LangChain + local model | Task 3.4 |
 | 6 | SageMaker Neo stand-in: export/compile for efficient inference | ONNX Runtime | Task 3.1 (edge) |
+| 7 | Agent state management with a local key-value store | SQLite | Task 3.2.9 — agent state |
+| 8 | Prompt version testing harness | plain Python, pytest | Task 3.3.7/3.3.9 — Prompt Management & testing |
 
 ## Lab 1 — What Floci can do here
 
@@ -224,6 +226,105 @@ Just as SageMaker Neo compiles a trained model into an optimized form for a targ
 portable, optimized format and runs it with a lightweight runtime — the same "compile once, run
 efficiently elsewhere" idea, achievable entirely for free and locally.
 
+## Lab 7 — Agent state management with a local key-value store
+
+```python
+# agent_state.py -- a minimal stand-in for a DynamoDB-backed agent session store
+import sqlite3, json
+
+conn = sqlite3.connect("agent_sessions.db")
+conn.execute("CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, state TEXT)")
+
+def load_state(session_id):
+    row = conn.execute("SELECT state FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return json.loads(row[0]) if row else {"task": None, "status": "new"}
+
+def save_state(session_id, state):
+    conn.execute("INSERT OR REPLACE INTO sessions (session_id, state) VALUES (?, ?)",
+                 (session_id, json.dumps(state)))
+    conn.commit()
+
+session_id = "user_42_session_1"
+
+# Turn 1
+state = load_state(session_id)
+state.update({"task": "book_flight", "destination": "Chicago", "date": "next Friday", "status": "searching"})
+save_state(session_id, state)
+print("After turn 1:", load_state(session_id))
+
+# Turn 2 -- a SEPARATE "request", simulating a new process loading the same session
+state = load_state(session_id)
+state["date"] = "Thursday"  # user corrected the date
+save_state(session_id, state)
+print("After turn 2 (loaded fresh, not carried in memory):", load_state(session_id))
+
+# Turn 3 -- confirm the state (destination, date) survived across independent loads
+state = load_state(session_id)
+assert state["destination"] == "Chicago" and state["date"] == "Thursday"
+print("Turn 3 confirms state persisted correctly across independent 'requests'.")
+```
+
+Run this twice in two separate Python processes (not just two function calls in the same
+script) to really prove the point `README.md`'s agent-state-management section makes: state
+survives because it's read from and written to external storage on every turn, not because
+anything is held in a single process's memory — exactly the property a real DynamoDB-backed
+Bedrock Agent session needs across requests that may hit different compute instances.
+
+## Lab 8 — A prompt version testing harness, the free alternative to Bedrock Prompt Management + automated eval gating
+
+```bash
+pip install pytest
+```
+
+```python
+# prompt_versions.py
+PROMPTS = {
+    "v1": "Summarize this customer complaint in one sentence: {text}",
+    "v2": "Summarize this customer complaint in one sentence, naming the product if mentioned: {text}",
+}
+
+def render(version, text):
+    return PROMPTS[version].format(text=text)
+```
+
+```python
+# test_prompts.py -- an automated gate a real agent-deployment pipeline would run before promotion
+from prompt_versions import render
+
+TEST_CASES = [
+    {"text": "My WidgetPro 3000 broke after a week and nobody has answered my emails.",
+     "must_mention": "WidgetPro"},
+]
+
+def fake_model_call(prompt):
+    # stands in for a real Bedrock InvokeModel call during the test
+    if "name the product" in prompt.lower() or "naming the product" in prompt.lower():
+        return "Customer's WidgetPro 3000 broke and support hasn't responded."
+    return "Customer's product broke and support hasn't responded."
+
+def test_v2_mentions_product_name():
+    for case in TEST_CASES:
+        prompt = render("v2", case["text"])
+        output = fake_model_call(prompt)
+        assert case["must_mention"] in output, f"v2 failed to mention product name: {output!r}"
+
+def test_v1_does_not_reliably_mention_product_name():
+    for case in TEST_CASES:
+        prompt = render("v1", case["text"])
+        output = fake_model_call(prompt)
+        assert case["must_mention"] not in output, "v1 unexpectedly mentioned the product name"
+```
+
+```bash
+pytest test_prompts.py -v
+```
+
+This reproduces the exact "automated eval suite gates a new prompt version before promotion"
+pattern from `README.md`'s Prompt Management diagram — `v2` passes its test (an improvement over
+`v1`) and would be promoted to production; a hypothetical `v3` that *failed* a test like this
+would be rejected automatically, exactly like the diagram's "scores acceptable?" branch, with no
+production traffic ever reaching the rejected version.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
@@ -234,6 +335,41 @@ efficiently elsewhere" idea, achievable entirely for free and locally.
 | Orchestrate a Bedrock Agent / Knowledge Base | ❌ no Bedrock emulation | **LangChain or LlamaIndex** (free, local, `pip install langchain`) with a local Hugging Face model standing in for the Bedrock-hosted foundation model — same "agent calls tools, chains steps" concept |
 | SageMaker Neo edge compilation | ❌ not emulated | **ONNX Runtime** (free, local, `pip install onnxruntime`) to practice exporting/compiling a model for efficient inference — conceptually the same "compile once, run efficiently elsewhere" idea |
 | Auto Scaling policies on a real endpoint | ❌ not emulated | Reason through the policy's math by hand (target tracking: desired instance count to keep a metric like CPU utilization near a target value) — AWS's Application Auto Scaling documentation's worked examples are a good free substitute for hands-on practice |
+| Bedrock Prompt Management's version history/promotion UI | ❌ no Bedrock emulation | **Lab 8's plain Python dict + pytest harness** — the same version-then-test-then-promote workflow, minus the managed console |
+| A real DynamoDB-backed agent session store | ❌ not emulated | **Lab 7's SQLite-backed store** — the same external, durable key-value persistence pattern, run locally and for free |
+
+## Use Cases — Real Scenarios
+
+1. An engineer new to this domain runs Lab 2's `/ping`/`/invocations` FastAPI server first,
+   specifically because implementing that exact contract by hand makes the real SageMaker BYOC
+   health-check requirement concrete instead of an abstract rule to memorize.
+2. A small team adopts Lab 3's Makefile DAG for their first automated retraining pipeline,
+   deliberately choosing it over Airflow because their team's actual scale doesn't yet justify
+   Airflow's operational overhead — a direct real-world instance of not over-engineering.
+3. A platform engineer runs Lab 4's canary router at increasing traffic percentages against two
+   real model versions before ever configuring a production SageMaker canary deployment, building
+   confidence in the ramp-up logic on infrastructure they fully control.
+4. A solo founder prototypes their support bot's tool-calling logic in Lab 5's LangChain agent
+   against a free local model, validating the two-tool orchestration pattern works before paying
+   for any real Bedrock Agent usage.
+5. An ML engineer runs Lab 6's ONNX export to estimate how much a model shrinks and speeds up
+   before compiling, giving a real number to justify (or rule out) investing in SageMaker Neo for
+   a specific edge deployment.
+6. A team debugging a "forgetful" chatbot in production reproduces Lab 7's two-separate-process
+   experiment locally first, to build confidence that the state-persistence pattern itself is
+   sound before looking for the bug elsewhere in their real DynamoDB integration.
+7. A content team uses Lab 8's pytest harness to gate every prompt change going into their
+   production assistant, catching a regression (a prompt edit that stopped including required
+   safety language) before it ever reached a real deployment pipeline.
+8. A compliance-focused team extends Lab 8 with additional test cases specifically covering
+   required disclosures, treating prompt tests with the same seriousness as code unit tests
+   rather than as an afterthought.
+9. A developer evaluating whether to self-host a fine-tuned model on GPU or use Bedrock
+   Provisioned Throughput runs Lab 2's FastAPI server under Lab 4's load-testing-adjacent router
+   to estimate real throughput numbers on their own hardware before making the cost comparison.
+10. A student preparing for the exam intentionally breaks Lab 7's session-ID handling (hardcoding
+    a different session ID on "turn 2") to personally witness the exact "state looks lost" failure
+    mode the README's agent-state-management exam trap describes.
 
 ## Recommended real-AWS free tier path
 

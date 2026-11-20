@@ -31,6 +31,15 @@ failures of the original model or deployment design.
 | **4.2 — Optimize cost** | Spot vs. On-Demand vs. Reserved, SageMaker Savings Plans, Inference Recommender, Cost Explorer/Budgets | [`ml-cost-optimization.md`](ml-cost-optimization.md) *(new doc, written for this domain)* |
 | **4.3 — Secure ML/AI solutions** | IAM least privilege, VPC network isolation, KMS encryption at rest/in transit | [`services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md), [`services/security-identity-compliance/kms.md`](../../../services/security-identity-compliance/kms.md), [`services/networking-content-delivery/vpc.md`](../../../services/networking-content-delivery/vpc.md) |
 | **4.4 — NEW: Responsible AI, bias, and GenAI guardrails** | Detecting bias in model/GenAI outputs, Bedrock Guardrails for content filtering, explainability | [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md) *(new doc, written for this domain)* |
+| **4.1.5 — NEW: Monitor/automate agent performance & coordination** | Coordination-failure detection, truncated streaming, tool-call failures in multi-step agents | this doc's ["Monitoring Agent Performance and Coordination"](#new-skill-415--monitoring-and-automating-agent-performance-and-coordination) section below |
+| **4.1.6 — NEW: AI-specific FM performance monitoring** | Bedrock evaluations, CloudWatch generative AI observability dashboards | this doc's ["AI-Specific FM Performance Monitoring"](#new-skill-416--configuring-ai-specific-performance-monitoring-for-fms) section below |
+| **4.2.7 — NEW: Evaluate cost implications of FM inference in production** | Projecting and validating real production FM cost before/after launch | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-427--evaluating-cost-implications-of-fm-inference-in-production) |
+| **4.2.8 — NEW: Monitor agent resource consumption** | Tracking compute/token/tool-call cost per agent run, not just per model call | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-428--monitoring-agent-resource-consumption) |
+| **4.2.9 — NEW: Manage FM inference costs with usage optimization** | Ongoing optimization levers beyond the initial purchasing-option decision | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-429--managing-fm-inference-costs-with-usage-optimization) |
+| **4.2.10 — NEW: Monitor AI-specific cost patterns** | Token usage, embedding computation cost, vector database storage cost, tracked distinctly | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-4210--monitoring-ai-specific-cost-patterns) |
+| **4.3.1 — NEW: Secure ML/AI CI/CD pipelines** | Scanning code and container images for vulnerabilities (CodeGuru, Inspector) | this doc's ["Securing ML/AI CI/CD Pipelines"](#new-skill-431--securing-mlai-cicd-pipelines-codeguru-amazon-inspector) section below |
+| **4.3.8 — NEW: Select appropriate FM credential type** | Bedrock API keys vs. IAM credentials for accessing foundation models | this doc's ["Selecting FM Credential Types"](#new-skill-438--selecting-the-appropriate-credential-type-to-access-fms) section below |
+| **4.3.9 — NEW: Implement responsible-AI safeguards** | Bedrock Guardrails for sensitive data protection per policy | [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md) |
 
 ## Linked service docs — the deep dives
 
@@ -62,6 +71,134 @@ failures of the original model or deployment design.
   Bedrock Guardrails, and explainability via SageMaker Clarify. This is the direct GenAI-era
   evolution of "model monitoring" into "is this model/GenAI output fair and safe," which spans
   both classic ML (Clarify) and GenAI (Guardrails) — new, dedicated territory in C02.
+
+## NEW skill 4.1.5 — Monitoring and automating agent performance and coordination
+
+**Plain English:** a multi-step Bedrock Agent (Domain 3) can fail in ways a single model call
+never could — it can call the wrong tool, get stuck re-planning in a loop, have a streamed
+response cut off mid-sentence, or have one sub-step's failure silently corrupt the final answer
+without an outright error anywhere. This task statement is specifically about monitoring *that*
+agent-specific failure surface, distinct from classic drift/latency monitoring below.
+
+```mermaid
+flowchart TD
+    A["Agent run begins"] --> B["Step 1: plan"]
+    B --> C["Step 2: tool call"]
+    C --> D{"Tool call<br/>succeeded?"}
+    D -->|No| E["Tool failure logged —<br/>did the agent retry,<br/>fall back, or silently<br/>continue with bad data?"]
+    D -->|Yes| F["Step 3: synthesize<br/>streamed response"]
+    F --> G{"Stream completed<br/>fully?"}
+    G -->|"Truncated"| H["Truncated-streaming<br/>event logged"]
+    G -->|Yes| I["Response delivered"]
+    E --> J["Amazon Bedrock AgentCore<br/>Observability / CloudWatch"]
+    H --> J
+    J --> K{"Coordination-failure<br/>rate trending up?"}
+    K -->|Yes| L["Alert — investigate<br/>tool reliability or<br/>agent planning logic"]
+```
+
+- **Coordination-failure detection** — in a multi-agent or multi-tool system, tracking whether
+  sub-components actually hand off correctly (did the planning step's output get consumed
+  correctly by the execution step, or did a malformed intermediate result silently propagate) —
+  a distinct monitoring surface from "did the model generate reasonable-looking text," since a
+  coordination failure can still produce fluent, confident-sounding, wrong output.
+- **Truncated streaming detection** — a streamed response that's cut off before completion (a
+  network interruption, a timeout, a token limit hit mid-generation) looks to the user like a
+  model that just stopped talking — monitoring for incomplete stream terminations directly,
+  rather than only checking whether *a* response arrived at all, catches this specific failure
+  mode.
+- **Tool-call failure tracking** — logging every tool/API call an agent makes along with its
+  success/failure and latency, the same operational discipline any microservice dependency gets,
+  but specifically scoped to the *agent's* tool integrations rather than the agent's own compute.
+- **Amazon Bedrock AgentCore Observability** — the managed service purpose-built for this
+  surface: it traces an agent's full execution path (planning, tool calls, retrieval calls,
+  final synthesis) and surfaces exactly these failure types (coordination failures, truncated
+  streams, tool failures) as first-class, dashboarded metrics rather than requiring you to
+  hand-instrument every agent framework's internals yourself.
+- **Exam-relevant trap:** treating an agent's wrong answer as purely a "model quality" problem
+  (routing straight to Domain 2's NLP eval metrics) when the actual root cause is a coordination
+  or tool failure upstream of generation — this task statement exists specifically because that
+  upstream failure surface needs its own dedicated monitoring, not just end-to-end output quality
+  checks.
+
+## NEW skill 4.1.6 — Configuring AI-specific performance monitoring for FMs
+
+Distinct from agent-level monitoring above, this task statement covers monitoring the foundation
+model *call* itself in production — latency, error rate, and quality, at the model-invocation
+level:
+
+- **Amazon Bedrock evaluations (production monitoring mode)** — beyond the one-time model-
+  selection evaluation (Domain 2's task 2.1.1), Bedrock evaluations can run continuously against
+  a sample of live production traffic, tracking the same NLP/LLM-as-a-judge metrics over time to
+  catch a quality regression (e.g., after a provider-side base model update) the same way Model
+  Monitor catches classic-ML drift.
+- **Amazon CloudWatch generative AI observability** — purpose-built CloudWatch dashboards and
+  metrics for GenAI workloads specifically: token throughput, invocation latency percentiles,
+  throttling rate against a Provisioned Throughput commitment, and Guardrails intervention rate
+  (how often input/output filtering actually blocks something) — the GenAI-era counterpart to
+  classic CloudWatch metrics on a SageMaker endpoint (invocations, latency, errors), adapted to
+  what's actually meaningful for a token-metered, filtered GenAI call.
+- **The exam-relevant layering with 4.1.5 above:** 4.1.6 monitors the *model call* (is Bedrock
+  itself responding correctly, quickly, within quota); 4.1.5 monitors the *agent* built on top of
+  potentially many such calls (did the overall multi-step workflow coordinate correctly) — a
+  scenario can have healthy 4.1.6 metrics (every individual model call succeeded, fast) while
+  still failing on 4.1.5 (the agent's orchestration logic still produced a wrong end-to-end
+  result) — recognizing these as two different, complementary monitoring layers is the specific
+  skill being tested.
+
+## NEW skill 4.3.1 — Securing ML/AI CI/CD pipelines (CodeGuru, Amazon Inspector)
+
+**Plain English:** this task statement extends Domain 3's CI/CD automation with a security gate
+specifically scanning the *pipeline's own artifacts* — training/inference code and container
+images — for vulnerabilities, before they ever reach a running training job or endpoint.
+
+```mermaid
+flowchart LR
+    A["Code commit<br/>(training/inference script)"] --> B["Amazon CodeGuru Reviewer:<br/>static code analysis<br/>(security + quality issues)"]
+    B --> C{"Issues found?"}
+    C -->|"Critical"| D["Pipeline blocked,<br/>fix required"]
+    C -->|No/minor| E["Container image built"]
+    E --> F["Amazon Inspector:<br/>scans image for known<br/>CVEs in dependencies/OS packages"]
+    F --> G{"Critical CVE found?"}
+    G -->|Yes| D
+    G -->|No| H["Image promoted to ECR,<br/>pipeline continues<br/>(Domain 3's CI/CD flow)"]
+```
+
+- **Amazon CodeGuru Reviewer** — automated static analysis of the actual training/inference
+  *code* (not the container), flagging security issues (e.g., hardcoded credentials, injection
+  risks) and code-quality issues before merge — the ML-pipeline-specific application of a code
+  review gate that any software CI/CD pipeline would want, now explicitly named as in-scope for
+  this cert.
+- **Amazon Inspector** — scans container images (and, more broadly, EC2/Lambda resources) for
+  known vulnerabilities (CVEs) in OS packages and language dependencies — directly relevant to
+  this domain because every SageMaker/Bedrock pipeline's training and inference containers are
+  exactly the kind of image Inspector is built to scan, and a vulnerable base image reaching
+  production is a real, exam-recognized risk distinct from the model/data security already
+  covered under task 4.3's IAM/VPC/KMS content.
+- **Why this is new, Domain-4-specific content, not just "general AWS security":** prior to C02,
+  this domain's security content was about the *deployed resource's* access controls (who can
+  call this endpoint, is this data encrypted); this task statement is about the *pipeline
+  itself* — the code and images flowing through CI/CD before anything is even deployed — closing
+  a gap the earlier exam guide left untested.
+
+## NEW skill 4.3.8 — Selecting the appropriate credential type to access FMs
+
+**Plain English:** calling a Bedrock foundation model needs credentials, and — new in C02 — there
+are now two meaningfully different credential types to choose between, each with real tradeoffs:
+
+| Credential type | What it is | Best fit | Tradeoff |
+|---|---|---|---|
+| **IAM credentials** (roles/users with an IAM policy granting `bedrock:InvokeModel` etc.) | The standard AWS identity/access mechanism used everywhere else in this repo | Server-side applications already running inside AWS with an execution role (a Lambda function, a SageMaker-hosted app, an EC2 instance) | Full AWS IAM policy granularity (resource-level permissions, condition keys) but requires the calling environment to already have an AWS identity context |
+| **Amazon Bedrock API keys** | A simpler, portable credential specifically for accessing Bedrock, independent of a full IAM principal | Quick prototyping, third-party/external callers, or contexts where standing up a full IAM role is disproportionate overhead for the need | Less granular control than a full IAM policy; a leaked API key is a more direct exposure than a scoped IAM role, so rotation/handling discipline matters more |
+
+- **The exam-relevant selection logic:** a scenario describing an application already running
+  inside AWS infrastructure with an execution role naturally reaches for IAM credentials (reusing
+  the exact least-privilege discipline this domain's security section already covers); a scenario
+  describing rapid prototyping, an external partner integration, or a lightweight script that
+  shouldn't need a full IAM setup is the signal for Bedrock API keys instead.
+- **Security discipline applies to both, not just IAM** — "least privilege" and "credential
+  rotation" aren't IAM-exclusive concepts; a Bedrock API key should be scoped as narrowly as
+  possible and rotated on a schedule exactly like an IAM access key would be, the same underlying
+  principle from task 4.3's IAM section, just applied to a different credential mechanism.
 
 ## How It Works — operate, monitor, secure loop for a live model
 
@@ -218,6 +355,69 @@ four task statements is represented in one coherent, realistic scenario, which i
 shape a case-study-style exam question uses — testing whether you can correctly route each
 sub-requirement (monitoring, cost, security, responsible AI) to its specific AWS mechanism rather
 than offering one vague "use SageMaker" answer for the whole thing.
+
+## Use Cases — Real Scenarios
+
+1. A travel-booking agent's wrong-answer complaints spike even though CloudWatch GenAI
+   observability shows every individual Bedrock call succeeding quickly — the team correctly
+   escalates to AgentCore Observability and finds a tool-call failure being silently swallowed
+   mid-workflow, exactly the two-layer monitoring distinction this domain's 4.1.5/4.1.6 split
+   tests.
+2. A security team adds Amazon Inspector scanning to every SageMaker training container build,
+   catching a known-vulnerable base-image OS package before it ever reaches a training job running
+   against sensitive customer data.
+3. A fast-moving startup uses Bedrock API keys for a weekend prototype integration with an
+   external partner's system, deliberately avoiding the overhead of provisioning a full IAM role
+   for a short-lived, low-stakes experiment, then migrates to IAM credentials once the
+   integration becomes a permanent production dependency.
+4. A regulated bank's compliance team requires IAM credentials (never Bedrock API keys) for every
+   production FM call specifically because they need the fine-grained, auditable, condition-key-
+   based access control IAM policies provide for a regulatory audit trail.
+5. A media company's CloudWatch GenAI dashboard shows a rising Guardrails intervention rate week
+   over week, prompting an investigation that finds a recent marketing campaign driving unusually
+   adversarial user prompts, not a Guardrails misconfiguration.
+6. A customer-service platform's AgentCore Observability trace reveals a specific recurring
+   truncated-streaming pattern tied to one particular downstream API's slow p99 latency, leading
+   the team to add a timeout/retry policy to that one tool rather than broadly tuning every agent
+   parameter.
+7. A fintech's CI/CD pipeline blocks a code commit after CodeGuru Reviewer flags a hardcoded
+   credential accidentally left in an inference script, catching the issue before the container
+   is ever built, let alone deployed.
+8. A data science team runs a Bedrock evaluation continuously against 1% of live production
+   traffic, catching a subtle quality regression within a day of a provider-side base model
+   update, rather than discovering it weeks later from user complaints.
+9. An e-commerce platform scoped its Bedrock API key to a single model ID and a strict request
+   quota for a specific low-trust integration, applying the same least-privilege discipline this
+   domain teaches for IAM to a non-IAM credential type.
+10. A platform team builds a shared CloudWatch dashboard combining classic SageMaker Model Monitor
+    drift metrics alongside GenAI observability metrics (token throughput, Guardrails rate), giving
+    leadership one unified operational view across both the company's classic-ML and GenAI
+    production systems rather than two disconnected dashboards.
+
+## How This Domain's Services Work Together — The Big Picture
+
+Domain 4's services form three concentric rings around every live model/agent, each answering a
+different question continuously, for as long as the system stays in production. **The innermost
+ring (health)** asks "is this still working correctly" — SageMaker Model Monitor watching for
+data/concept drift on classic models, Bedrock evaluations and CloudWatch GenAI observability
+watching FM call quality and latency, and AgentCore Observability watching whether multi-step
+agent coordination is still succeeding — three different tools because three different failure
+surfaces exist (a drifted classic model, a degraded FM response, and a broken agent handoff all
+look completely different operationally, even though all three mean "something that used to work
+no longer does"). **The middle ring (cost)** asks "is this still affordable at this usage level"
+— purchasing-option decisions (Spot/Savings Plans/Provisioned Throughput) for predictable usage,
+Inference Recommender for sizing uncertainty, and — new in C02 — token/embedding/vector-storage
+cost tracking and agent-level resource consumption monitoring, since a GenAI system's cost scales
+with usage in a way a fixed-instance classic endpoint's cost never did. **The outermost ring
+(trust and safety)** asks "is this still secure and responsible" — IAM/VPC/KMS protecting the
+underlying infrastructure and data, CodeGuru/Inspector protecting the CI/CD pipeline that builds
+and ships it, Bedrock API-key-vs-IAM credential selection controlling who can even invoke it, and
+SageMaker Clarify/Bedrock Guardrails ensuring what it produces is fair and safe. All three rings
+run continuously and in parallel, not sequentially, and the exam's favorite cross-ring scenario
+is a problem that looks like it belongs to one ring but is actually rooted in another — a cost
+spike (middle ring) that's actually caused by a retry storm from an undetected tool failure
+(inner ring), or a security incident (outer ring) that was actually enabled by an overly broad
+Bedrock API key nobody thought to scope down (also outer ring, but the less-obvious half of it).
 
 ## Troubleshooting / Common Issues
 

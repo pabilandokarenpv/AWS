@@ -15,6 +15,8 @@ all; use the alternatives below for those.*
 | 4 | Load-test a local endpoint, the Inference Recommender way | locust | Task 4.2 |
 | 5 | Bias + explainability on a real model | Fairlearn, SHAP | Task 4.4 |
 | 6 | A local Guardrails stand-in | regex + Hugging Face toxicity model | Task 4.4 |
+| 7 | Simulating agent coordination failures and tool-call tracing | plain Python | Task 4.1.5 — agent observability |
+| 8 | Static code + dependency vulnerability scanning | bandit, pip-audit | Task 4.3.1 — secure ML/AI CI/CD |
 
 ## Lab 1 — What Floci can do here (real strength)
 
@@ -220,6 +222,89 @@ ML-based classifiers plus pattern matching plus, for some checks, formal logic),
 the exact two-sided (input AND output) filtering architecture from this domain's dedicated topic
 doc using entirely free, local tooling.
 
+## Lab 7 — Simulating agent coordination failures and tool-call tracing
+
+```python
+import time, random, json
+
+def traced_tool_call(tool_name, fn, *args, **kwargs):
+    start = time.time()
+    try:
+        result = fn(*args, **kwargs)
+        status = "success"
+    except Exception as e:
+        result = str(e)
+        status = "failure"
+    trace_event = {
+        "tool": tool_name,
+        "status": status,
+        "latency_ms": round((time.time() - start) * 1000, 1),
+        "result": result,
+    }
+    print("TRACE:", json.dumps(trace_event))
+    return trace_event
+
+def flaky_order_lookup(order_id):
+    if random.random() < 0.3:  # simulate a real ~30% intermittent failure rate
+        raise TimeoutError(f"order-status API timed out for {order_id}")
+    return f"Order {order_id} is out for delivery."
+
+def run_agent_turn(order_id, run_number):
+    print(f"\n--- Agent run {run_number} ---")
+    trace = traced_tool_call("OrderStatusAPI", flaky_order_lookup, order_id)
+    if trace["status"] == "failure":
+        print("Agent falls back to: 'I'm having trouble checking that right now, please try again.'")
+    else:
+        print(f"Agent responds: {trace['result']}")
+    return trace
+
+traces = [run_agent_turn("ORD-1001", i) for i in range(10)]
+failure_rate = sum(1 for t in traces if t["status"] == "failure") / len(traces)
+print(f"\nObserved tool-call failure rate across 10 runs: {failure_rate:.0%}")
+if failure_rate > 0.15:
+    print("ALERT: tool-call failure rate exceeds 15% threshold -- investigate OrderStatusAPI reliability.")
+```
+
+This reproduces the exact tool-call tracing and threshold-alerting pattern `README.md`'s agent
+observability section describes — each tool call is logged with status and latency (what
+AgentCore Observability captures automatically for a real Bedrock Agent), and a simple threshold
+check demonstrates the "alert when coordination-failure rate trends up" behavior described there,
+entirely with plain Python and no managed observability service required to see the concept work.
+
+## Lab 8 — Static code and dependency vulnerability scanning, the real alternative to CodeGuru + Inspector
+
+```bash
+pip install bandit pip-audit
+```
+
+```python
+# vulnerable_inference.py -- deliberately includes two real, detectable issues
+import subprocess
+
+AWS_SECRET_KEY = "AKIAIOSFODNN7EXAMPLE"  # hardcoded credential -- a real CodeGuru-style finding
+
+def run_preprocessing(user_supplied_filename):
+    # shell=True with unsanitized input -- a real injection risk
+    subprocess.run(f"cat {user_supplied_filename}", shell=True)
+```
+
+```bash
+bandit vulnerable_inference.py
+```
+
+Run this and confirm Bandit (a free, open-source Python static-analysis security scanner) flags
+both issues — a hardcoded credential and a shell-injection risk — the same category of findings
+Amazon CodeGuru Reviewer surfaces for training/inference code inside a real CI/CD pipeline.
+
+```bash
+pip-audit
+```
+
+Run `pip-audit` against any project's installed dependencies to get a real, free list of known
+CVEs in your current package versions — the dependency-scanning half of what Amazon Inspector
+does for a built container image, here run directly against a Python environment instead of a
+container.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
@@ -230,6 +315,43 @@ doc using entirely free, local tooling.
 | Configure/test Bedrock Guardrails | ❌ no Bedrock emulation | A local keyword/regex blocklist plus Hugging Face's free `unitary/toxic-bert` model for a conceptual stand-in for output content filtering |
 | Practice VPC network isolation for a training job (no internet access) | ✅ Floci DOES support VPC APIs | `awslocal ec2 create-vpc` / `create-subnet` with no NAT/internet gateway route — the real pattern for "training job must have no internet access" |
 | See real SageMaker Savings Plan / Spot discount percentages | ❌ not emulated | Check the live SageMaker pricing page, or practice the *decision* (steady vs. bursty vs. interruption-tolerant) using real EC2 Spot Instances, which Floci's compute emulation does cover conceptually |
+| Run Amazon CodeGuru Reviewer / Amazon Inspector against real CI/CD artifacts | ❌ not emulated | **Lab 8's bandit + pip-audit** — real, free, open-source static-analysis and dependency-CVE scanners catching the same category of issues |
+| See a real AgentCore Observability trace for a live Bedrock Agent | ❌ no Bedrock emulation | **Lab 7's traced tool-call simulation** — the same status/latency/failure-rate tracing concept, run against a local flaky function instead of a real agent |
+
+## Use Cases — Real Scenarios
+
+1. A student reproduces Lab 2's KS-test drift detection with a deliberately tiny, realistic shift
+   (`loc=36` vs. training's `loc=35`) to personally confirm the test correctly reports "no
+   significant drift," building intuition for why drift detection isn't triggered by any change
+   at all, only a statistically meaningful one.
+2. An ML platform team adopts Lab 1's VPC-with-no-route-table pattern as their default template
+   for any new sensitive-data training job, copy-pasting the exact "deliberately skip the
+   internet/NAT gateway" step as a checklist item for every new project.
+3. A fairness reviewer runs Lab 5's SHAP explainability against their own trained model before a
+   compliance review, generating a real local-explanation example to show auditors rather than
+   only describing the concept abstractly.
+4. A support engineering team builds Lab 6's keyword+toxicity-classifier Guardrails stand-in to
+   prototype content-filtering rules cheaply before committing to the exact rule set they'll
+   later configure in real Bedrock Guardrails.
+5. A platform reliability engineer runs Lab 7's agent-tracing simulation with the failure rate
+   dialed up to 50% to see how quickly the alerting threshold fires, calibrating their own
+   production alert threshold against a known, controlled failure rate first.
+6. A security-conscious startup runs Lab 8's bandit scan against their actual training pipeline
+   code before their first production deployment, catching a hardcoded credential their own code
+   review had missed.
+7. A finance team uses Lab 4's locust load test to generate real latency/throughput numbers
+   before approving a SageMaker Inference Recommender job against the same model on paid infra,
+   validating the testing approach costs nothing before scaling it up.
+8. A compliance team reproduces Lab 3's concept-drift simulation to explain to a non-technical
+   stakeholder, using real printed numbers, why "the inputs look the same" doesn't guarantee "the
+   model is still correct" — a distinction that's hard to convey without a concrete example.
+9. A DevOps engineer runs `pip-audit` (Lab 8) against a real, already-deployed inference
+   container's dependency manifest and discovers an unpatched CVE in a transitive dependency
+   nobody on the team had flagged, triggering an unplanned but necessary patch cycle.
+10. A new hire runs all three of Labs 1, 7, and 8 in their first week specifically because they
+    cover this domain's three "rings" (security, agent health, pipeline security) with the least
+    AWS-account setup required of any domain's labs, making them the fastest path to real,
+    hands-on understanding before touching a paid account.
 
 ## Recommended real-AWS free tier path
 

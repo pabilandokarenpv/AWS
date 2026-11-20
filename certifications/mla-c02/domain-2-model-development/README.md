@@ -317,7 +317,6 @@ half for quality — a distinct, ongoing optimization activity, not a one-time s
   `ml-fundamentals-glossary.md`'s task statement 2.3.10 section, not just "it feels better" —
   retrieval optimization without a measured before/after comparison is guessing, not tuning.
 
-
 ## Use Cases — Real Scenarios
 
 1. A customer-insights team evaluates Claude, Titan, and Llama models on their own 50

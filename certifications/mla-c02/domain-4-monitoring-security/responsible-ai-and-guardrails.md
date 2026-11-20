@@ -162,7 +162,7 @@ step.
   independently of any foundation model call — useful for filtering content from a third-party or
   self-hosted model that isn't a native Bedrock model invocation at all.
 
-## Use Cases — When to Use It
+## Use Cases — Real Scenarios
 
 - A hiring/lending/insurance model (high-stakes, regulated decisions about people) → run
   SageMaker Clarify pre- and post-training bias checks as a mandatory step, not optional.
@@ -176,6 +176,25 @@ step.
 - A company wants to apply consistent safety filtering across both a Bedrock-native model and a
   self-hosted open-source model used elsewhere in the same product → the standalone
   `ApplyGuardrail` API, decoupled from any specific model invocation.
+- A hiring platform's candidate-ranking summaries are screened using an LLM-as-a-judge bias rubric
+  (see Domain 2's `ml-fundamentals-glossary.md`) in addition to Clarify's numeric disparate-impact
+  metric, specifically because free-text generated summaries need a different bias-detection
+  mechanism than a structured approval/rejection decision does.
+- A healthcare chatbot's training corpus is screened for content-safety issues (task 1.3.6, Domain
+  1) before fine-tuning even begins, as the upstream complement to Guardrails' downstream output
+  filtering — both run, neither substitutes for the other.
+- A financial-services firm selects Bedrock API keys for a low-risk internal prototyping sandbox
+  but requires full IAM credentials with Guardrails attached for every production customer-facing
+  call, directly combining the credential-type decision (task 4.3.8) with responsible-AI
+  safeguards (task 4.3.9) in one coherent access policy.
+- A multinational retailer runs Clarify's image-modality bias check (Domain 1's task 1.3.4) on
+  its visual-search feature's training images after text-only bias checks came back clean,
+  discovering underrepresentation in one product category's training photos that the text-only
+  check had no way to detect.
+- An insurance company documents a Clarify-flagged disparity as legitimate (explained by a real,
+  job/risk-relevant factor) rather than bias, following the exact "not every disparity is bias"
+  judgment call this document's case study walks through, with the documentation itself kept as
+  part of the audit trail for the next regulatory review.
 
 ## When NOT to Use It / Alternatives
 

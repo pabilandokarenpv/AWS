@@ -233,7 +233,6 @@ vector store, and — for a mature pipeline — runs the same automated retrieva
 (Domain 2's task 2.3.10 metrics) after each refresh to confirm the update didn't regress
 retrieval quality before fully rolling it out to production traffic.
 
-
 ## How It Works — full MLOps CI/CD with SageMaker Pipelines
 
 ```mermaid

@@ -110,6 +110,103 @@ The exam-relevant point: a question describing rising GenAI costs is very often 
 you reach for "reduce tokens processed" (the actual cost driver) rather than an instance-sizing
 or Spot/Reserved answer that simply doesn't apply to token-metered billing.
 
+## NEW skill 4.2.7 — Evaluating cost implications of FM inference in production
+
+**Plain English:** before and after launching a GenAI feature, cost has to be actually projected
+and then validated against reality, not assumed — FM inference cost scales with usage in a way
+that's easy to underestimate during a demo (low traffic, short prompts) and then get surprised by
+in production (real traffic, real-length conversations, real RAG context sizes).
+
+- **Pre-launch projection** — estimate tokens per request (prompt + retrieved context + expected
+  output length) × expected request volume × the specific model's per-token rate, for both input
+  and output tokens separately (output is typically priced higher). A RAG-based feature's
+  projection must include the retrieved-context tokens, not just the user's own message — a
+  common underestimation source, since a 20-word user question can trigger a prompt carrying
+  several thousand tokens of retrieved context.
+- **Post-launch validation** — compare actual Cost Explorer/CloudWatch GenAI observability token
+  metrics against the pre-launch projection within the first weeks of real traffic, specifically
+  checking whether conversation length, RAG context size, or request volume diverged from what
+  was assumed — the exact investigation `ml-cost-optimization.md`'s existing DataPulse case study
+  (below) walks through in detail.
+- **The exam-relevant discipline:** treating a GenAI cost projection as a one-time estimate that
+  doesn't need revisiting after launch is the trap — production usage patterns (longer
+  conversations than tested, more aggressive RAG retrieval than the demo used) routinely diverge
+  from pre-launch assumptions, and this task statement expects ongoing validation, not a single
+  upfront estimate.
+
+## NEW skill 4.2.8 — Monitoring agent resource consumption
+
+An agent's cost isn't one number — it's the sum of every model call, tool call, and retrieval
+call it makes across a single run, and a multi-step agent can call the underlying foundation
+model several times for one user-facing interaction (once to plan, once per tool result it needs
+to interpret, once to synthesize the final answer).
+
+```mermaid
+flowchart TD
+    A["One user request"] --> B["Agent planning call<br/>(tokens: prompt + instructions)"]
+    B --> C["Tool call 1<br/>(external API, own cost<br/>if metered)"]
+    C --> D["Agent interprets<br/>tool result<br/>(another model call)"]
+    D --> E["Tool call 2"]
+    E --> F["Agent synthesizes<br/>final answer<br/>(another model call)"]
+    F --> G["Total cost for ONE<br/>user interaction =<br/>sum of 3 model calls<br/>+ 2 tool calls"]
+```
+
+- **Why per-agent-run cost can be a multiple of a single model call's cost** — a naive cost
+  estimate based on "one Bedrock call's price" badly undercounts an agentic workflow where a
+  single user question triggers three or more separate model invocations plus external tool
+  costs, each billed independently.
+- **Monitoring practice** — tag and track cost per agent run (not just per raw model invocation),
+  using AgentCore Observability's traced execution path (Domain 4's 4.1.5 content) to attribute
+  cost to the specific planning/tool/synthesis steps that drove it, so an optimization effort can
+  target the actual expensive step rather than guessing.
+- **A common real finding** — an agent re-planning in a loop (stuck re-attempting a failing tool
+  call several times before giving up) silently multiplies cost for a single user interaction far
+  beyond the expected 2-3 model calls — exactly the kind of coordination failure 4.1.5's
+  monitoring is designed to catch, here viewed through its cost consequence rather than its
+  correctness consequence.
+
+## NEW skill 4.2.9 — Managing FM inference costs with usage optimization
+
+Beyond the one-time purchasing-option decision (Spot/Savings Plan/Provisioned Throughput,
+covered above), this task statement covers the *ongoing* optimization levers available once a
+GenAI feature is live:
+
+- **Prompt compression/trimming** — removing boilerplate, redundant instructions, or
+  unnecessarily verbose system prompts without changing behavior — a direct token reduction with
+  no quality cost when done carefully.
+- **Context window management for conversations** — summarizing or truncating older conversation
+  turns instead of resending the full growing history on every request (the exact "unbounded
+  conversation history" cost driver named in this document's existing GenAI cost-lever diagram).
+- **Caching repeated or near-identical requests** — if a meaningful fraction of requests are
+  genuinely repeated (the same FAQ-style question asked by many users), caching the response
+  avoids paying for the same generation twice — a lever classic instance-based cost optimization
+  never needed, since a classic endpoint's cost doesn't scale per-request the way token billing
+  does.
+- **Model right-sizing as an ongoing practice, not a one-time choice** — periodically re-
+  evaluating whether a smaller/cheaper model (possibly a distilled one, see Domain 1's task 1.2.9)
+  can now handle a task a larger model was originally needed for, as usage patterns and available
+  models both evolve over time.
+
+## NEW skill 4.2.10 — Monitoring AI-specific cost patterns
+
+This task statement names three AI-specific cost categories that need to be tracked *separately*
+from each other and from classic compute cost, since conflating them hides exactly where money is
+actually going:
+
+| Cost category | What drives it | How to monitor it |
+|---|---|---|
+| **Token usage (inference)** | Input + output tokens processed per FM call | CloudWatch GenAI observability token-throughput metrics; Cost Explorer filtered to Bedrock |
+| **Embedding computation cost** | Tokens processed during the embedding step of RAG ingestion/re-indexing (Domain 1) | Tracked separately from inference tokens — a large one-time corpus embedding run can spike cost in a way that looks like an inference-cost anomaly if not categorized correctly |
+| **Vector database storage cost** | Ongoing storage (and, for OpenSearch, compute) cost of the vector store itself, independent of how many queries run against it | OpenSearch Service/Serverless OCU-hours or RDS instance cost; S3 Vector Buckets' storage + request pricing — a cost that accrues even with zero query traffic, unlike pure request-based inference billing |
+
+**The exam-relevant discipline:** a rising total GenAI bill with all three categories lumped
+together obscures the fix — a spike driven by embedding cost (a one-time re-indexing of a much
+larger corpus) needs a completely different response than a spike driven by inference token
+growth (prompt/context bloat) or vector storage growth (an ever-expanding, never-pruned
+document corpus) — this task statement expects you to break total cost down into these three
+categories *before* diagnosing the cause, not treat "GenAI cost went up" as one undifferentiated
+problem.
+
 ## Key Features / Components
 
 - **Managed Spot Training** — automatic checkpointing to S3 so a reclaimed/interrupted job
@@ -134,7 +231,7 @@ or Spot/Reserved answer that simply doesn't apply to token-metered billing.
   service usage (rather than the whole account) with a forecasted-spend alert, catching a cost
   trend before it becomes a surprise bill rather than after.
 
-## Use Cases — When to Use It
+## Use Cases — Real Scenarios
 
 - Nightly batch retraining jobs with no hard deadline → Managed Spot Training.
 - A production-critical endpoint with stable, forecastable daily traffic → SageMaker Savings Plan.
@@ -146,6 +243,21 @@ or Spot/Reserved answer that simply doesn't apply to token-metered billing.
   Throughput, once usage is established enough to commit confidently.
 - A new GenAI feature is still being validated with uncertain adoption → stay On-Demand per-token
   until usage patterns are predictable enough to justify a Provisioned Throughput commitment.
+- A RAG-based legal assistant's bill unexpectedly doubles after a routine policy update → the
+  team separates embedding-computation cost from inference-token cost in Cost Explorer and finds
+  the culprit is a full corpus re-embed, not rising chatbot usage — exactly the category-first
+  diagnosis task 4.2.10 names.
+- A customer-support agent's per-interaction cost is 4x a single model call's list price → the
+  team traces this through AgentCore Observability and finds a planning step re-invoking the
+  model three extra times per request due to an ambiguous tool description, fixing the root
+  coordination issue rather than only trying to negotiate a lower per-token rate.
+- A healthcare documentation startup pre-launch-projects its new ambient-scribe feature's token
+  cost using expected encounter length and retrieved-context size, then validates the projection
+  against real usage in week one and discovers conversations run 3x longer than the demo data
+  assumed, triggering an early context-summarization fix before the bill compounds further.
+- A logistics company's vector database bill keeps climbing even though query volume is flat —
+  investigation finds an ever-growing, never-pruned shipment-document corpus driving pure storage
+  growth, a cost category completely independent of inference or embedding cost.
 
 ## When NOT to Use It / Alternatives
 

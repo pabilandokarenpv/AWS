@@ -182,6 +182,14 @@ describing "also take an action or look up live system state" needs an Agent on 
 - **Multimodal embeddings** — some embedding models (and Bedrock Knowledge Bases' newer "smart
   parsing" features) can embed images and tables extracted from documents alongside text, so a
   question can retrieve a relevant diagram or table, not only prose paragraphs.
+- **Hybrid search** — combining traditional keyword search (exact-term matching, useful for
+  product codes, names, or acronyms that embeddings alone might blur together) with vector
+  similarity search in the same query, improving recall for queries that mix a precise term with
+  a conceptual question.
+- **Re-ranking** — an optional second pass after the initial top-K similarity search, using a
+  more expensive but more accurate model to re-order the retrieved candidates by true relevance
+  before they're sent to the generation step — a lever for improving answer quality when plain
+  vector similarity alone surfaces technically-close-but-not-actually-useful chunks.
 
 ### Multimodal embeddings — images and audio, in the same vector space as text
 
@@ -208,15 +216,6 @@ both possible using the exact same nearest-neighbor mechanism as text-only RAG.
   the correct pipeline is: embed the uploaded photo and every listing photo with the *same*
   multimodal embedding model, then run nearest-neighbor search exactly as described earlier in
   this document, just with image vectors instead of text vectors.
-
-- **Hybrid search** — combining traditional keyword search (exact-term matching, useful for
-  product codes, names, or acronyms that embeddings alone might blur together) with vector
-  similarity search in the same query, improving recall for queries that mix a precise term with
-  a conceptual question.
-- **Re-ranking** — an optional second pass after the initial top-K similarity search, using a
-  more expensive but more accurate model to re-order the retrieved candidates by true relevance
-  before they're sent to the generation step — a lever for improving answer quality when plain
-  vector similarity alone surfaces technically-close-but-not-actually-useful chunks.
 
 ### Choosing a vector store — a decision guide
 
@@ -258,7 +257,6 @@ minutes." Walking the table above: this needs relational joins against frequentl
 structured data *in the same query* as a vector search — the deciding factor is the join
 requirement, not raw scale or latency, so **RDS/Aurora + `pgvector`** is the correct configuration
 choice here, even though OpenSearch could technically also serve the vector half alone.
-
 
 ### Worked example — sizing a RAG pipeline for a real company
 

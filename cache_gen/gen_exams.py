@@ -1932,4 +1932,1375 @@ wrong={
 3: "Polling every second for 48 hours (over 172,000 calls) is extremely wasteful and unnecessary compared to an event-driven callback via task tokens.",
 },
 links=[L("application-integration/step-functions.md")]),
+
+dict(stem="""A gaming leaderboard application uses ElastiCache for Redis to store real-time
+player scores, sorted sets, and session data. As the player base grows past what a single Redis
+node's memory can hold, the team needs to scale the dataset horizontally across multiple nodes
+while keeping sub-millisecond read/write latency. What ElastiCache for Redis feature enables this?""",
+multi=False,
+options=[
+"Redis Cluster Mode Enabled — it shards data across multiple node groups (each with a primary and optional replicas), automatically distributing keys by hash slot so the total dataset can exceed a single node's memory capacity while each shard independently serves its portion of the keyspace.",
+"Switching to ElastiCache for Memcached, since Memcached automatically shards data across nodes with zero configuration and Redis cannot do this at all.",
+"Increasing the single node's instance type indefinitely, since Redis has no concept of sharding across multiple nodes.",
+"Enabling Multi-AZ alone, with Cluster Mode left disabled, since Multi-AZ itself distributes the dataset across nodes for horizontal scale.",
+],
+correct=[0],
+explain="""Cluster Mode Enabled is specifically Redis's horizontal-scaling mechanism in
+ElastiCache: the keyspace is partitioned into hash slots distributed across multiple shards (node
+groups), letting total cluster capacity scale well beyond any single node's memory while
+maintaining Redis's characteristic low-latency operations — directly solving "dataset bigger than
+one node can hold.\"""",
+wrong={
+1: "This both overstates Memcached (which does support client-side/consistent-hash-based sharding, not something fundamentally beyond Redis) and understates Redis, which explicitly supports cluster-mode sharding — the comparison as stated is incorrect.",
+2: "Vertically scaling a single node has a hard ceiling (the largest available instance type) and doesn't provide horizontal scale-out; Redis absolutely does support multi-node sharding via Cluster Mode.",
+3: "Multi-AZ (replication group failover) provides high availability for a given shard's data, not horizontal partitioning of the dataset across more capacity — Cluster Mode is the distinct feature needed for that.",
+},
+links=[L("database/elasticache.md")]),
+
+dict(stem="""A nightly batch job needs to invoke a Lambda function at exactly 2:00 AM UTC every
+day to generate a sales report, with no manual trigger and no EC2 instance to keep running just to
+fire the job. What is the correct, fully managed way to schedule this?""",
+multi=False,
+options=[
+"An Amazon EventBridge scheduled rule using a cron expression (e.g. `cron(0 2 * * ? *)`) targeting the Lambda function directly — EventBridge invokes the function on the defined schedule with no infrastructure to manage.",
+"A `while True: time.sleep(86400)` loop inside the Lambda function itself, checking the current time on every wakeup.",
+"An EC2 instance left running 24/7 with a local cron job that calls the Lambda function's URL once a day.",
+"API Gateway configured with a `rate()` limit of one request per day, since usage plans substitute for schedules.",
+],
+correct=[0],
+explain="""EventBridge scheduled rules (cron or rate expressions) are the documented, fully
+managed way to invoke a target like Lambda on a recurring schedule, with zero servers to run or
+maintain — exactly matching "no EC2 instance just to fire a nightly job," which is a Task 1.1
+event-driven-application pattern applied to scheduling.""",
+wrong={
+1: "Lambda has a 15-minute maximum execution duration — it cannot sleep in a loop waiting for the next day; this also wastes billed compute time sitting idle.",
+2: "Keeping an EC2 instance running 24/7 just to fire one daily job defeats the serverless, no-idle-infrastructure goal entirely.",
+3: "API Gateway usage plan quotas limit *how many* requests a client can make; they don't actively trigger an invocation on a schedule — this conflates two unrelated concepts.",
+},
+links=[L("application-integration/eventbridge.md")]),
+
+dict(stem="""A `Products` table has partition key `productId`. A new GSI is added with partition
+key `category` to support "list products in a category" queries. The application only ever needs
+`productId`, `name`, and `price` from that query — never the other 15 attributes on each product
+item. Which GSI projection type minimizes the GSI's storage cost and write amplification while
+still satisfying the query?""",
+multi=False,
+options=[
+"`INCLUDE`, projecting only `productId`, `name`, and `price` (plus the table's keys, which are always projected) into the index — storing exactly the attributes the query needs and nothing more.",
+"`ALL`, projecting every attribute from the base table into the index, since more projected data always performs better regardless of what's actually queried.",
+"`KEYS_ONLY`, since the application can always make a second `GetItem` call per result if needed.",
+"GSIs cannot have a restricted projection; they always copy every attribute from the base table.",
+],
+correct=[0],
+explain="""`INCLUDE` lets a GSI project only the specific non-key attributes actually needed by
+queries against it, minimizing both the extra storage consumed by the index and the write-capacity
+cost of keeping it in sync on every base-table write — the right choice here since exactly three
+non-key attributes are needed and nothing more, which is cheaper than `ALL` and avoids `KEYS_ONLY`'s
+need for a second round-trip per result.""",
+wrong={
+1: "`ALL` costs more in storage and per-write overhead for attributes the query never uses; it's not universally 'better' when a narrower set of attributes is known to be sufficient.",
+2: "`KEYS_ONLY` would require a follow-up `GetItem` per item to fetch `name` and `price`, adding latency and extra read capacity consumption that `INCLUDE` avoids entirely by projecting those specific attributes directly into the index.",
+3: "This is factually incorrect — GSIs explicitly support `KEYS_ONLY`, `INCLUDE`, and `ALL` projection types specifically to let developers control exactly this tradeoff.",
+},
+links=[L("database/dynamodb.md")]),
+
+dict(stem="""A document archive stores millions of files in S3. Compliance requires keeping files
+accessible for 90 days at standard retrieval speed, then moving them to much cheaper archival
+storage for 9 more months (still occasionally retrievable within hours if needed), and permanently
+deleting them after one year total — all without any application code managing the transitions.
+What should be configured?""",
+multi=False,
+options=[
+"An S3 Lifecycle configuration with a transition rule moving objects to S3 Glacier Flexible Retrieval (or Glacier Instant Retrieval) at 90 days, and an expiration rule deleting objects at 365 days — S3 applies both actions automatically with no application involvement.",
+"A Lambda function scheduled via EventBridge to run daily, listing every object in the bucket and manually calling `CopyObject`/`DeleteObject` based on each object's age.",
+"S3 Versioning alone, since old versions are automatically deleted after 90 days by default.",
+"Store the retention rules in a DynamoDB table and have every application read request check the table before deciding whether to serve the file.",
+],
+correct=[0],
+explain="""S3 Lifecycle rules are exactly the native, no-code mechanism for this: transition
+actions move objects between storage classes at defined ages, and expiration actions delete
+objects at a defined age — both evaluated and executed by S3 itself in the background, directly
+matching "90 days standard → archival for 9 months → delete at 1 year" with zero custom code.""",
+wrong={
+1: "Hand-rolling a daily scan-and-migrate Lambda duplicates Lifecycle's built-in functionality with far more code, cost (listing/copying millions of objects), and operational risk.",
+2: "S3 Versioning has no automatic 90-day deletion behavior by default; versions persist until an explicit lifecycle rule or deletion removes them — this option misstates Versioning's behavior.",
+3: "Building a custom retention-tracking table and gating every read on it reinvents what Lifecycle already does natively, with added latency and a new system to maintain.",
+},
+links=[L("storage/s3.md")]),
+
+dict(stem="""A real-time chat application needs clients to maintain a persistent, bidirectional
+connection to the backend so either side can push messages at any time, with each connected
+client's unique connection identifier stored so the backend can target a message to a specific
+user later. Which API Gateway capability, combined with what storage, implements this?""",
+multi=False,
+options=[
+"An API Gateway WebSocket API with `$connect`/`$disconnect`/custom routes, storing each client's `connectionId` (available in the `$connect` route's Lambda event) in a DynamoDB table, then using the API Gateway Management API's `PostToConnection` call to push a message to a specific stored `connectionId` later.",
+"An API Gateway REST API, since REST APIs natively support persistent bidirectional connections with no additional configuration.",
+"Amazon SNS alone, since every SNS subscriber maintains a reusable open HTTP connection to the publisher.",
+"Polling a REST endpoint every 200 milliseconds from each client to check for new messages.",
+],
+correct=[0],
+explain="""WebSocket APIs are API Gateway's purpose-built feature for persistent, bidirectional
+client connections: the `$connect` route event includes the new `connectionId`, which the app
+typically persists in DynamoDB; later, the backend can push a message to any specific stored
+`connectionId` via the API Gateway Management API's `PostToConnection` action — exactly the
+documented "push to a specific connected client" chat pattern.""",
+wrong={
+1: "REST APIs are request/response over HTTP; they have no concept of a persistent, server-push-capable connection — that's specifically what the WebSocket API type adds.",
+2: "SNS delivers to subscribed endpoints (SQS, Lambda, HTTP(S), etc.) per publish; it does not maintain a persistent connection per end-user client the way a WebSocket API does, and isn't designed for per-connection targeted pushes like this.",
+3: "Sub-second polling from every client is far less efficient and far higher latency than a true push-based WebSocket connection, and is exactly the pattern WebSocket APIs exist to replace.",
+},
+links=[L("networking-content-delivery/api-gateway.md")]),
+
+dict(stem="""Choose **TWO** correct statements about fanning out a single `UserSignedUp` event from
+an SNS topic to three independent SQS queues (one per downstream microservice: welcome-email,
+analytics, and fraud-check), where each microservice should process the event at its own pace
+without affecting the others.""",
+multi=True,
+options=[
+"The SNS-to-multiple-SQS fan-out pattern decouples the publisher from the number and identity of consumers — the publishing service only needs to know about the topic, not about any specific downstream queue or service.",
+"Because each microservice has its own SQS queue, one microservice falling behind or failing to process messages does not block or slow down the other two microservices' independent processing of their own queue.",
+"SNS guarantees that a message delivered to one subscribed SQS queue is automatically removed from the other two queues once any one of them processes it.",
+"This pattern requires the publisher to send three separate, individually addressed messages — one per downstream queue — since SNS cannot deliver one message to multiple queues.",
+"Each SQS queue in this fan-out pattern can independently configure its own visibility timeout and DLQ redrive policy, appropriate to that specific microservice's processing characteristics.",
+],
+correct=[0,1],
+explain="""This is the canonical SNS fan-out pattern precisely because it (a) decouples the
+publisher entirely from how many or which services ultimately consume the event, and (b) gives each
+consumer its own independent queue, so one slow or failing consumer's backlog has zero effect on
+the others' throughput — exactly the stated requirement of independent per-microservice pacing.
+(Statement 5 is also factually true of this architecture but isn't one of the two required answers
+for what makes it the right choice here.)""",
+wrong={
+2: "Each subscribed queue receives its own independent copy of the message; processing in one queue has no effect on the copies in the other two queues — there is no cross-queue \"consumed once\" behavior in a fan-out topology.",
+3: "SNS natively fans a single published message out to every subscribed endpoint (including multiple SQS queues) — the publisher sends exactly one message to the topic, not one per destination; this statement misstates how SNS fan-out works.",
+4: "True but not one of the two selected answers — it's a correct supporting detail about independent queue configuration, included to test careful 'choose exactly TWO' selection rather than picking every true-sounding option.",
+},
+links=[L("application-integration/sns.md"), L("application-integration/messaging-patterns-overview.md")]),
 ]
+
+E2_D2 = [
+dict(stem="""An IAM policy attached to a developer role includes:
+```json
+{
+  "Effect": "Allow",
+  "NotAction": "iam:*",
+  "Resource": "*"
+}
+```
+with no other statements in the policy. What does this statement actually grant, and why is
+`NotAction` combined with `Resource: *` and no other conditions a common Task 2.1 misconfiguration
+to watch for?""",
+multi=False,
+options=[
+"It allows every AWS action **except** the listed `iam:*` actions, on every resource — meaning the role gets broad access across virtually every other service (EC2, S3, DynamoDB, etc.), which is almost certainly far more permissive than intended, even though it looks restrictive at a glance because of the word 'Not'.",
+"It denies every action except `iam:*`, which is the opposite of an overly broad grant.",
+"`NotAction` has no effect when combined with `Allow`; this statement grants nothing at all.",
+"It only allows IAM actions, since `NotAction` is a typo for `Action` and AWS silently corrects it.",
+],
+correct=[0],
+explain="""`NotAction` inverts the action list — an `Allow` with `NotAction: iam:*` and `Resource:
+*` grants every action in every other service, which is a dramatically broader grant than it
+appears at first glance. This is a real, documented exam trap: `NotAction` is easy to misread as
+restrictive when paired with `Allow`, when it actually produces a near-administrator-level grant
+unless scoped down with additional conditions or resource restrictions.""",
+wrong={
+1: "This misreads the semantics entirely — with `Effect: Allow`, `NotAction` grants everything *except* the listed actions, not the reverse.",
+2: "`NotAction` is a valid, documented IAM policy element with well-defined (if often misunderstood) semantics; it is not a no-op.",
+3: "`NotAction` and `Action` are two distinct, valid policy elements, not a typo of one another — there is no silent auto-correction in IAM.",
+},
+links=[L("security-identity-compliance/iam.md")]),
+
+dict(stem="""A GitHub Actions CI/CD pipeline needs to deploy to AWS without storing any long-lived
+AWS access keys as GitHub repository secrets, since the team wants to eliminate the risk of a
+leaked long-lived credential entirely. What AWS mechanism supports this keyless pattern?""",
+multi=False,
+options=[
+"`AssumeRoleWithWebIdentity` using OIDC federation — configure an IAM OIDC identity provider trusting GitHub's OIDC token issuer, and a role trust policy scoped to the specific repository/branch, so GitHub Actions exchanges its short-lived OIDC token for short-lived AWS credentials on every run with no stored AWS keys at all.",
+"Store a long-lived IAM user's access key and secret key as encrypted GitHub secrets, and accept the leak risk as unavoidable.",
+"Use the AWS root account's access keys in the pipeline, since root keys never expire and are therefore more reliable for automation.",
+"Hardcode the credentials directly in the workflow YAML file for simplicity, since GitHub's repository is private.",
+],
+correct=[0],
+explain="""`AssumeRoleWithWebIdentity` with an OIDC identity provider is exactly AWS's
+documented keyless CI/CD pattern: GitHub Actions presents a short-lived, workflow-scoped OIDC
+token, IAM verifies it against a configured trust relationship (which can be scoped to specific
+repos/branches/environments), and STS returns short-lived AWS credentials for that run only — no
+long-lived access key ever needs to be created, stored, or rotated.""",
+wrong={
+1: "Storing a long-lived access key, even encrypted as a GitHub secret, is exactly the risk the OIDC pattern is designed to eliminate — it remains a standing credential that could leak or be misused.",
+2: "Root account keys are a severe security anti-pattern under any circumstance — root credentials should never be used for routine automation, and never expiring is a liability here, not a benefit.",
+3: "Hardcoding credentials in a workflow file, private repo or not, is a well-known credential-exposure risk (history, forks, logs, misconfigured visibility) and should never be done regardless of repo privacy settings.",
+},
+links=[L("security-identity-compliance/sts-and-role-switching.md")]),
+
+dict(stem="""A company's mobile app allows anyone to sign up with an email address, but the team
+only wants to allow sign-ups from company-approved partner domains (e.g. `@partnerco.com`), rejecting
+all others at sign-up time, before an account is ever created. Which Cognito feature implements
+this custom business rule?""",
+multi=False,
+options=[
+"A Cognito user pool **Pre Sign-up** Lambda trigger — it runs synchronously during the sign-up flow and can inspect the submitted email domain, returning an error to reject the sign-up (or auto-confirm it) before the user record is created.",
+"An IAM policy attached to the user pool restricting which email domains can call `SignUp`.",
+"A Cognito identity pool role mapping rule, since identity pools handle sign-up validation.",
+"Manually reviewing every new sign-up in the console and deleting unapproved ones after the fact.",
+],
+correct=[0],
+explain="""The Pre Sign-up Lambda trigger is exactly the documented Cognito extension point for
+custom sign-up business logic: it fires synchronously as part of the `SignUp` flow, before the
+user is created, letting custom code (like a domain allow-list check) reject or auto-confirm the
+sign-up — directly implementing "only approved domains may sign up" without any after-the-fact
+cleanup.""",
+wrong={
+1: "IAM policies control which AWS principals can call AWS APIs; they have no visibility into or control over end-user-submitted sign-up form fields like an email domain.",
+2: "Identity pools issue temporary AWS credentials after authentication; they have no role in the user pool's sign-up validation flow at all.",
+3: "Manual post-hoc review and deletion lets unapproved accounts exist (even briefly) and doesn't scale, unlike a synchronous pre-sign-up check that rejects them immediately.",
+},
+links=[L("security-identity-compliance/cognito.md")]),
+
+dict(stem="""A company uses AWS IAM Identity Center with permission sets assigned per-account.
+A contractor needs `ReadOnlyAccess`-level permissions in exactly one of 30 member accounts for a
+3-month engagement, and the team wants this scoped as tightly and auditable as possible, with easy
+revocation at the end of the engagement. What is the correct approach, as opposed to creating a
+standalone IAM user directly in that one account?""",
+multi=False,
+options=[
+"Create (or reuse) a `ReadOnly` permission set in IAM Identity Center and assign it to the contractor's Identity Center user for only that one specific account — granting access through the centrally managed assignment, which can be revoked instantly by removing the assignment, with Identity Center's own audit trail of who has what.",
+"Create a standalone IAM user in that one account with `ReadOnlyAccess` attached directly, and share its password with the contractor over email.",
+"Grant the contractor `AdministratorAccess` in all 30 accounts temporarily, since permission sets cannot be scoped to a single account.",
+"Add the contractor to the AWS Organizations management account's root user credentials.",
+],
+correct=[0],
+explain="""Permission sets in IAM Identity Center are explicitly designed to be assigned per
+user/group and per account — a `ReadOnly` permission set assigned to exactly one account gives
+exactly the scoped, time-boxed access needed, with centralized visibility into every assignment and
+one-click revocation by removing the account assignment when the engagement ends, which is both
+more auditable and more easily revocable than a standalone IAM user.""",
+wrong={
+1: "A standalone IAM user with an emailed password is a far weaker, harder-to-audit, harder-to-revoke-cleanly pattern than a centrally managed Identity Center assignment, and email is not a secure credential-sharing channel.",
+2: "Permission sets are explicitly scoped per-account during assignment; granting broad admin access across all 30 accounts when only one account and read-only access is needed is a severe over-grant.",
+3: "Root user credentials should never be shared with anyone, let alone a short-term contractor — this is one of the most severe possible security anti-patterns.",
+},
+links=[L("security-identity-compliance/iam-identity-center-sso.md")]),
+
+dict(stem="""A company wants every account in a specific Organizational Unit (OU) to be prevented
+from ever disabling AWS CloudTrail or deleting its S3 log bucket, even by an account's own
+administrator, to guarantee an unbroken audit trail for compliance. What is the correct control?""",
+multi=False,
+options=[
+"An SCP attached to that OU that explicitly denies `cloudtrail:StopLogging`, `cloudtrail:DeleteTrail`, and the relevant `s3:DeleteBucket`/`s3:DeleteObject` actions on the logging bucket, for every principal in accounts under that OU — including the account's own root/admin user.",
+"A CloudTrail configuration setting called 'TamperProof Mode' that any account admin can toggle on.",
+"An IAM policy attached only to the specific CloudTrail service role, with no SCP involved.",
+"Trusting that account administrators will simply not do this, with no technical control.",
+],
+correct=[0],
+explain="""Because SCPs bound the maximum permissions available to every principal in an account
+— including that account's own administrators — an SCP explicitly denying the trail-stopping and
+log-bucket-deletion actions is the only one of these options that actually prevents even a
+full-admin account owner from tampering with the audit trail, which is exactly the guarantee a
+compliance requirement like this needs.""",
+wrong={
+1: "No such named feature exists, and even if a toggle like this existed, something an admin can simply toggle would not meet a hard compliance guarantee against that same admin.",
+2: "An IAM policy scoped to a service role doesn't constrain what an account's own administrators (who can edit IAM policies) are able to do — only an SCP, enforced outside the account's own IAM control, can bind the admin themselves.",
+3: "Relying on trust with no enforced technical control doesn't satisfy a compliance requirement for a guaranteed, unbroken audit trail.",
+},
+links=[L("security-identity-compliance/organizations-and-scps.md"), L("management-governance/cloudtrail.md")]),
+
+dict(stem="""Two internal microservices communicate over mutual TLS (mTLS) within a private VPC,
+and the team wants certificates issued by an internal certificate authority that's trusted only
+within the organization (not a publicly trusted CA, since these services are never exposed to the
+public internet). What AWS service should issue these certificates?""",
+multi=False,
+options=[
+"AWS Private Certificate Authority (Private CA) — it operates a managed internal CA hierarchy that issues certificates trusted by anything configured to trust that private root/subordinate CA, appropriate for internal mTLS between services that should never need a publicly trusted certificate.",
+"AWS Certificate Manager's standard public certificate issuance flow, since all ACM certificates are automatically trusted by every client worldwide, public or internal.",
+"Amazon Cognito, since it can issue arbitrary X.509 certificates for any use case.",
+"AWS KMS, since KMS keys can be directly used as TLS certificates with no conversion needed.",
+],
+correct=[0],
+explain="""Private CA is exactly the service for internal-only PKI: it issues certificates from a
+CA hierarchy that's trusted only by systems explicitly configured to trust it (e.g. internal
+service meshes doing mTLS), which is the right tool when certificates are for internal,
+never-public-facing use — unlike public ACM certificates, which are meant for publicly trusted
+TLS endpoints.""",
+wrong={
+1: "Public ACM certificates are issued from a publicly trusted CA chain and are meant for internet-facing endpoints; using that mechanism doesn't make sense (and isn't the documented approach) for purely internal, never-public service-to-service mTLS.",
+2: "Cognito is an identity/authentication service for end users and applications; it does not issue X.509 certificates for mTLS between backend services.",
+3: "KMS manages symmetric/asymmetric encryption keys; a raw KMS key is not itself a TLS certificate and cannot be used as one without an entirely different issuance process (which is what Private CA provides).",
+},
+links=[L("security-identity-compliance/acm-and-private-ca.md")]),
+
+dict(stem="""An application needs to encrypt a large (50 MB) file client-side before uploading it
+to S3, using envelope encryption with a KMS customer-managed key, without sending the entire 50 MB
+payload to KMS itself (which has request size and throughput limits unsuited to bulk data
+encryption). What is the correct envelope encryption flow?""",
+multi=False,
+options=[
+"Call `kms:GenerateDataKey` to get a plaintext data key and its KMS-encrypted counterpart; use the plaintext data key locally (client-side) to encrypt the 50 MB file with a fast symmetric cipher (e.g. AES-256-GCM); discard the plaintext data key from memory; store the encrypted data key alongside the encrypted file (e.g. as S3 object metadata), so decryption later calls `kms:Decrypt` on just the small data key, not the large file.",
+"Send the full 50 MB file directly to `kms:Encrypt`, since KMS has no practical size limit on the data it can encrypt directly.",
+"Use the KMS key's key material to manually derive an AES key using custom application code instead of calling KMS APIs at all.",
+"Store the file unencrypted and instead encrypt only its filename using KMS, which is sufficient for compliance.",
+],
+correct=[0],
+explain="""This is the textbook envelope encryption pattern and exactly why `GenerateDataKey`
+exists: KMS generates and returns both a plaintext and an encrypted copy of a data key, the
+plaintext copy is used locally for fast bulk symmetric encryption of the large payload (never
+sent to KMS), and only the small encrypted data key (not the large file) needs a KMS `Decrypt`
+call later — this is precisely Task 2.2's "envelope encryption" pattern for large data.""",
+wrong={
+1: "`kms:Encrypt` is explicitly documented with a small payload size limit (4 KB for symmetric keys) — it is not designed or usable for directly encrypting a 50 MB file; this option is factually incorrect.",
+2: "KMS key material is deliberately never exposed outside KMS for customer-managed keys backed by KMS's own HSMs — there is no supported way to extract raw key material to derive keys manually, and doing so would undermine the whole security model.",
+3: "Encrypting only the filename leaves the actual file content (the sensitive 50 MB payload) completely unencrypted, failing any real encryption-at-rest requirement.",
+},
+links=[L("security-identity-compliance/kms.md")]),
+
+dict(stem="""An application reads a non-sensitive application configuration value (`maxRetries: 3`)
+from AWS Systems Manager Parameter Store on every Lambda cold start. The team notices this adds
+noticeable latency to every cold start and wants to reduce the number of `GetParameter` API calls
+without hardcoding the value or losing the ability to update it without a redeploy. What should
+they add?""",
+multi=False,
+options=[
+"The AWS Parameters and Secrets Lambda Extension (or an in-memory cache with a TTL inside the handler) to cache the parameter value for a configurable duration within the execution environment, avoiding a fresh `GetParameter` call on every single invocation while still allowing updates to propagate after the cache TTL expires.",
+"Call `GetParameter` once at build time and bake the resulting value permanently into the deployment package.",
+"Increase the Lambda function's memory, which caches Parameter Store values automatically.",
+"Switch from Parameter Store to Secrets Manager, which has zero API latency by design.",
+],
+correct=[0],
+explain="""Caching with a bounded TTL (via the purpose-built Parameters and Secrets Lambda
+Extension, or a simple in-handler cache keyed by execution environment reuse) is the documented
+way to reduce repeated Parameter Store calls while still allowing config changes to take effect
+after the cache expires — directly balancing "fewer calls/less latency" against "still updatable
+without redeploying code," which permanently baking the value in would sacrifice.""",
+wrong={
+1: "Baking the value in at build time means any future change again requires a full redeploy, which is exactly the flexibility the team wants to keep.",
+2: "Memory configuration has no relationship to Parameter Store client-side caching; this is not a real feature of Lambda memory settings.",
+3: "Secrets Manager is also a remote API call with its own latency characteristics; switching services doesn't eliminate network/API call latency, and this statement about zero latency is not accurate.",
+},
+links=[L("security-identity-compliance/secrets-manager-vs-parameter-store.md"), L("compute/lambda.md")]),
+
+dict(stem="""A company runs automated, recurring Amazon Macie sensitive-data discovery jobs across
+all its S3 buckets, and separately wants ongoing vulnerability scanning of its EC2 instances and
+container images for known CVEs. Which two services, together, cover these two distinct needs?""",
+multi=False,
+options=[
+"Amazon Macie for sensitive-data discovery in S3 (already in place) and Amazon Inspector for automated vulnerability scanning of EC2 instances and container images against known CVE databases.",
+"Amazon GuardDuty alone covers both sensitive-data discovery and vulnerability scanning, making a second service unnecessary.",
+"AWS Config alone covers both needs, since it can scan both object content and CVE databases.",
+"AWS Trusted Advisor is the correct tool for CVE-level vulnerability scanning of running workloads.",
+],
+correct=[0],
+explain="""Macie and Inspector are complementary, purpose-specific services: Macie classifies and
+discovers sensitive data at rest in S3, while Inspector automatically and continuously scans EC2
+instances, running container images in ECR, and Lambda functions for known software
+vulnerabilities (CVEs) and network reachability issues — together covering both of the distinct
+needs described, neither of which the other fully replaces.""",
+wrong={
+1: "GuardDuty is a threat-detection service analyzing activity logs for malicious behavior; it does not perform content-level sensitive-data discovery (Macie's job) or systematic CVE vulnerability scanning (Inspector's job).",
+2: "AWS Config evaluates resource *configuration* against rules; it has no sensitive-data content scanning capability and no CVE vulnerability database scanning capability.",
+3: "Trusted Advisor provides general best-practice checks (cost, fault tolerance, some security configuration checks); it is not a CVE/vulnerability scanning engine for running workloads — that is specifically Inspector's purpose.",
+},
+links=[L("security-identity-compliance/macie.md"), L("security-identity-compliance/security-hub-and-inspector.md")]),
+
+dict(stem="""Under the AWS Shared Responsibility Model, for an application using Amazon RDS
+(a managed database service, as opposed to self-managed EC2-hosted MySQL), which of the following
+is AWS's responsibility rather than the customer's?""",
+multi=False,
+options=[
+"Patching the underlying database engine's software, OS, and host infrastructure for a standard RDS-managed deployment.",
+"Configuring the database's security group rules to restrict network access appropriately.",
+"Designing a least-privilege IAM policy for the application's role that connects to the database.",
+"Choosing strong master credentials and rotating them on an appropriate schedule.",
+],
+correct=[0],
+explain="""RDS is explicitly a managed database service — AWS takes on patching the underlying
+engine software and host OS as part of "security OF the cloud," which is the key differentiator
+from self-managed EC2-hosted databases where the customer would be responsible for all of that
+patching themselves. The customer remains responsible for everything else listed (network access
+config, IAM, credential hygiene) as "security IN the cloud.\"""",
+wrong={
+1: "Security group configuration is explicitly the customer's responsibility under the shared responsibility model for any VPC-attached resource, including RDS.",
+2: "IAM policy design for application roles is always the customer's responsibility — AWS never decides an application's own permission scoping for them.",
+3: "Credential strength/rotation practices for the database's own master user are the customer's operational responsibility, even though RDS can assist (e.g. integration with Secrets Manager rotation).",
+},
+links=[L("security-identity-compliance/shared-responsibility-model-deep-dive.md")]),
+
+dict(stem="""A web application behind CloudFront and API Gateway is being probed with crafted
+requests attempting SQL injection in query string parameters. The team wants these blocked
+automatically at the edge using AWS-maintained, continuously updated rule sets, without writing and
+maintaining custom regex rules themselves. What should they use?""",
+multi=False,
+options=[
+"An AWS WAF web ACL with the AWS Managed Rules groups (e.g. the SQL database rule group and the Core Rule Set), associated with the CloudFront distribution/API Gateway stage, so known SQL injection patterns are blocked using rules AWS maintains and updates on an ongoing basis.",
+"A custom Lambda@Edge function that the team writes and maintains itself to pattern-match every known SQL injection signature manually.",
+"AWS Shield Standard, which includes SQL injection-specific managed rule groups.",
+"Amazon GuardDuty, configured to block requests matching SQL injection signatures in real time.",
+],
+correct=[0],
+explain="""WAF's AWS Managed Rules are exactly built for this: pre-built, continuously updated
+rule groups (including a SQL-injection-focused rule group) maintained by AWS, attached to a web ACL
+on CloudFront/API Gateway/ALB — giving "blocked automatically with no custom regex to maintain,"
+which is the documented alternative to hand-rolling detection logic.""",
+wrong={
+1: "Writing and maintaining custom SQL injection detection logic by hand duplicates exactly what AWS Managed Rules already provides, with ongoing maintenance burden the question explicitly wants to avoid.",
+2: "Shield Standard protects against common network/transport-layer DDoS patterns automatically; it has no application-layer rule groups for SQL injection — that's WAF's domain.",
+3: "GuardDuty is a detection service analyzing logs/activity for threats; it does not sit inline blocking HTTP requests at the edge the way a WAF web ACL does.",
+},
+links=[L("security-identity-compliance/waf.md")]),
+
+dict(stem="""Choose **TWO** correct actions for integrating Amazon GuardDuty and AWS Security Hub
+so that a GuardDuty finding indicating a likely-compromised EC2 instance automatically triggers an
+isolation workflow (e.g. quarantining the instance's security group) without a human needing to
+manually notice and act on the finding in the console.""",
+multi=True,
+options=[
+"Enable GuardDuty findings to flow into Security Hub for centralized, aggregated visibility across multiple detection sources, and separately create an EventBridge rule matching the specific GuardDuty finding type/severity that targets a Lambda function (or Systems Manager Automation document) to perform the isolation action automatically.",
+"Configure the EventBridge rule to match on the GuardDuty finding event pattern (e.g. detail-type 'GuardDuty Finding' with a severity threshold), since EventBridge is the mechanism that actually triggers the automated remediation target, not Security Hub aggregation alone.",
+"Security Hub aggregation alone automatically performs remediation actions with no EventBridge rule or target needed.",
+"GuardDuty findings cannot be consumed by EventBridge under any circumstances; only manual console review is supported.",
+"Disable GuardDuty once Security Hub is enabled, since Security Hub replaces GuardDuty's detection capability entirely.",
+],
+correct=[0,1],
+explain="""Automated remediation requires both pieces working together: Security Hub gives
+centralized visibility/aggregation (useful for reporting and prioritization) but does not itself
+execute remediation actions, while an EventBridge rule matching on the GuardDuty finding event is
+the actual trigger that invokes a remediation target (Lambda, SSM Automation, etc.) — Security Hub
+aggregation and the EventBridge-driven trigger are the two distinct, necessary pieces for this
+no-human-in-the-loop workflow.""",
+wrong={
+2: "Security Hub centralizes and prioritizes findings for human/dashboard consumption; it does not independently execute remediation actions without an EventBridge rule (or similar) wired to an actual target.",
+3: "GuardDuty findings are explicitly designed to be consumed as EventBridge events — this is the standard, documented integration path for automated response, so this statement is factually wrong.",
+4: "Security Hub is a findings-aggregation and posture-management service; it does not generate GuardDuty's own threat-detection analytics and does not replace GuardDuty — disabling GuardDuty would remove the actual detection capability entirely.",
+},
+links=[L("security-identity-compliance/guardduty.md"), L("security-identity-compliance/security-hub-and-inspector.md")]),
+
+dict(stem="""A security team wants to know, for compliance audit purposes, exactly which S3
+objects in a sensitive bucket were read (not just which API calls were made to the bucket overall)
+over the last 90 days, including by which IAM principal and at what time, down to the individual
+`GetObject` call. What CloudTrail feature is required, since it is not enabled by default?""",
+multi=False,
+options=[
+"CloudTrail data events for S3 — unlike default management events, data events (which log object-level operations like `GetObject`/`PutObject`) must be explicitly enabled on a trail (often selectively, by bucket/prefix, since they can be high-volume) and record exactly this kind of per-object access detail.",
+"CloudTrail management events alone, since they already log every individual `GetObject` call by default.",
+"VPC Flow Logs, since they capture a log line for every S3 `GetObject` API call automatically.",
+"S3 Versioning, which tracks who read each object version by default.",
+],
+correct=[0],
+explain="""Management events (enabled by default on a trail) capture control-plane operations
+like creating/deleting a bucket or changing its policy — they do **not** capture per-object
+data-plane calls like `GetObject`. Data events are the specific, opt-in CloudTrail feature for
+object-level S3 (and Lambda invoke, DynamoDB item-level, etc.) logging, which is exactly what's
+needed to audit individual object reads by principal and time.""",
+wrong={
+1: "This is factually incorrect — management events do not include individual object-level `GetObject`/`PutObject` calls; that is specifically what data events add.",
+2: "VPC Flow Logs capture IP-layer traffic metadata (source/destination IP, port, bytes) at the network interface level, not which S3 API action was called or by which IAM principal.",
+3: "S3 Versioning tracks object version history for overwrites/deletes; it has no concept of logging *read* access by principal — that is a CloudTrail data events / S3 server access logging concern, not Versioning.",
+},
+links=[L("management-governance/cloudtrail.md"), L("storage/s3.md")]),
+
+dict(stem="""A mobile app uses a Cognito identity pool to let unauthenticated ("guest") users browse
+a public product catalog stored in DynamoDB, without requiring sign-in, while authenticated
+(signed-in) users should additionally be able to write to their own cart data. What is the correct,
+least-privilege way to configure the two Cognito identity pool roles for this?""",
+multi=False,
+options=[
+"Configure the unauthenticated role with read-only IAM permissions scoped to just the public catalog table/items, and configure the authenticated role with the catalog read permissions **plus** write permissions scoped (e.g. via `dynamodb:LeadingKeys` conditions) to only that specific signed-in user's own cart items.",
+"Grant both the unauthenticated and authenticated roles full `dynamodb:*` access on every table, since simplicity outweighs scoping for a mobile app.",
+"Use a single shared role for both unauthenticated and authenticated users, since Cognito identity pools only support one role total.",
+"Give the unauthenticated role write access to the cart table as well, since guests might want to add items before signing in later.",
+],
+correct=[0],
+explain="""Cognito identity pools support two distinct IAM roles — one for unauthenticated,
+one for authenticated identities — and the least-privilege design here scopes the unauthenticated
+role to only read-only catalog access (guests have no identity-specific data to protect/write),
+while the authenticated role adds narrowly scoped write access to only the signed-in user's own
+cart data (e.g. via a `dynamodb:LeadingKeys` condition tying access to their Cognito identity ID),
+directly matching the stated requirements for each user class.""",
+wrong={
+1: "Blanket `dynamodb:*` access for both roles is a severe least-privilege violation, letting a guest read or write arbitrary data far beyond the public catalog.",
+2: "Identity pools explicitly support two separate roles (unauthenticated and authenticated) specifically so each class of user can have different permissions — this statement is factually wrong.",
+3: "Allowing unauthenticated guests to write to a cart table they have no durable identity tied to creates orphaned, unattributable data and exceeds what an anonymous guest role should be trusted with.",
+},
+links=[L("security-identity-compliance/cognito.md")]),
+
+dict(stem="""A team's Bedrock-based document-summarization feature processes internal company
+documents, some containing confidential business data. The compliance team requires written
+assurance that none of this data will be used by the underlying foundation model provider to
+improve or train their models. What Task 2.3 control addresses this specific concern?""",
+multi=False,
+options=[
+"Confirm Bedrock's documented data handling posture: Amazon Bedrock does not use customer input/output data sent through the Bedrock API to train the underlying foundation models, and does not share that data with the model providers for their own model improvement — this is a standing data-handling guarantee of the Bedrock service itself, not a per-request opt-out the application needs to configure.",
+"Manually strip every document of sensitive content before calling Bedrock, since Bedrock always uses all submitted data to retrain all available models by default.",
+"Switch to a self-managed, on-premises ML model, since no AWS AI service can ever guarantee data isn't used for training.",
+"Encrypt the documents with an S3 bucket key before sending them to Bedrock's `InvokeModel` API, which prevents the model from using the plaintext content for training.",
+],
+correct=[0],
+explain="""Task 2.3's "keeping your inputs/outputs out of a provider's model training data" bullet
+maps directly to Bedrock's actual documented data-handling model: AWS states that Amazon Bedrock
+does not use customer content submitted through the API to train the underlying foundation models
+or share it with model providers for their own improvement — this is the core fact to know for
+this exam topic, not a feature flag that needs separate opt-out configuration per request.""",
+wrong={
+1: "This option states the opposite of Bedrock's actual documented data-handling behavior and recommends an unnecessary (and impractical) workaround to a non-existent default-training-use problem.",
+2: "Bedrock's data-handling commitments specifically address this training-data concern for AWS-hosted use of the service; a self-managed model isn't required to get this assurance.",
+3: "`InvokeModel` requires the model to receive processable plaintext input to generate a summary — encrypting the document before sending it would make it unusable to the model, and this isn't actually how the training-data protection works (it's a service-level data-handling commitment, not something achieved by client-side encryption of the payload).",
+},
+links=[D("domain-2-security/ai-service-security-risks.md"), L("machine-learning-ai/bedrock.md")]),
+
+dict(stem="""A Bedrock-powered customer support chatbot logs each conversation turn (including the
+full user message and the model's full response) to CloudWatch Logs for debugging purposes. A
+security review flags this under Task 2.3's "sensitive data in logs from AI service calls" item,
+since users sometimes paste account numbers or other PII into their chat messages. What is the
+correct remediation?""",
+multi=False,
+options=[
+"Apply redaction/masking to the logged conversation content before it's written (e.g. using a log-processing step or Macie-style pattern detection to strip/mask PII patterns like account numbers), and restrict access to any logs that might still retain sensitive context via IAM and log group access controls — treating AI service call logs with the same sensitive-data handling rigor as any other application log that might contain PII.",
+"Stop logging entirely, since any logging of AI interactions is inherently non-compliant and cannot be fixed.",
+"Log the conversations in full, unredacted, since CloudWatch Logs is itself a PII-safe, specially exempted storage location.",
+"Only redact the model's responses, since user input can never contain sensitive data.",
+],
+correct=[0],
+explain="""Task 2.3's logging concern is addressed the same way any other sensitive-data-in-logs
+problem is: redact/mask known sensitive patterns before they're persisted, and apply standard
+least-privilege access controls to whatever log data remains — AI service call logs aren't exempt
+from the general Task 2.2/2.3 principle of not persisting PII in plaintext where it isn't needed and
+isn't tightly access-controlled.""",
+wrong={
+1: "Logging is valuable for debugging and support quality; the documented fix is redaction/access control, not eliminating all observability for the feature.",
+2: "CloudWatch Logs is a general-purpose log store with no built-in PII exemption or automatic redaction — storing PII there in plaintext carries the same compliance exposure as storing it in any other unprotected store.",
+3: "User input is exactly where users are described as pasting PII (account numbers) in this scenario — restricting redaction to only the model's output would miss the actual source of the sensitive data described.",
+},
+links=[D("domain-2-security/ai-service-security-risks.md"), L("management-governance/cloudwatch.md")]),
+
+dict(stem="""A company deploys a Bedrock Agent that can call two action groups: one that looks up
+order status (read-only) and one that issues refunds (a real financial action). A penetration test
+successfully tricks the agent, via a crafted user message, into attempting to call the refund
+action group when the user only asked a status question. The refund call fails only because the
+agent's own execution role happens to lack `lambda:InvokeFunction` on that specific action group's
+function. What does this near-miss indicate about the deployment, and what is the correct fix,
+per Task 2.3's "AI agent security" guidance?""",
+multi=False,
+options=[
+"The agent's IAM execution role is currently under-scoped in a way that accidentally saved the day, but the deployment should not rely on accidental permission gaps — explicitly and deliberately scope the agent's role to only the action groups a given use case legitimately needs (here, likely read-only order status only, with refunds handled through a separate, more tightly gated flow), and add Guardrails/input validation so manipulated prompts are also rejected before ever reaching the point of attempting an unauthorized tool call.",
+"Nothing needs to change, since the call ultimately failed and no refund was issued.",
+"Grant the agent's role full permissions on both action groups, since restricting permissions caused this near-miss and more permissions would have avoided the confusing error.",
+"Disable IAM entirely for Bedrock Agents, since IAM evidently interfered with the agent's ability to do its job.",
+],
+correct=[0],
+explain="""This is exactly Task 2.3's "AI agent security" principle in action: an agent should
+never be *able* to attempt actions beyond its intended scope, and relying on an incidental,
+undocumented permission gap to prevent real damage is not a security control — it's luck. The
+correct fix is deliberate least-privilege scoping of the agent's execution role (so sensitive
+actions like refunds simply aren't reachable from a status-inquiry use case) combined with
+guardrails/input handling so manipulated prompts are also caught before an unauthorized tool call
+is even attempted.""",
+wrong={
+1: "Treating an accidental permission gap as 'working as intended' ignores that the agent was successfully manipulated into attempting an unauthorized action — the control that happened to stop it wasn't deliberate, and a differently configured role (or a different exploited action group) could easily have succeeded.",
+2: "Granting full permissions on both action groups removes the only thing that currently prevents the successful exploit from actually completing — this is the opposite of the correct fix.",
+3: "IAM scoping is precisely the control that limited the blast radius here; removing it entirely would make a successful prompt-injection exploit fully effective rather than blocked.",
+},
+links=[D("domain-2-security/ai-service-security-risks.md"), L("machine-learning-ai/bedrock.md")]),
+]
+
+E2_D3 = [
+dict(stem="""A team defines infrastructure as AWS CDK (TypeScript) constructs. Before every deploy,
+they want to catch issues like a security group allowing unrestricted inbound SSH, or an S3 bucket
+missing encryption, as part of CI — ideally before `cdk deploy` ever runs, using rules that can be
+customized for the organization's own security standards (not just generic CloudFormation syntax
+validity). What should they add to the pipeline?""",
+multi=False,
+options=[
+"A CDK-aware static analysis/linting step (e.g. `cdk-nag`, run against the synthesized CloudFormation template or directly against CDK constructs) as a CI stage after `cdk synth` and before `cdk deploy`, failing the build if a defined security rule (like 'no 0.0.0.0/0 on port 22') is violated.",
+"Rely solely on `cdk synth` succeeding, since successful synthesis guarantees the infrastructure is secure.",
+"Manually review every CDK diff by eye before every deployment, with no tooling.",
+"Wait for AWS Config to flag the problem after the resources are already deployed to production.",
+],
+correct=[0],
+explain="""This is Task 3.2's "validate infrastructure templates before deploying" extended to
+custom organizational security rules: a CDK-aware static analysis tool (synthesizing the template
+and checking it, or checking constructs directly) run in CI catches issues like overly permissive
+security groups or missing encryption *before* `cdk deploy` ever executes — exactly matching
+"customizable rules, pre-deploy, in CI" rather than generic syntax checking or after-the-fact
+detection.""",
+wrong={
+1: "`cdk synth` only confirms the CDK app can successfully produce valid CloudFormation syntax — it says nothing about whether the resulting resources follow security best practices.",
+2: "Manual review doesn't scale, is inconsistent, and is exactly the kind of check that should be automated and enforced in CI rather than left to individual diligence.",
+3: "Catching the misconfiguration only after it's already live in production (via AWS Config) is reactive, not preventive — the question specifically asks for a pre-deploy check.",
+},
+links=[L("management-governance/cdk.md"), D("domain-3-testing-deployment/README.md")]),
+
+dict(stem="""A developer wants a disposable, pre-configured cloud development environment with the
+AWS CLI, SDKs, and a code editor already set up, accessible from any browser, to avoid "works on
+my machine" setup drift across a team of contractors who each only need the environment for a few
+weeks. Which AWS service is designed for this, as opposed to each contractor configuring their own
+local machine?""",
+multi=False,
+options=[
+"AWS Cloud9 — a cloud-based IDE accessible via browser, pre-configured with AWS CLI credentials tied to the launching user's role, requiring no per-contractor local environment setup, and easy to tear down when the engagement ends.",
+"Amazon EC2 with no further configuration, since a bare EC2 instance already includes a browser-based IDE by default.",
+"AWS CloudShell, which permanently persists all installed custom packages and tools indefinitely with no storage limit.",
+"Amazon WorkSpaces, which is a service exclusively for watching streaming video content.",
+],
+correct=[0],
+explain="""Cloud9 is specifically a managed, browser-accessible cloud IDE that comes pre-configured
+with the AWS CLI/SDKs and credentials scoped to the user's role — exactly the "no local setup,
+consistent environment, easy to provision/tear down per contractor" requirement, standing in
+contrast to each person configuring their own machine from scratch.""",
+wrong={
+1: "A bare EC2 instance has no IDE pre-installed by default; that capability specifically comes from a service like Cloud9 layered on top.",
+2: "CloudShell is a browser-based shell with the AWS CLI pre-authenticated, but its persistent storage is limited (1 GB home directory) and it's meant for quick CLI tasks, not a full persistent development environment with an IDE — this statement also mischaracterizes it as having no storage limit.",
+3: "Amazon WorkSpaces provides managed virtual desktops; it is not a video-streaming service — this statement is factually wrong about what WorkSpaces does.",
+},
+links=[L("developer-tools/cloud9-and-cloudshell.md")]),
+
+dict(stem="""A team's CodePipeline deploys a CloudFormation stack. A recent incident revealed that
+a stack update unintentionally replaced (destroyed and recreated) a stateful RDS instance because
+a property change triggered implicit resource replacement, causing data loss. The team wants this
+caught automatically in the pipeline before any such destructive change reaches production. What
+should be added?""",
+multi=False,
+options=[
+"A pipeline stage that creates a CloudFormation change set from the proposed template and inspects its output programmatically (or via a manual approval gate shown the change set) specifically checking for any resource marked for `Replacement: True`/`Conditional` on stateful resources, failing/pausing the pipeline if found.",
+"Nothing — CloudFormation never replaces a resource unless the developer explicitly requests it via a separate, distinct API call.",
+"Remove CloudFormation entirely and manage all infrastructure via the console to avoid replacement risk.",
+"Increase the RDS instance's backup retention period, which prevents CloudFormation from ever replacing the instance.",
+],
+correct=[0],
+explain="""Change sets expose exactly this information — per-resource action (`Add`/`Modify`/
+`Remove`) and, critically, whether a `Modify` requires replacement — so a pipeline stage that
+inspects (or gates manual approval on) the change set's replacement indicators before executing it
+catches exactly this class of destructive-update-by-accident, directly addressing Task 3.2's
+"validate infrastructure templates before deploying them" for a stateful-resource safety case.""",
+wrong={
+1: "This is false — many property changes on resources like RDS instances (e.g. changing certain parameters) implicitly require CloudFormation to replace the resource; this isn't a separate explicit action the developer must request, which is exactly what caused the incident.",
+2: "Abandoning CloudFormation for manual console management reintroduces all the drift/consistency/audit problems IaC solves, as an overcorrection to a solvable pipeline gap.",
+3: "Backup retention period affects how far back restorable backups exist; it has no bearing on whether a CloudFormation update triggers resource replacement.",
+},
+links=[L("management-governance/cloudformation.md"), D("domain-3-testing-deployment/README.md")]),
+
+dict(stem="""A containerized microservice built in CI needs to be shared with a partner
+organization's separate AWS account so their pipeline can pull and deploy the exact same image,
+without making the image publicly accessible to the entire internet. What should be configured on
+the ECR repository?""",
+multi=False,
+options=[
+"An ECR repository policy granting the partner's specific AWS account (or IAM principal ARN) `ecr:GetDownloadUrlForLayer`, `ecr:BatchGetImage`, and `ecr:BatchCheckLayerAvailability` permissions on that repository, scoping cross-account pull access to exactly that account.",
+"Make the ECR repository fully public, since that is the only way to share an image across AWS accounts.",
+"Export the image as a `.tar` file and email it to the partner organization's team.",
+"Grant the partner account `AdministratorAccess` in the account that owns the ECR repository.",
+],
+correct=[0],
+explain="""ECR repository policies are resource-based policies specifically for granting
+cross-account pull (or push) access to a named external account/principal, scoped to exactly the
+pull-related actions needed — satisfying "shared with one partner account, not the whole internet"
+precisely, without resorting to public visibility or over-granting broad account access.""",
+wrong={
+1: "Making a repository public exposes the image to anyone on the internet, which is explicitly the opposite of the stated requirement to share with just one partner.",
+2: "Emailing a tarball is manual, doesn't scale, loses version/tag integrity, and isn't how a CI/CD pipeline should consume container images.",
+3: "Granting `AdministratorAccess` to an external account is a massive, unnecessary over-grant just to let them pull one image — repository-scoped pull permissions are both sufficient and far safer.",
+},
+links=[L("containers/ecr.md")]),
+
+dict(stem="""A Lambda-based API's test suite currently only runs locally on developers' machines
+before they manually deploy, with no consistency guarantee that the same tests ran before a given
+production deploy. The team wants every deployment to `prod` to be provably gated on that
+specific commit's automated test suite passing, as an unskippable step, not a developer's manual
+habit. What should be restructured in the pipeline?""",
+multi=False,
+options=[
+"Move the test execution into a CodeBuild stage inside CodePipeline, positioned before the production deployment stage, so the pipeline itself (not a developer's local habit) runs the tests for that exact commit and the pipeline cannot proceed to the deploy stage unless that CodeBuild stage reports success.",
+"Keep tests local-only but add a Slack reminder asking developers to 'please run tests before deploying.'",
+"Move testing to occur only after the production deployment completes, as a post-deploy smoke test with no gating effect.",
+"Require developers to attach a screenshot of their local test run output to the pull request description as proof.",
+],
+correct=[0],
+explain="""Moving test execution into a pipeline stage (CodeBuild within CodePipeline) makes
+passing tests a structural precondition for reaching the deploy stage — the pipeline itself
+enforces the gate for the exact commit being deployed, which is fundamentally different from (and
+far more reliable than) relying on a developer's local habit or an easily-skipped manual step.""",
+wrong={
+1: "A reminder is not an enforced gate — it relies entirely on developer discipline and can be silently skipped, which is exactly the unreliability the team wants to eliminate.",
+2: "Testing only after production deployment doesn't prevent a broken build from reaching production in the first place — it's detection after the fact, not a gate.",
+3: "A screenshot is unverifiable, easy to fake or be stale, and isn't tied programmatically to the specific commit being deployed — it's not a real automated gate.",
+},
+links=[L("developer-tools/codepipeline.md"), L("developer-tools/codebuild.md"), D("domain-3-testing-deployment/README.md")]),
+
+dict(stem="""A Lambda function's deployment currently replaces 100% of traffic on the alias
+immediately (`AllAtOnce`), and a recent bad deploy caused every request to fail for several
+minutes before anyone noticed and manually rolled back. The team wants new deployments to shift
+traffic gradually in linear increments over 10 minutes, with CloudWatch-alarm-triggered automatic
+rollback so a bad deploy affects only a small percentage of traffic briefly rather than everyone.
+What CodeDeploy configuration achieves this?""",
+multi=False,
+options=[
+"A CodeDeploy `Linear` deployment configuration for Lambda (e.g. `Linear10PercentEvery1Minute`), which shifts an additional fixed percentage of traffic to the new version at each defined interval, combined with a CloudWatch alarm attached to the deployment group so a triggered alarm automatically halts and rolls back the shift mid-way.",
+"Switching the alias's traffic-shifting configuration manually to a new fixed number every few minutes, watching metrics by eye, with no CodeDeploy involvement.",
+"Keeping `AllAtOnce` but simply reducing the Lambda function's memory, since smaller functions deploy more safely.",
+"Running the exact same deployment five times in a row.",
+],
+correct=[0],
+explain="""CodeDeploy's `Linear` deployment type for Lambda shifts traffic in equal, scheduled
+increments (e.g. 10% every minute) rather than all at once, and wiring a CloudWatch alarm to the
+deployment group means a detected regression automatically halts the shift and rolls back — exactly
+turning "100% blast radius immediately" into "small, bounded exposure with automatic protection,"
+addressing both the gradual-shift and automatic-rollback requirements in one configuration.""",
+wrong={
+1: "Manual traffic adjustment with eyeballed metrics reintroduces the exact unreliable, slow-to-react manual rollback process that caused the incident described.",
+2: "Memory size has no relationship to deployment traffic-shifting strategy or blast radius during a bad release.",
+3: "Repeating the same deployment doesn't change its traffic-shifting behavior at all; it's an irrelevant action.",
+},
+links=[L("developer-tools/codedeploy.md"), L("compute/lambda.md")]),
+
+dict(stem="""A team's CloudFormation template currently stores a third-party API key as a plain
+string `Default` value in a template `Parameter`, which means it's visible in the CloudFormation
+console's parameter history and in the template source committed to version control. They need to
+reference this secret from a resource's configuration without ever exposing the plaintext value in
+the template, console history, or source control. What should they use instead?""",
+multi=False,
+options=[
+"A CloudFormation dynamic reference to Secrets Manager (e.g. `{{resolve:secretsmanager:MySecretId:SecretString:apiKey}}`) inside the resource property, which CloudFormation resolves at deploy/update time without ever writing the resolved plaintext value into the template, parameter history, or any stored stack configuration that a casual viewer could see.",
+"Keep the plaintext default value in the template but add a code comment saying 'DO NOT SHARE THIS FILE.'",
+"Base64-encode the API key before putting it in the template's `Default` value, since Base64 is a form of encryption.",
+"Store the key in a `NoEcho` parameter with no other change, since `NoEcho` fully removes the value from all storage and history everywhere.",
+],
+correct=[0],
+explain="""Dynamic references to Secrets Manager (or SSM Parameter Store) are exactly
+CloudFormation's documented mechanism for this: the template contains only a reference string, not
+the secret, and CloudFormation resolves the actual value at deploy time without persisting the
+plaintext into the template, change set, or certain parts of the stack's stored configuration —
+directly satisfying "never in source control or template" for the actual secret value.""",
+wrong={
+1: "A comment is not a technical control and does nothing to prevent the plaintext key from being stored in the template and version control history, where it already is.",
+2: "Base64 is an encoding, not encryption — it is trivially reversible and provides no actual confidentiality; this is a common, important exam distinction.",
+3: "`NoEcho` masks a parameter value from being *displayed* in the console/CLI output, but the underlying template would still need to not contain the plaintext secret as a literal `Default`; `NoEcho` alone, without also removing the literal secret from the template, is an incomplete fix and is commonly over-trusted.",
+},
+links=[L("security-identity-compliance/secrets-manager-vs-parameter-store.md"), L("management-governance/cloudformation.md")]),
+
+dict(stem="""A developer wants to simulate how their Lambda function responds to an SNS-triggered
+event, entirely offline, feeding it a realistic sample SNS notification payload shaped exactly like
+what SNS would actually deliver, to catch a parsing bug before ever deploying to AWS. What SAM CLI
+feature/workflow supports this specific scenario?""",
+multi=False,
+options=[
+"`sam local invoke` with a generated or hand-crafted SNS-shaped test event JSON file (SAM/AWS provides sample event templates for common triggers like SNS, S3, and SQS) passed via `--event`, invoking the handler locally against that exact payload shape.",
+"`sam local invoke` always generates a random, unpredictable test event automatically, with no way to control its shape.",
+"Deploy the function to production first and trigger a real SNS notification, since local testing cannot replicate SNS's exact payload shape.",
+"`sam package`, which is specifically designed for local event simulation rather than packaging.",
+],
+correct=[0],
+explain="""`sam local invoke --event <file>` is exactly built for feeding a crafted or
+template-based test event (SAM ships sample event payload templates per trigger type, including
+SNS) into a locally-run handler, letting a developer validate parsing/handling logic against a
+realistic payload shape without deploying anything — directly matching Task 3.2's "use mock APIs
+and test events to exercise Lambda functions without live dependencies.\"""",
+wrong={
+1: "The event payload is explicitly developer-supplied via the `--event` flag (or stdin); it is not randomly generated, which is what makes this command useful for targeted, repeatable testing.",
+2: "Deploying to production just to test event-handling logic is unnecessary, slow, and risky compared to local testing with a representative test event — exactly what SAM's local tooling avoids.",
+3: "`sam package` prepares and uploads a deployment artifact for an actual deployment; it has nothing to do with locally simulating event invocations.",
+},
+links=[L("developer-tools/sam.md")]),
+
+dict(stem="""A `buildspec.yml` needs to build and push a Docker image to ECR as part of a
+CodeBuild stage. The build environment requires access to the Docker daemon (to run `docker build`
+and `docker push`), which is not available by default in a standard CodeBuild environment. What
+setting must be enabled on the CodeBuild project for this to work?""",
+multi=False,
+options=[
+"Enable privileged mode on the CodeBuild project, which starts a Docker daemon inside the build container so `docker build`/`docker push` commands can run; without it, Docker-in-Docker operations fail.",
+"No special configuration is needed — every CodeBuild environment has a running Docker daemon by default with no flags required.",
+"Switch the source provider from CodeCommit to GitHub, since Docker builds only work with GitHub-sourced CodeBuild projects.",
+"Increase the CodeBuild project's compute type to the largest available size, which automatically enables Docker support.",
+],
+correct=[0],
+explain="""Privileged mode is specifically documented as required when a CodeBuild buildspec
+needs to interact with a Docker daemon (building/pushing images) — it's an explicit opt-in project
+setting precisely because running a nested Docker daemon needs elevated container privileges that
+aren't granted by default.""",
+wrong={
+1: "This is incorrect — building/pushing Docker images from CodeBuild specifically fails with daemon-connection errors unless privileged mode is enabled; it is not a default-on capability.",
+2: "Docker build support is unrelated to which source provider (CodeCommit, GitHub, S3, etc.) triggers the build; this is a red herring not tied to the actual requirement.",
+3: "Compute type (general1.small/medium/large, etc.) affects CPU/memory available to the build, not whether a Docker daemon is running inside the container — that's specifically privileged mode's job.",
+},
+links=[L("developer-tools/codebuild.md"), L("containers/ecr.md")]),
+
+dict(stem="""A team's CodePipeline source stage currently only triggers on pushes directly to
+`main`. They've adopted a trunk-based workflow where short-lived feature branches are merged via
+pull request, and want a **separate**, lower-stakes pipeline to run build and unit tests (but not
+deploy anywhere) on every push to any feature branch, distinct from the main pipeline that builds,
+tests, and deploys to production from `main`. What is the correct way to structure this?""",
+multi=False,
+options=[
+"Create a second, separate CodePipeline (or CodeBuild project triggered independently) whose source stage filters on feature branch pushes/pull requests, running only build+test stages with no deployment stages at all — kept entirely distinct from the main-branch pipeline that includes production deployment stages.",
+"Add a `main`-only conditional inside the existing production pipeline's deploy stage that silently no-ops when triggered from a feature branch, while keeping everything else about the single pipeline identical.",
+"Rename the feature branches to `main` temporarily whenever they need to be tested, then rename them back.",
+"Disable the production pipeline entirely whenever any feature branch exists in the repository.",
+],
+correct=[0],
+explain="""A genuinely separate pipeline (or independently triggered CodeBuild project) scoped to
+feature branches, containing only build/test stages with no deployment capability at all, cleanly
+separates "lower-stakes CI for in-progress work" from "the pipeline that can reach production" —
+avoiding any risk that a feature-branch trigger could accidentally exercise a production deployment
+stage, which a single shared pipeline with conditional logic risks if the condition is ever
+misconfigured.""",
+wrong={
+1: "A single pipeline with a silent conditional no-op for deployment still includes the deploy stage's permissions/configuration in a pipeline that feature-branch pushes can trigger — a misconfigured condition could accidentally deploy from a feature branch, which a fully separate pipeline avoids structurally.",
+2: "Renaming branches as a workaround is operationally absurd and doesn't actually create the described separate, lower-stakes CI process.",
+3: "Disabling the entire production pipeline whenever any feature branch exists would block legitimate production deployments constantly, since feature branches typically exist most of the time in active development.",
+},
+links=[L("developer-tools/codepipeline.md"), L("developer-tools/codecommit.md")]),
+
+dict(stem="""A legacy application packaged as a container needs to run on AWS with the team
+explicitly wanting to avoid managing any EC2 instances or Kubernetes control plane at all, while
+still using standard ECS task definitions and standard Docker images with no Kubernetes-specific
+tooling required. Which combination satisfies this?""",
+multi=False,
+options=[
+"Amazon ECS with the Fargate launch type — ECS's own (non-Kubernetes) task definition model, with Fargate eliminating any EC2 instance or control-plane management for the team.",
+"Amazon EKS with the Fargate launch type, since EKS is required whenever Fargate is used.",
+"Amazon ECS with the EC2 launch type, since Fargate requires at least one self-managed EC2 instance as a control node.",
+"AWS Lambda, since Lambda supports standard ECS task definitions directly with no changes needed.",
+],
+correct=[0],
+explain="""ECS with Fargate is exactly the combination for "container orchestration, zero EC2/
+control-plane management, no Kubernetes tooling required": ECS has its own task-definition model
+entirely separate from Kubernetes, and the Fargate launch type removes all EC2 instance management
+for either ECS or EKS — but since no Kubernetes API/tooling is wanted here, plain ECS (not EKS) is
+the right orchestrator.""",
+wrong={
+1: "Fargate is available as a launch type for *both* ECS and EKS — it does not require EKS specifically, and choosing EKS here would needlessly introduce the Kubernetes API/tooling the requirement explicitly wants to avoid.",
+2: "This is backwards — Fargate's entire purpose is to remove the need for any self-managed EC2 instances; the EC2 launch type (not Fargate) is the one that requires the team to manage EC2 instances themselves.",
+3: "Lambda has its own packaging/invocation model (ZIP or Lambda-specific container image contract) and does not directly run standard ECS task definitions — this statement is factually incorrect.",
+},
+links=[L("containers/ecs.md"), L("containers/fargate.md"), L("containers/containers-vs-vms-vs-serverless.md")]),
+
+dict(stem="""A team wants AI assistance reviewing every pull request's code changes for common
+issues (missing error handling, potential null dereferences, inconsistent naming) before a human
+reviewer looks at it, to surface likely problems faster — but they explicitly do not want AI review
+comments to auto-merge a PR or override a human reviewer's final approval decision. How should this
+be integrated into the PR workflow, consistent with the documented AI-assisted development pattern?""",
+multi=False,
+options=[
+"Add the AI review as an automated comment/check on the PR (e.g. triggered by the same CI event that runs tests) that surfaces suggestions for the human reviewer's attention, while keeping required human approval as the actual merge gate — AI augments and accelerates the review, but a human still makes the final call.",
+"Configure the AI review tool to automatically approve and merge any PR it doesn't flag issues on, removing human reviewers from the loop entirely.",
+"Disable human code review entirely now that an AI reviewer exists, since the AI covers everything a human would have checked.",
+"Have the AI review silently rewrite the PR's code to fix issues it finds, merging its own changes without the original author's or reviewer's involvement.",
+],
+correct=[0],
+explain="""This matches the documented AI-assisted development pattern across every domain it
+appears in (code review, test generation, deployment approvals, error analysis): AI accelerates
+and surfaces useful signal, but a human remains the actual decision-maker/gate — here, that means
+AI comments inform the reviewer rather than AI output automatically merging code or replacing the
+human approval requirement.""",
+wrong={
+1: "Auto-merging based solely on an AI tool's silence removes the human-in-the-loop safeguard entirely, risking merged code that an AI tool simply failed to flag an issue in.",
+2: "Fully removing human review assumes AI review is a complete substitute for human judgment, which is explicitly not the documented pattern — AI assists, it doesn't replace the human reviewer.",
+3: "Letting an AI tool silently commit its own fixes without author/reviewer involvement bypasses the entire review process and accountability chain for a code change.",
+},
+links=[D("domain-1-development/ai-assisted-development.md"), D("domain-3-testing-deployment/README.md")]),
+
+dict(stem="""A team's Lambda functions are currently packaged with every dependency bundled
+directly into each function's own deployment .zip, even though five functions share the exact same
+50 MB set of third-party libraries. Deployment packages are slow to upload and the team wants to
+both shrink each function's own package and have a single place to patch a shared library version
+across all five functions at once, without switching to container images. What should they do?""",
+multi=False,
+options=[
+"Extract the shared dependencies into a Lambda layer, publish it once, and attach that layer version to all five functions — each function's own deployment package then only contains its unique handler code, and bumping the shared library means publishing one new layer version instead of re-uploading five full packages.",
+"Duplicate the 50 MB of dependencies into each of the five functions' packages, since Lambda has no mechanism for sharing code across functions without switching to containers.",
+"Zip all five functions together into a single deployment package with one shared `handler.py` that dispatches by Lambda context, to avoid the problem entirely.",
+"Store the dependencies in an S3 bucket and require each function to re-download and reinstall all 50 MB from S3 on every single invocation.",
+],
+correct=[0],
+explain="""This is exactly Task 3.1's "dependency management (bundling, layers, lockfiles)"
+scenario: a layer is the correct zip-based mechanism for sharing dependencies across multiple
+functions, shrinking each function's own package to just its unique code, and centralizing
+version bumps to one layer publish rather than five separate full re-uploads.""",
+wrong={
+1: "This claim is false — layers are precisely Lambda's built-in zip-based code-sharing mechanism, which does not require switching to container image packaging at all.",
+2: "Merging five independent functions into one package with manual dispatch logic conflates unrelated responsibilities, loses independent scaling/permissions/versioning per function, and doesn't actually solve the shared-dependency-versioning problem described.",
+3: "Re-downloading 50 MB from S3 on every single invocation adds significant latency to every cold *and* warm invocation and is far worse than a layer, which is attached once per execution environment lifecycle, not re-fetched per call.",
+},
+links=[L("compute/lambda.md"), D("domain-3-testing-deployment/README.md")]),
+
+dict(stem="""A CDK app currently defines all resources for `dev`, `staging`, and `prod`
+environments in a single, monolithic stack with hardcoded environment-specific values scattered
+throughout the code via `if` statements, making it error-prone to tell which environment a given
+`cdk deploy` will actually target. The team wants a cleaner, safer pattern for managing multiple,
+clearly distinguished environment deployments from the same CDK codebase. What should they use?""",
+multi=False,
+options=[
+"Separate CDK Stack instances per environment (e.g. a reusable `Stack` subclass instantiated once per environment with environment-specific props/context), each explicitly deployed with its own `env` (account/Region) and distinguishing context values (e.g. via `cdk deploy MyStack-dev` or `cdk deploy MyStack-prod`), rather than branching logic inside one shared stack based on ambient state.",
+"Keep the single monolithic stack exactly as-is, since CDK has no concept of multiple stacks in one app.",
+"Hardcode the production AWS account ID as the default for every deploy, and require developers to remember to override it manually for dev/staging every single time.",
+"Deploy to production only by directly editing resources in the CloudFormation console after a dev deployment, bypassing CDK for prod entirely.",
+],
+correct=[0],
+explain="""CDK explicitly supports multiple Stack instances within one app, parameterized by
+environment-specific props/context and each targeting an explicit `env` (account/Region) —
+instantiating one Stack subclass per environment with clear, explicit names (rather than branching
+on ambient state inside a single shared stack) is the documented pattern for making "which
+environment am I about to deploy to" unambiguous and reduces the risk of accidentally deploying
+dev-shaped resources to prod or vice versa.""",
+wrong={
+1: "CDK apps commonly define many Stack instances; this statement is factually wrong about CDK's capabilities.",
+2: "Defaulting to production and requiring manual override for every non-prod deploy is backwards and dangerous — the safer default is the opposite, or (better) explicit, unambiguous stack identifiers per environment as described in the correct answer.",
+3: "Manually editing resources in the console for production specifically reintroduces drift between CDK's view of the stack and reality, undermining IaC entirely for the most important environment.",
+},
+links=[L("management-governance/cdk.md"), D("domain-3-testing-deployment/README.md")]),
+]
+
+E2_D4 = [
+dict(stem="""A production incident report needs to answer: "across all Lambda functions in this
+application, which specific function and which specific log line first mentioned the string
+`DatabaseConnectionTimeout` in the last 6 hours?" The team has 12 different Lambda functions, each
+with its own log group. What is the fastest way to answer this without opening each log group one
+by one?""",
+multi=False,
+options=[
+"A single CloudWatch Logs Insights query run across all 12 log groups simultaneously (Logs Insights supports querying multiple log groups in one query), filtering for the exact string and sorting by `@timestamp` ascending to surface the first occurrence.",
+"Open each of the 12 log groups' consoles in 12 separate browser tabs and manually scan each one.",
+"Export every log group's full contents to a local file and use a text editor's 'Find in Files' across all 12 files.",
+"Assume the error always originates in the same function every time, since errors are deterministic.",
+],
+correct=[0],
+explain="""Logs Insights explicitly supports selecting multiple log groups for a single query, so
+one query — filtering for the exact error string and sorting by timestamp — searches all 12
+functions' logs simultaneously and surfaces the earliest matching line directly, which is both the
+fastest and most reliable approach for a cross-function root-cause timeline question like this.""",
+wrong={
+1: "Manually scanning 12 separate consoles one at a time is slow, error-prone, and doesn't easily let you compare exact timestamps across functions to determine which came first.",
+2: "Exporting and searching locally works but is slower and more manual than a single Insights query that already runs server-side across all the specified log groups at once.",
+3: "Assuming deterministic origin without evidence is exactly the kind of unverified guess root-cause analysis should avoid — the question specifically requires finding the actual first occurrence.",
+},
+links=[L("management-governance/cloudwatch.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""An X-Ray trace shows a `GetUserProfile` request touching four downstream services. The
+team wants to tag specific traces with a business-relevant value (`customerId`) so they can later
+filter and search traces in the X-Ray console for a specific customer's requests, in addition to
+attaching non-searchable debug context (like the full raw request object) to the same trace
+segment for engineers reviewing it by hand. Which two X-Ray concepts map to these two needs?""",
+multi=False,
+options=[
+"Annotations — key-value pairs that are indexed and can be used to filter/search traces in the X-Ray console (e.g. `customerId`) — and metadata — arbitrary additional data attached to a segment that is *not* indexed/searchable but is still visible when inspecting a specific trace in detail (e.g. the full raw request object).",
+"Annotations and metadata are identical in every way, including both being searchable in the console.",
+"Subsegments are the only mechanism for attaching any extra data to an X-Ray trace.",
+"X-Ray does not support attaching any custom key-value data to a trace beyond the default segment fields.",
+],
+correct=[0],
+explain="""This is exactly the documented distinction: annotations are indexed and searchable
+(the right choice for `customerId`-based trace filtering), while metadata holds richer, non-indexed
+context visible when drilling into one specific trace but not usable for search/filter queries —
+together they map precisely to "searchable business key" + "rich debug context" in this scenario.""",
+wrong={
+1: "This is factually wrong — the key documented difference between annotations and metadata is specifically that annotations are indexed/searchable and metadata is not; conflating them loses that distinction.",
+2: "Subsegments represent timed sub-operations within a segment (e.g. a downstream call); they aren't the mechanism for attaching arbitrary custom key-value data — annotations and metadata are.",
+3: "This is factually incorrect — X-Ray explicitly supports both annotations and metadata as customizable fields on segments/subsegments.",
+},
+links=[D("domain-4-troubleshooting-optimization/observability-instrumentation.md")]),
+
+dict(stem="""A security review of CloudTrail logs over the past week shows an unusually high
+volume of `AssumeRole` calls from a single IAM user, far above that user's historical baseline,
+though none of the individual calls look obviously malicious on their own. The team wants
+automated detection of this kind of statistical/volume anomaly going forward, rather than manually
+eyeballing CloudTrail event counts. What CloudTrail feature is designed for this?""",
+multi=False,
+options=[
+"CloudTrail Insights — it automatically analyzes management event patterns (like API call volume) against a learned baseline and surfaces unusual activity (e.g. spikes in a specific API call's volume) as its own type of finding, without requiring a custom query or manual historical comparison.",
+"CloudTrail data events, since they are specifically designed for statistical anomaly detection on API call volume.",
+"AWS Config, since it tracks volumetric trends in API call counts by default.",
+"Manually exporting CloudTrail logs to a spreadsheet every week and eyeballing the row counts.",
+],
+correct=[0],
+explain="""CloudTrail Insights is specifically the feature built for this: it continuously
+analyzes a trail's management event activity against an automatically learned baseline and flags
+statistically unusual patterns (like an abnormal spike in a particular API call's volume from a
+given actor) as Insights events — exactly "automated volume-anomaly detection" rather than a
+manual historical comparison.""",
+wrong={
+1: "Data events add object/resource-level logging granularity (e.g. S3 `GetObject`); they are not themselves a statistical anomaly detection feature — that's specifically Insights.",
+2: "AWS Config evaluates resource configuration compliance; it has no concept of API call volume/statistical anomaly detection — that's outside its scope entirely.",
+3: "Manual spreadsheet analysis is exactly the non-automated, easily-missed process the team wants replaced with a standing automated capability.",
+},
+links=[L("management-governance/cloudtrail.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""A Lambda function is consistently throttled with `TooManyRequestsException` during a
+sustained traffic spike, and investigation shows the function's reserved concurrency is set
+appropriately high already — the actual constraint is the **account-level** concurrent execution
+limit being shared across dozens of other unrelated functions in the same account/Region. What is
+the correct, officially supported path to resolve this, as opposed to arbitrarily lowering other
+functions' concurrency?""",
+multi=False,
+options=[
+"Request a service quota increase for the account's total concurrent executions limit in that Region via the Service Quotas console/API, which raises the shared ceiling rather than redistributing an already-insufficient pool among competing functions.",
+"Manually lower every other function's reserved concurrency to zero so this one function gets effectively unlimited concurrency by default.",
+"Delete the other, unrelated functions permanently to free up account-level concurrency.",
+"Nothing can be done — AWS account concurrency limits are immutable and can never be increased under any circumstances.",
+],
+correct=[0],
+explain="""The account-level concurrent executions limit is a documented, adjustable service
+quota — the correct, supported path when the real constraint is total account capacity (not an
+individual function's own reserved concurrency) is to request a quota increase through Service
+Quotas, which raises the actual shared ceiling rather than cannibalizing capacity from other
+legitimate workloads.""",
+wrong={
+1: "Setting other functions' reserved concurrency to zero would block those functions from executing at all, trading one team's outage for another's — a destructive workaround rather than the supported fix.",
+2: "Permanently deleting unrelated functions to free up concurrency for one workload is a drastic, almost certainly unacceptable operational response to a capacity problem that has a proper request-based solution.",
+3: "This is factually wrong — AWS account-level service quotas, including concurrent Lambda executions, are explicitly adjustable via a quota increase request; they are not hard, permanent limits.",
+},
+links=[L("compute/lambda.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""A team wants a single CloudWatch dashboard giving leadership visibility into key
+metrics (API error rate, Lambda duration, DynamoDB throttles) across **three separate AWS accounts**
+(dev, staging, prod) without requiring leadership to switch accounts in the console or maintain
+three separate dashboards. What CloudWatch capability supports this?""",
+multi=False,
+options=[
+"CloudWatch cross-account, cross-Region dashboards (using CloudWatch's account linking / Observability Access Manager) — a dashboard in a designated monitoring account can display metrics sourced from multiple linked member accounts side by side in one view.",
+"CloudWatch dashboards are strictly single-account; the team must have leadership log into three separate accounts and view three separate dashboards.",
+"Copy and paste metric values manually into a shared spreadsheet from each account's console once a day.",
+"Use AWS Budgets, since it natively aggregates CloudWatch metrics across accounts for dashboard purposes.",
+],
+correct=[0],
+explain="""CloudWatch's cross-account observability feature (built on Observability Access Manager
+account linking) is specifically designed for exactly this: a central monitoring account's
+dashboard can pull in and display metrics/logs/traces from multiple linked source accounts in one
+unified view, which is the documented solution for "one dashboard, several accounts" rather than
+maintaining duplicate per-account dashboards or forcing account-switching.""",
+wrong={
+1: "This is factually wrong — CloudWatch explicitly supports cross-account dashboards via account linking; dashboards are not strictly single-account only.",
+2: "Manual copy-paste is slow, error-prone, stale almost immediately, and exactly what a native cross-account feature replaces.",
+3: "AWS Budgets is a cost-management/alerting tool; it has no role in cross-account CloudWatch metric dashboard aggregation.",
+},
+links=[L("management-governance/cloudwatch.md")]),
+
+dict(stem="""An application instruments its Lambda functions with the X-Ray SDK, wrapping all
+outbound AWS SDK calls for automatic tracing. The team additionally wants X-Ray to capture a
+subsegment specifically around a call to a *third-party* (non-AWS) HTTP API, so that a slow
+third-party dependency shows up distinctly in the trace timeline rather than being invisible or
+lumped into the handler's own segment duration. What should they add?""",
+multi=False,
+options=[
+"Wrap the third-party HTTP call in an explicit X-Ray subsegment (e.g. using the SDK's `captureHTTPsGlobal`/manual subsegment API, or a custom `beginSubsegment`/`endSubsegment` pair around the call) so that call's duration is recorded and displayed as its own distinct, labeled block in the trace timeline.",
+"Do nothing additional — X-Ray automatically instruments every outbound HTTP call to any domain, AWS or third-party, with zero configuration.",
+"Switch the third-party API call to use the AWS SDK instead, since only AWS SDK calls can ever appear in an X-Ray trace.",
+"Disable X-Ray entirely, since it can only trace calls between AWS services and never third-party dependencies.",
+],
+correct=[0],
+explain="""X-Ray's automatic SDK instrumentation specifically covers calls made through the AWS
+SDK; capturing a non-AWS HTTP call as its own visible subsegment requires explicitly wrapping that
+call (via the SDK's HTTP capture helpers or manual subsegment begin/end calls) — this is the
+documented way to make a third-party dependency's latency visible and attributable in the trace
+timeline rather than invisible or folded into the parent segment's total duration.""",
+wrong={
+1: "Automatic instrumentation specifically covers the AWS SDK clients it wraps; a third-party HTTP call to a non-AWS domain needs to be explicitly captured to show up as its own subsegment — this isn't zero-configuration for arbitrary HTTP calls.",
+2: "A third-party dependency generally can't be meaningfully switched to use the AWS SDK (it's not an AWS service), and this doesn't match the actual mechanism X-Ray provides for capturing arbitrary HTTP calls as subsegments.",
+3: "X-Ray explicitly supports capturing calls to non-AWS HTTP endpoints as subsegments via its HTTP capture helpers; this statement is factually wrong about X-Ray's capability.",
+},
+links=[D("domain-4-troubleshooting-optimization/observability-instrumentation.md")]),
+
+dict(stem="""An AWS Config conformance pack is deployed across an Organization to continuously
+check that every account's resources comply with a defined baseline (encryption enabled, no
+public S3 buckets, etc.). A new account is provisioned and, 10 minutes later, a developer creates
+a non-compliant public S3 bucket. What is the expected behavior, and how does this differ from a
+one-time compliance audit script run manually once a quarter?""",
+multi=False,
+options=[
+"The conformance pack's underlying Config rules evaluate the new bucket's configuration automatically and flag it as non-compliant close to real-time (as the resource's configuration is recorded), rather than waiting for the next scheduled manual audit — meaning drift is caught within minutes/hours of occurring instead of up to a full quarter later.",
+"Conformance packs only evaluate resources that existed at the moment the pack was deployed; resources created afterward are never evaluated.",
+"A quarterly manual script and a Config conformance pack are functionally identical in detection latency, since both ultimately just check the same resource properties.",
+"Conformance packs require the developer to manually trigger an evaluation via the console after creating each resource.",
+],
+correct=[0],
+explain="""Config's continuous evaluation model (which conformance packs bundle as a reusable set
+of rules) is specifically designed to flag new or changed resources as their configuration is
+recorded, not just resources that existed at deployment time — this is the core distinction from
+a periodic manual audit, which could leave a non-compliant resource undetected for up to the full
+audit interval (here, up to a quarter) rather than minutes to hours.""",
+wrong={
+1: "This is factually wrong — Config rules (including those in a conformance pack) evaluate newly created and changed resources continuously, not only resources that existed at deployment time.",
+2: "This mischaracterizes the actual, meaningfully different detection latency between continuous automated evaluation and an infrequent manual audit — they are not functionally identical in practice.",
+3: "Config evaluation runs automatically based on configuration-change events (and periodically); it does not require a developer to manually trigger an evaluation after every resource creation.",
+},
+links=[L("management-governance/aws-config.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""A read-heavy application queries DynamoDB directly for individual item lookups by
+primary key, and the team wants to add a cache layer specifically optimized for microsecond-level
+read latency in front of DynamoDB, without re-architecting the application's DynamoDB API calls
+(`GetItem`/`Query`) or introducing a general-purpose caching service that would need its own
+separate cache-invalidation logic written by hand. What AWS service is purpose-built for this exact
+case?""",
+multi=False,
+options=[
+"Amazon DynamoDB Accelerator (DAX) — a DynamoDB-specific, in-memory caching layer that is API-compatible with the DynamoDB SDK calls the application already makes, automatically handling cache population/invalidation for `GetItem`/`Query`/`Scan` without the application writing custom cache logic.",
+"Amazon ElastiCache for Redis, requiring the application to be rewritten to call a separate Redis client and manually implement cache-aside logic including invalidation.",
+"Amazon CloudFront, since it caches DynamoDB API responses automatically by default.",
+"AWS Global Accelerator, which caches database query results at the network layer.",
+],
+correct=[0],
+explain="""DAX is specifically purpose-built as a DynamoDB-native caching layer: it's
+API-compatible with the existing DynamoDB SDK calls (so the application code barely changes),
+delivers microsecond read latency, and manages cache population and invalidation internally —
+directly matching "no hand-rolled cache-aside logic, no API rewrite, DynamoDB-specific" far more
+precisely than a general-purpose cache like ElastiCache would without custom application code.""",
+wrong={
+1: "ElastiCache for Redis is a valid general-purpose cache, but using it would require the application to switch to a separate client and hand-write cache-aside/invalidation logic — exactly what the requirement explicitly wants to avoid, unlike DAX's drop-in API compatibility.",
+2: "CloudFront caches HTTP(S) content at edge locations for content delivery; it has no native integration with or awareness of DynamoDB API calls.",
+3: "Global Accelerator improves network routing/availability for application endpoints; it has no database query caching capability at all.",
+},
+links=[L("database/dynamodb.md"), L("database/elasticache.md")]),
+
+dict(stem="""A team wants to use an AI assistant to analyze AWS Compute Optimizer and Lambda Power
+Tuning output and propose specific rightsizing changes (e.g. "reduce this Lambda's memory from
+1024 MB to 512 MB," "resize this RDS instance down one size") across dozens of resources, to save
+engineering time versus manually reviewing every recommendation. Consistent with the documented
+Task 4.3 "AI-assisted optimization recommendations" pattern, what should happen before any of these
+changes are actually applied to production resources?""",
+multi=False,
+options=[
+"An engineer reviews the AI-synthesized recommendations against the actual workload's real requirements (including less-obvious factors like burst capacity needs or SLA headroom) and explicitly approves which specific changes to apply, rather than letting the recommendations auto-apply to production untouched.",
+"Apply every AI-generated recommendation automatically and immediately to every production resource with no review, since the underlying tools (Compute Optimizer, Power Tuning) are AWS-provided and therefore inherently production-safe to blindly trust.",
+"Ignore the AI-assisted analysis entirely and only ever consider optimization recommendations typed by a human from scratch.",
+"Apply the recommendations only to the single most expensive resource and skip reviewing the rest entirely, assuming the AI prioritized correctly with no need to check.",
+],
+correct=[0],
+explain="""Exactly like every other AI-assisted pattern tested on DVA-C03 (test generation, deployment
+approvals, error analysis), AI-assisted optimization accelerates the *analysis* step — surfacing
+candidate changes faster than manual review of every resource — but a human still verifies and
+approves before changes hit production, since the AI output can miss context (burst needs, SLA
+margins) that only someone with full workload knowledge would catch.""",
+wrong={
+1: "Blind, no-review auto-application risks introducing real production regressions (e.g. undersizing a Lambda that actually needs burst memory for occasional spikes) — the documented pattern always keeps a human verification step before production changes.",
+2: "Dismissing AI-assisted analysis entirely contradicts Task 4.3's explicit inclusion of 'AI-assisted optimization recommendations' as in-scope exam content — the pattern is to use AI assistance *with* review, not to reject it outright.",
+3: "Skipping review of most recommendations just because one was applied doesn't constitute verification of the ones actually being changed, and 'assuming the AI prioritized correctly' is exactly the unverified trust the documented pattern says to avoid.",
+},
+links=[D("domain-4-troubleshooting-optimization/README.md"), D("domain-1-development/ai-assisted-development.md"), L("management-governance/cost-management-tools.md")]),
+
+dict(stem="""A team suspects a specific Lambda function is the root cause of elevated latency in a
+distributed checkout flow, but that function doesn't appear anywhere in the X-Ray service map for
+these requests, even though CloudWatch Logs confirm the function is definitely being invoked during
+checkout. What is the most likely reason the function is invisible in the trace, and the fix?""",
+multi=False,
+options=[
+"Active tracing is not enabled on that specific Lambda function (or its upstream caller isn't passing the trace context/header along), so no segment is being emitted for it — enable active tracing (and ensure trace context propagation, e.g. via the `_X_AMZN_TRACE_ID` env var /SDK, especially across an async invocation boundary) so the function's segment appears in the trace.",
+"X-Ray has an undocumented hard limit of 3 functions per trace, and this is simply the 4th function in the chain.",
+"The function's logs appearing in CloudWatch means it is automatically included in every X-Ray trace with no separate configuration needed.",
+"X-Ray cannot trace Lambda functions at all; it can only trace EC2 and ECS workloads.",
+],
+correct=[0],
+explain="""A function missing from a trace despite being invoked is a classic trace-context-propagation
+or tracing-not-enabled problem: X-Ray only emits a segment for a function if active tracing is
+turned on for it and the trace ID context is actually propagated to it (which can silently break
+across certain async invocation patterns) — CloudWatch Logs confirming invocation doesn't imply
+tracing is configured, since logging and tracing are separate, independently configured features.""",
+wrong={
+1: "There is no such fixed 3-function-per-trace limit in X-Ray; traces can include many more segments than that.",
+2: "Logging and tracing are independent systems — appearing in CloudWatch Logs says nothing about whether X-Ray active tracing is enabled for that function or whether trace context reached it.",
+3: "X-Ray explicitly supports Lambda tracing (it's one of the most common ways X-Ray is used) in addition to EC2/ECS/other compute; this statement is factually wrong.",
+},
+links=[D("domain-4-troubleshooting-optimization/observability-instrumentation.md"), L("compute/lambda.md")]),
+
+dict(stem="""A team's nightly batch Lambda function processes a large S3 export and currently runs
+at 256 MB memory, taking 9 minutes and frequently coming close to timing out. Profiling shows the
+function is almost entirely CPU-bound (JSON parsing and transformation of a large payload) with
+very little I/O wait. The team wants to both reduce the risk of timeout and shorten the nightly
+run window. What is the most directly applicable lever, given this specific profile?""",
+multi=False,
+options=[
+"Increase the function's memory allocation significantly — since Lambda allocates CPU proportionally to configured memory, and this workload is CPU-bound, more memory should meaningfully reduce wall-clock duration for the CPU-heavy parsing/transformation work, shrinking both the timeout risk and the run window.",
+"Increase only the function's timeout setting to 15 minutes, with memory left at 256 MB, since timeout alone determines how much CPU the function gets.",
+"Switch the trigger from a scheduled EventBridge rule to an S3 event notification, since trigger type determines available CPU.",
+"Reduce the function's memory further to 128 MB to save cost, since cost should always be minimized regardless of workload profile.",
+],
+correct=[0],
+explain="""Because Lambda scales allocated CPU/vCPU proportionally with configured memory, a
+CPU-bound workload (as this profiling shows — most time in actual computation, not waiting on I/O)
+is exactly the profile where raising memory tends to meaningfully cut wall-clock duration, directly
+addressing both "timeout risk" and "shorten the run" in one lever — a much more targeted fix than
+adjusting timeout or trigger type, neither of which changes available compute.""",
+wrong={
+1: "Timeout only controls how long the function is allowed to run before being killed; it does not add CPU or make computation faster — raising it alone doesn't shrink the run window, it just permits a longer one.",
+2: "Trigger type (schedule vs. event) determines *when/how* a function is invoked, not how much CPU/memory is allocated to a given invocation — this is unrelated to the performance profile described.",
+3: "Blindly minimizing memory ignores the stated CPU-bound profile; for this workload, lower memory would likely make duration (and often even total cost, given the duration/cost tradeoff) worse, not better.",
+},
+links=[L("compute/lambda.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""A team wants to know, across their entire multi-service application, the actual
+dollar cost attributable specifically to one feature ("video transcoding") that spans Lambda, S3,
+and a Step Functions workflow, so they can decide whether to keep or deprecate the feature based on
+its real infrastructure cost — not the application's total bill, which also includes unrelated
+features. What AWS capability enables this kind of feature-level cost attribution?""",
+multi=False,
+options=[
+"Cost allocation tags — apply a consistent tag (e.g. `feature: video-transcoding`) across every resource (Lambda functions, S3 buckets/prefixes where supported, Step Functions state machines) involved in that feature, activate the tag as a cost allocation tag in Billing, then filter Cost Explorer reports by that tag to see attributed spend.",
+"AWS Budgets alone, since budgets automatically know which feature each resource belongs to without any tagging.",
+"There is no way to attribute cost to a specific feature spanning multiple resource types; AWS only reports total account-level spend.",
+"Amazon CloudWatch Logs, since log volume is a direct, built-in substitute for dollar cost with no further configuration.",
+],
+correct=[0],
+explain="""Cost allocation tags are exactly the documented mechanism for this: consistently
+tagging every resource involved in a given feature/project (regardless of resource type), then
+activating that tag key for cost allocation in Billing, lets Cost Explorer (and Cost and Usage
+Reports) break down and filter spend by that tag — enabling exactly the "cost of this one feature
+across Lambda + S3 + Step Functions" attribution the team wants.""",
+wrong={
+1: "Budgets has no automatic knowledge of which resources belong to a feature; it (like Cost Explorer) relies on cost allocation tags or filters to scope spend meaningfully — it doesn't infer feature ownership on its own.",
+2: "This is factually wrong — AWS explicitly supports fine-grained cost attribution via tags (and Cost and Usage Reports), specifically for cases like this where spend spans multiple resource types for one logical feature.",
+3: "Log volume is not a reliable or direct proxy for dollar cost across heterogeneous resource types (Lambda duration/memory, S3 storage/requests, Step Functions transitions each price differently) — this isn't a valid cost-attribution method.",
+},
+links=[L("management-governance/cost-management-tools.md")]),
+
+dict(stem="""A team notices a Lambda function occasionally fails with a connection error against
+an RDS instance, correlating with times when the RDS instance's `DatabaseConnections` CloudWatch
+metric is near its maximum, caused by Lambda scaling out to many concurrent executions each opening
+its own new database connection. The team wants to reduce the number of simultaneous database
+connections without artificially capping Lambda's ability to scale for the rest of its workload.
+What should they add?""",
+multi=False,
+options=[
+"Amazon RDS Proxy — it sits between the Lambda functions and the RDS instance, pooling and multiplexing a smaller number of actual database connections across many concurrent Lambda executions, so a scaling burst doesn't translate 1:1 into a burst of new database connections.",
+"Set the Lambda function's reserved concurrency to 1, so only one invocation can ever run at a time across the entire application.",
+"Increase the RDS instance's storage size, since more storage directly increases the maximum connection limit.",
+"Disable connection reuse entirely in the Lambda handler, opening and closing a brand-new connection on every single invocation.",
+],
+correct=[0],
+explain="""RDS Proxy is purpose-built for exactly this Lambda-to-RDS connection-management
+problem: it maintains a pooled set of actual database connections and multiplexes many concurrent
+Lambda executions' logical connections over that smaller pool, directly decoupling "how many Lambda
+invocations are running" from "how many real database connections exist" — solving the exhaustion
+problem without artificially throttling the function's overall concurrency.""",
+wrong={
+1: "Capping reserved concurrency to 1 would solve the connection problem by destroying the function's ability to scale at all for its entire workload — exactly the tradeoff the question says to avoid.",
+2: "Storage size and maximum connection count are different, largely independent RDS parameters; increasing storage does not directly raise the connection ceiling.",
+3: "Opening a brand-new connection on every single invocation (no reuse at all) would make the connection-exhaustion problem worse, not better, since even warm execution environments would stop reusing an existing connection.",
+},
+links=[L("database/rds.md"), L("compute/lambda.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+
+dict(stem="""A team wants to validate, before committing to a production Lambda memory setting,
+whether a specific function's duration (and therefore cost) actually improves meaningfully between
+512 MB, 1024 MB, and 1536 MB for their real production-like payload — rather than guessing based on
+general advice about CPU-bound workloads. What approach gives them concrete, workload-specific
+evidence rather than a generic rule of thumb?""",
+multi=False,
+options=[
+"Run the function at each candidate memory setting against a representative test payload (e.g. using the open-source AWS Lambda Power Tuning tool, which automates invoking the function at multiple memory values and reports actual duration/cost for each) and compare the real measured results for this specific function.",
+"Pick 1024 MB because it's a commonly cited 'good default' in blog posts, with no testing against this function's actual payload.",
+"Assume duration scales exactly linearly with memory for every Lambda function, so testing more than one memory value is unnecessary.",
+"Set memory to the account-wide maximum for every function without measuring, since more memory can never make a function slower.",
+],
+correct=[0],
+explain="""Only an actual empirical test against a representative payload (which is exactly what
+Lambda Power Tuning automates — invoking at each candidate memory value and reporting real
+duration/cost) gives workload-specific evidence; generic advice or blog-post defaults can be wrong
+for a given function's specific CPU/I/O profile, which is precisely why the exam's documented
+Task 4.3 guidance is to benchmark rather than assume.""",
+wrong={
+1: "A generic 'common default' ignores this specific function's actual behavior and may be far from its real optimal point — exactly the untested guess the question wants to avoid.",
+2: "Duration vs. memory is frequently non-linear and workload-dependent (I/O-bound workloads may see little to no improvement); assuming strict linearity is an unverified and often incorrect assumption.",
+3: "More memory does not strictly guarantee faster performance for every workload profile, and it always increases per-GB-second cost — 'always max, never measure' is not a sound strategy and can raise cost without any performance benefit for some workloads.",
+},
+links=[L("compute/lambda.md"), D("domain-4-troubleshooting-optimization/README.md")]),
+]
+
+# =====================================================================
+# RENDERING
+# =====================================================================
+LETTERS = "ABCDE"
+
+def interleave(domain_lists):
+    """Weighted round-robin interleave of {domain_num: [questions]} preserving within-domain order,
+    spreading each domain's questions evenly across the 65-slot exam (like a real mixed exam)."""
+    counts = {d: len(v) for d, v in domain_lists.items()}
+    total = sum(counts.values())
+    remaining = dict(counts)
+    iters = {d: iter(v) for d, v in domain_lists.items()}
+    order = []
+    for _ in range(total):
+        d = max(remaining, key=lambda k: (remaining[k] / counts[k] if counts[k] else 0, -k))
+        order.append((d, next(iters[d])))
+        remaining[d] -= 1
+    return order
+
+def render_questions_md(title, ordered):
+    lines = [f"# {title}", ""]
+    lines.append("65 questions. Multiple choice (pick ONE) unless a question explicitly says "
+                  "**Choose TWO**. No answers are shown in this file — see the matching "
+                  "`*-answer-key.md` file after you finish (or after each section if you're "
+                  "reviewing, not simulating).")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    for i, (domain, q) in enumerate(ordered, start=1):
+        lines.append(f"## Q{i}")
+        lines.append("")
+        lines.append(q["stem"].strip())
+        lines.append("")
+        for j, opt in enumerate(q["options"]):
+            lines.append(f"{LETTERS[j]}. {opt}")
+            lines.append("")
+        lines.append("---")
+        lines.append("")
+    return "\n".join(lines)
+
+def render_answer_key_md(title, ordered):
+    lines = [f"# {title}", ""]
+    lines.append("Correct answer(s), full explanation, and why each distractor is wrong — "
+                  "cross-linked to the relevant service/domain docs. Matches the question numbering "
+                  "in the companion `*-questions.md` file exactly.")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    for i, (domain, q) in enumerate(ordered, start=1):
+        correct_letters = " and ".join(LETTERS[idx] for idx in q["correct"])
+        lines.append(f"## Q{i} — Domain {domain}")
+        lines.append("")
+        lines.append(f"**Correct Answer: {correct_letters}**")
+        lines.append("")
+        lines.append(f"**Explanation:** {q['explain'].strip()}")
+        lines.append("")
+        wrong_idx_sorted = sorted(q["wrong"].keys())
+        if wrong_idx_sorted:
+            lines.append("**Why the others are wrong:**")
+            for idx in wrong_idx_sorted:
+                lines.append(f"- {LETTERS[idx]}: {q['wrong'][idx]}")
+            lines.append("")
+        if q.get("links"):
+            lines.append("**Study links:** " + ", ".join(q["links"]))
+            lines.append("")
+        lines.append("---")
+        lines.append("")
+    return "\n".join(lines)
+
+def build_exam(domain_dict):
+    ordered = interleave(domain_dict)
+    return ordered
+
+def write_exam_files(num, domain_dict, out_dir):
+    ordered = build_exam(domain_dict)
+    assert len(ordered) == 65, f"Expected 65 questions, got {len(ordered)}"
+    q_md = render_questions_md(
+        f"DVA-C03 Full Mock Exam {num} — Questions", ordered)
+    a_md = render_answer_key_md(
+        f"DVA-C03 Full Mock Exam {num} — Answer Key", ordered)
+    with open(os.path.join(out_dir, f"exam-{num}-questions.md"), "w") as f:
+        f.write(q_md)
+    with open(os.path.join(out_dir, f"exam-{num}-answer-key.md"), "w") as f:
+        f.write(a_md)
+    domain_counts = {}
+    for d, _ in ordered:
+        domain_counts[d] = domain_counts.get(d, 0) + 1
+    multi_count = sum(1 for _, q in ordered if q.get("multi"))
+    return {
+        "questions_lines": q_md.count("\n") + 1,
+        "answer_lines": a_md.count("\n") + 1,
+        "domain_counts": domain_counts,
+        "multi_count": multi_count,
+        "total": len(ordered),
+    }
+
+if __name__ == "__main__":
+    os.makedirs(OUT, exist_ok=True)
+    r1 = write_exam_files(1, {1: E1_D1, 2: E1_D2, 3: E1_D3, 4: E1_D4}, OUT)
+    r2 = write_exam_files(2, {1: E2_D1, 2: E2_D2, 3: E2_D3, 4: E2_D4}, OUT)
+    print("EXAM 1:", r1)
+    print("EXAM 2:", r2)
+

@@ -1,6 +1,6 @@
 # Responsible AI and Guardrails
 
-![Amazon Bedrock icon](https://icon.icepanel.io/AWS/svg/Machine-Learning/Bedrock.svg)
+![Amazon Bedrock icon](../../../diagrams/assets/icons/bedrock.png)
 
 *Operations/Trust concept · MLA-C02 Domain 4, Task Statement 4.4 — one of the clearest net-new
 additions going from C01 to C02. "Responsible AI" spans classic ML fairness (has existed since

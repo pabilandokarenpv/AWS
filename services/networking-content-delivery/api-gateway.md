@@ -1,11 +1,6 @@
 # Amazon API Gateway
 
-<!-- Icon note: no exact "API-Gateway" filename found on the icon.icepanel.io CDN mirror at
-     time of writing (404). Per diagrams/README.md's fallback rule, pull the current SVG from
-     the official AWS Architecture Icons package (Application-Integration category) and drop it
-     at diagrams/assets/networking-content-delivery/api-gateway.svg, then swap this line for a
-     relative path. Using the generic VPC icon below as a placeholder in the meantime. -->
-![API Gateway icon placeholder](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Virtual-Private-Cloud.svg)
+![Amazon API Gateway](../../diagrams/assets/icons/apigateway.png)
 
 ## Definition
 

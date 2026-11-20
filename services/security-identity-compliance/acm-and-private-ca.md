@@ -1,6 +1,6 @@
 # AWS Certificate Manager (ACM) & Private CA
 
-![AWS Certificate Manager icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Certificate-Manager.svg)
+![AWS Certificate Manager icon](../../diagrams/assets/icons/awscertificatemanager.png)
 
 ## Definition
 

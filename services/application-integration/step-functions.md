@@ -1,6 +1,6 @@
 # AWS Step Functions
 
-![AWS Step Functions](https://icon.icepanel.io/AWS/svg/App-Integration/Step-Functions.svg)
+![AWS Step Functions](../../diagrams/assets/icons/stepfunctions.png)
 <!-- If this icon 404s, pull "Step-Functions.svg" from the official AWS Architecture Icons zip
 (App-Integration category) — see diagrams/README.md -->
 

@@ -1,6 +1,6 @@
 # SageMaker Model Monitor & Model Registry
 
-![Amazon SageMaker](https://icon.icepanel.io/AWS/svg/Machine-Learning/SageMaker.svg)
+![Amazon SageMaker](../../diagrams/assets/icons/sagemaker.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # Disaster Recovery Strategies (RTO/RPO, Backup to Multi-Site)
 
-![AWS Backup icon](https://icon.icepanel.io/AWS/svg/Storage/AWS-Backup.svg)
+![AWS Backup icon](../../../diagrams/assets/icons/awsbackup.png)
 
 ## Definition
 

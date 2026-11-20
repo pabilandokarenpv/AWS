@@ -1,6 +1,6 @@
 # Amazon Elastic Kubernetes Service (EKS)
 
-![Amazon EKS icon](https://icon.icepanel.io/AWS/svg/Containers/Elastic-Kubernetes-Service.svg)
+![Amazon EKS icon](../../diagrams/assets/icons/elastickubernetesservice.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 
 ## Definition

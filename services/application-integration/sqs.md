@@ -1,6 +1,6 @@
 # Amazon SQS (Simple Queue Service)
 
-![Amazon SQS](https://icon.icepanel.io/AWS/svg/App-Integration/Simple-Queue-Service.svg)
+![Amazon SQS](../../diagrams/assets/icons/simplequeueservice.png)
 <!-- If this icon 404s, pull "Simple-Queue-Service.svg" from the official AWS Architecture
 Icons zip (App-Integration category) — see diagrams/README.md -->
 

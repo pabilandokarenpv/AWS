@@ -1,6 +1,6 @@
 # AWS WAF (Web Application Firewall)
 
-![AWS WAF icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-WAF.svg)
+![AWS WAF icon](../../diagrams/assets/icons/awswaf.png)
 
 ## Definition
 

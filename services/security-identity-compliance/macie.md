@@ -1,6 +1,6 @@
 # Amazon Macie
 
-![Amazon Macie icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/Amazon-Macie.svg)
+![Amazon Macie icon](../../diagrams/assets/icons/amazonmacie.png)
 
 ## Definition
 

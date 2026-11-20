@@ -1,6 +1,6 @@
 # Embeddings and RAG Data Preparation
 
-![Amazon Bedrock icon](https://icon.icepanel.io/AWS/svg/Machine-Learning/Bedrock.svg)
+![Amazon Bedrock icon](../../../diagrams/assets/icons/bedrock.png)
 
 *Machine Learning / Generative AI concept · MLA-C02 Domain 1, Task Statement 1.4 — the single
 biggest net-new topic area added going from MLA-C01 to MLA-C02. This doc lives in Domain 1

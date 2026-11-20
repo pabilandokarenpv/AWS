@@ -1,6 +1,6 @@
 # Amazon EFS (Elastic File System)
 
-![Amazon EFS](https://icon.icepanel.io/AWS/svg/Storage/Elastic-File-System.svg)
+![Amazon EFS](../../diagrams/assets/icons/elasticfilesystem.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 3, DVA-C03 Domain 1, MLA-C02 Domain 1*

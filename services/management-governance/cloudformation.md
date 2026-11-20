@@ -1,6 +1,6 @@
 # AWS CloudFormation
 
-![AWS CloudFormation](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-CloudFormation.svg)
+![AWS CloudFormation](../../diagrams/assets/icons/awscloudformation.png)
 
 ## Definition
 

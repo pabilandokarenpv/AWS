@@ -1,6 +1,6 @@
 # AWS CloudTrail
 
-![AWS CloudTrail](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-CloudTrail.svg)
+![AWS CloudTrail](../../diagrams/assets/icons/awscloudtrail.png)
 
 ## Definition
 

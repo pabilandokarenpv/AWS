@@ -1,6 +1,6 @@
 # AWS Security Hub & Amazon Inspector
 
-![AWS Security Hub icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Security-Hub.svg)
+![AWS Security Hub icon](../../diagrams/assets/icons/awssecurityhub.png)
 
 ## Definition
 

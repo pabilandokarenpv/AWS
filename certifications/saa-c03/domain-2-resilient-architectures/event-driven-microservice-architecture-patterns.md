@@ -1,6 +1,6 @@
 # Event-Driven & Microservice Architecture Patterns
 
-![Application Integration icon](https://icon.icepanel.io/AWS/svg/App-Integration/Simple-Notification-Service.svg)
+![Application Integration icon](../../../diagrams/assets/icons/simplenotificationservice.png)
 
 ## Definition
 

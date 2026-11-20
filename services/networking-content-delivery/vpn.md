@@ -1,6 +1,6 @@
 # AWS Site-to-Site VPN & Client VPN
 
-![AWS VPN icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Site-to-Site-VPN.svg)
+![AWS VPN icon](../../diagrams/assets/icons/sitetositevpn.png)
 
 ## Definition
 

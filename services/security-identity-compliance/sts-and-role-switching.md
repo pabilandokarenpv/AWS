@@ -1,6 +1,6 @@
 # AWS STS & Role Switching (AssumeRole)
 
-![AWS STS icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Identity-and-Access-Management.svg)
+![AWS STS icon](../../diagrams/assets/icons/awsidentityandaccessmanagement.png)
 
 ## Definition
 

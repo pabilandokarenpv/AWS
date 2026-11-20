@@ -1,6 +1,6 @@
 # AWS Cost Management Tools
 
-![AWS Cost Explorer](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Cost-Explorer.svg)
+![AWS Cost Explorer](../../diagrams/assets/icons/awscostexplorer.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # AWS Lambda
 
-![AWS Lambda](https://icon.icepanel.io/AWS/svg/Compute/AWS-Lambda.svg)
+![AWS Lambda](../../diagrams/assets/icons/awslambda.png)
 
 ## Definition
 

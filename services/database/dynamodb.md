@@ -1,6 +1,6 @@
 # Amazon DynamoDB
 
-![Amazon DynamoDB icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-DynamoDB.svg)
+![Amazon DynamoDB icon](../../diagrams/assets/icons/amazondynamodb.png)
 
 ## Definition
 

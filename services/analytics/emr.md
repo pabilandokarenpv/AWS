@@ -1,6 +1,6 @@
 # Amazon EMR (Elastic MapReduce)
 
-![Amazon EMR](https://icon.icepanel.io/AWS/svg/Analytics/EMR.svg)
+![Amazon EMR](../../diagrams/assets/icons/emr.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*
 

@@ -1,6 +1,6 @@
 # Transit Gateway & VPC Peering
 
-![AWS Transit Gateway icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Transit-Gateway.svg)
+![AWS Transit Gateway icon](../../diagrams/assets/icons/transitgateway.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # Subnets, Route Tables, Internet Gateway & NAT Gateway
 
-![VPC networking icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Virtual-Private-Cloud.svg)
+![VPC networking icon](../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition
 

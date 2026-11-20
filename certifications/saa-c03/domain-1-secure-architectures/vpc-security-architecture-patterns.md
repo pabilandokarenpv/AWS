@@ -1,6 +1,6 @@
 # VPC Security Architecture Patterns
 
-![VPC icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Virtual-Private-Cloud.svg)
+![VPC icon](../../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # AWS CodeBuild
 
-![AWS CodeBuild icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/CodeBuild.svg)
+![AWS CodeBuild icon](../../diagrams/assets/icons/codebuild.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

@@ -1,6 +1,6 @@
 # Database Cost-Optimization Decision Framework
 
-![DynamoDB icon](https://icon.icepanel.io/AWS/svg/Database/DynamoDB.svg)
+![DynamoDB icon](../../../diagrams/assets/icons/dynamodb.png)
 
 ## Definition
 

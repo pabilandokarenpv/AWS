@@ -1,6 +1,6 @@
 # Storage Performance Decision Framework
 
-![S3 icon](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service.svg)
+![S3 icon](../../../diagrams/assets/icons/simplestorageservice.png)
 
 ## Definition
 

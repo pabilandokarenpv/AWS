@@ -1,6 +1,6 @@
 # AWS Storage Gateway
 
-![AWS Storage Gateway](https://icon.icepanel.io/AWS/svg/Storage/Storage-Gateway.svg)
+![AWS Storage Gateway](../../diagrams/assets/icons/storagegateway.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 2 (hybrid/DR architectures)*

@@ -1,6 +1,6 @@
 # AWS CodeCommit
 
-![AWS CodeCommit icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/CodeCommit.svg)
+![AWS CodeCommit icon](../../diagrams/assets/icons/codecommit.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

@@ -1,6 +1,6 @@
 # Amazon DocumentDB (with MongoDB compatibility)
 
-![Amazon DocumentDB icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-DocumentDB.svg)
+![Amazon DocumentDB icon](../../diagrams/assets/icons/amazondocumentdb.png)
 
 ## Definition
 

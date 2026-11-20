@@ -1,6 +1,6 @@
 # Observability Instrumentation & AWS X-Ray (Task 4.1 / 4.2)
 
-![AWS X-Ray](https://icon.icepanel.io/AWS/svg/Developer-Tools/X-Ray.svg)
+![AWS X-Ray](../../../diagrams/assets/icons/xray.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # Amazon S3 Glacier
 
-![Amazon S3 Glacier](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service-Glacier.svg)
+![Amazon S3 Glacier](../../diagrams/assets/icons/simplestorageserviceglacier.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 1 & Domain 4 (named cost-optimization task statement)*

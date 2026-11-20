@@ -1,6 +1,6 @@
 # AWS Config
 
-![AWS Config](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Config.svg)
+![AWS Config](../../diagrams/assets/icons/awsconfig.png)
 
 ## Definition
 

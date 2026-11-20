@@ -1,6 +1,6 @@
 # AWS AppSync
 
-![AWS AppSync](https://icon.icepanel.io/AWS/svg/App-Integration/AppSync.svg)
+![AWS AppSync](../../diagrams/assets/icons/appsync.png)
 <!-- If this icon 404s, pull "AppSync.svg" from the official AWS Architecture Icons zip
 (category may appear under Front-End-Web-Mobile in the official set — see diagrams/README.md) -->
 

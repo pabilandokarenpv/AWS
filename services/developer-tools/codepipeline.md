@@ -1,6 +1,6 @@
 # AWS CodePipeline
 
-![AWS CodePipeline icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/CodePipeline.svg)
+![AWS CodePipeline icon](../../diagrams/assets/icons/codepipeline.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

@@ -1,6 +1,6 @@
 # AWS CDK (Cloud Development Kit)
 
-![AWS CDK](https://icon.icepanel.io/AWS/svg/Developer-Tools/AWS-Cloud-Development-Kit.svg)
+![AWS CDK](../../diagrams/assets/icons/awsclouddevelopmentkit.png)
 
 ## Definition
 

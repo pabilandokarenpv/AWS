@@ -1,6 +1,6 @@
 # Amazon Route 53
 
-![Amazon Route 53 icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Route-53.svg)
+![Amazon Route 53 icon](../../diagrams/assets/icons/route53.png)
 
 ## Definition
 

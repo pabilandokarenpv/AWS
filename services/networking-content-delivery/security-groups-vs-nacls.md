@@ -1,6 +1,6 @@
 # Security Groups vs. Network ACLs (NACLs)
 
-![VPC security icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Virtual-Private-Cloud.svg)
+![VPC security icon](../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition
 

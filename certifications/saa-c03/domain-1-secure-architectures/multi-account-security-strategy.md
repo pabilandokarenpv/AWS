@@ -1,6 +1,6 @@
 # Multi-Account Security Strategy (Landing Zone Pattern)
 
-![AWS Organizations icon](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Organizations.svg)
+![AWS Organizations icon](../../../diagrams/assets/icons/awsorganizations.png)
 
 ## Definition
 

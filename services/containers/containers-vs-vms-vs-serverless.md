@@ -1,6 +1,6 @@
 # Containers vs. VMs vs. Serverless — A Conceptual Comparison
 
-![Amazon ECS icon](https://icon.icepanel.io/AWS/svg/Containers/Elastic-Container-Service.svg)
+![Amazon ECS icon](../../diagrams/assets/icons/elasticcontainerservice.png)
 <!-- Conceptual doc spanning Compute + Containers categories; see diagrams/README.md -->
 
 ## Definition

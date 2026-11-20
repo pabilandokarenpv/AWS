@@ -1,6 +1,6 @@
 # AWS Trusted Advisor
 
-![AWS Trusted Advisor](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Trusted-Advisor.svg)
+![AWS Trusted Advisor](../../diagrams/assets/icons/awstrustedadvisor.png)
 
 ## Definition
 

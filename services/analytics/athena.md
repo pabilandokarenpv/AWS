@@ -1,6 +1,6 @@
 # Amazon Athena
 
-![Amazon Athena](https://icon.icepanel.io/AWS/svg/Analytics/Athena.svg)
+![Amazon Athena](../../diagrams/assets/icons/athena.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*
 

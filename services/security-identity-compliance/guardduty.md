@@ -1,6 +1,6 @@
 # Amazon GuardDuty
 
-![Amazon GuardDuty icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/Amazon-GuardDuty.svg)
+![Amazon GuardDuty icon](../../diagrams/assets/icons/amazonguardduty.png)
 
 ## Definition
 

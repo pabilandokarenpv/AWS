@@ -1,6 +1,6 @@
 # Storage Cost-Optimization Decision Framework
 
-![S3 Glacier icon](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service-Glacier.svg)
+![S3 Glacier icon](../../../diagrams/assets/icons/simplestorageserviceglacier.png)
 
 ## Definition
 

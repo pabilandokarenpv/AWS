@@ -1,6 +1,6 @@
 # AWS Identity and Access Management (IAM)
 
-![AWS IAM icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Identity-and-Access-Management.svg)
+![AWS IAM icon](../../diagrams/assets/icons/awsidentityandaccessmanagement.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # Security Risks of Using/Integrating AI Services (DVA-C03 Task 2.3 — new)
 
-![Amazon Bedrock](https://icon.icepanel.io/AWS/svg/Machine-Learning/Bedrock.svg)
+![Amazon Bedrock](../../../diagrams/assets/icons/bedrock.png)
 
 ## Definition
 

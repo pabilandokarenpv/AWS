@@ -1,6 +1,6 @@
 # Amazon CloudWatch
 
-![Amazon CloudWatch](https://icon.icepanel.io/AWS/svg/Management-Governance/Amazon-CloudWatch.svg)
+![Amazon CloudWatch](../../diagrams/assets/icons/amazoncloudwatch.png)
 
 ## Definition
 

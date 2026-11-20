@@ -1,6 +1,6 @@
 # Amazon CloudFront
 
-![Amazon CloudFront icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/CloudFront.svg)
+![Amazon CloudFront icon](../../diagrams/assets/icons/cloudfront.png)
 
 ## Definition
 

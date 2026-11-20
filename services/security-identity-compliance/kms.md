@@ -1,6 +1,6 @@
 # AWS Key Management Service (KMS)
 
-![AWS KMS icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Key-Management-Service.svg)
+![AWS KMS icon](../../diagrams/assets/icons/awskeymanagementservice.png)
 
 ## Definition
 

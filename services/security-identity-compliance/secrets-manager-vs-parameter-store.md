@@ -1,6 +1,6 @@
 # AWS Secrets Manager vs. Systems Manager Parameter Store
 
-![AWS Secrets Manager icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Secrets-Manager.svg)
+![AWS Secrets Manager icon](../../diagrams/assets/icons/awssecretsmanager.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # SageMaker Data Wrangler & Feature Store
 
-![Amazon SageMaker](https://icon.icepanel.io/AWS/svg/Machine-Learning/SageMaker.svg)
+![Amazon SageMaker](../../diagrams/assets/icons/sagemaker.png)
 
 ## Definition
 

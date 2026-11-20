@@ -1,6 +1,6 @@
 # AWS Cloud9 & AWS CloudShell
 
-![AWS CloudShell icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/CloudShell.svg)
+![AWS CloudShell icon](../../diagrams/assets/icons/cloudshell.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

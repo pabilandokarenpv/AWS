@@ -1,6 +1,6 @@
 # Amazon Aurora
 
-![Amazon Aurora icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-Aurora.svg)
+![Amazon Aurora icon](../../diagrams/assets/icons/amazonaurora.png)
 
 ## Definition
 

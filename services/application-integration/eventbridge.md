@@ -1,6 +1,6 @@
 # Amazon EventBridge
 
-![Amazon EventBridge](https://icon.icepanel.io/AWS/svg/App-Integration/EventBridge.svg)
+![Amazon EventBridge](../../diagrams/assets/icons/eventbridge.png)
 <!-- If this icon 404s, pull "EventBridge.svg" from the official AWS Architecture Icons zip
 (App-Integration category) — see diagrams/README.md -->
 

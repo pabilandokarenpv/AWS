@@ -1,7 +1,7 @@
 # Data Lake Concepts (S3 as a Data Lake, Lake House Architecture)
 
-![Amazon S3](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service.svg)
-![AWS Lake Formation](https://icon.icepanel.io/AWS/svg/Analytics/Lake-Formation.svg)
+![Amazon S3](../../diagrams/assets/icons/simplestorageservice.png)
+![AWS Lake Formation](../../diagrams/assets/icons/lakeformation.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*
 

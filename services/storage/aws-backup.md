@@ -1,6 +1,6 @@
 # AWS Backup
 
-![AWS Backup](https://icon.icepanel.io/AWS/svg/Storage/Backup.svg)
+![AWS Backup](../../diagrams/assets/icons/backup.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 1 & 2*

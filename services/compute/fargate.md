@@ -1,6 +1,6 @@
 # AWS Fargate
 
-![AWS Fargate](https://icon.icepanel.io/AWS/svg/Compute/AWS-Fargate.svg)
+![AWS Fargate](../../diagrams/assets/icons/awsfargate.png)
 
 ## Definition
 

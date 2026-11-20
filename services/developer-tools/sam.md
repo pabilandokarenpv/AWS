@@ -1,6 +1,6 @@
 # AWS Serverless Application Model (SAM)
 
-![AWS SAM icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/Serverless-Application-Model.svg)
+![AWS SAM icon](../../diagrams/assets/icons/serverlessapplicationmodel.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

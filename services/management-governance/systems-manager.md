@@ -1,6 +1,6 @@
 # AWS Systems Manager
 
-![AWS Systems Manager](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Systems-Manager.svg)
+![AWS Systems Manager](../../diagrams/assets/icons/awssystemsmanager.png)
 
 ## Definition
 

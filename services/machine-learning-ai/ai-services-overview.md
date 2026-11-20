@@ -1,8 +1,8 @@
 # AWS Pre-Built AI Services — Overview
 
-![Amazon Comprehend](https://icon.icepanel.io/AWS/svg/Machine-Learning/Comprehend.svg)
-![Amazon Rekognition](https://icon.icepanel.io/AWS/svg/Machine-Learning/Rekognition.svg)
-![Amazon Textract](https://icon.icepanel.io/AWS/svg/Machine-Learning/Textract.svg)
+![Amazon Comprehend](../../diagrams/assets/icons/comprehend.png)
+![Amazon Rekognition](../../diagrams/assets/icons/rekognition.png)
+![Amazon Textract](../../diagrams/assets/icons/textract.png)
 
 ## Definition
 

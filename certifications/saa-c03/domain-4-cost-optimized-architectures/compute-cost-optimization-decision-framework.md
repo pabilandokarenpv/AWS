@@ -1,6 +1,6 @@
 # Compute Cost-Optimization Decision Framework
 
-![EC2 Spot icon](https://icon.icepanel.io/AWS/svg/Compute/EC2.svg)
+![EC2 Spot icon](../../../diagrams/assets/icons/ec2.png)
 
 ## Definition
 

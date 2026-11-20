@@ -1,6 +1,6 @@
 # ML Cost Optimization
 
-![AWS Cost Management icon](https://icon.icepanel.io/AWS/svg/Cloud-Financial-Management/Cost-Explorer.svg)
+![AWS Cost Management icon](../../../diagrams/assets/icons/costexplorer.png)
 
 *Operations concept · MLA-C02 Domain 4, Task Statement 4.2. ML workloads have a cost shape
 unlike most other AWS services: training is short, bursty, and often GPU-hungry; inference can

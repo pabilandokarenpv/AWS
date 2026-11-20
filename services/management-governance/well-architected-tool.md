@@ -1,6 +1,6 @@
 # AWS Well-Architected Tool
 
-![AWS Well-Architected Tool](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Well-Architected-Tool.svg)
+![AWS Well-Architected Tool](../../diagrams/assets/icons/awswellarchitectedtool.png)
 
 ## Definition
 

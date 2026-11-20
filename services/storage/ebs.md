@@ -1,6 +1,6 @@
 # Amazon EBS (Elastic Block Store)
 
-![Amazon EBS](https://icon.icepanel.io/AWS/svg/Storage/Elastic-Block-Store.svg)
+![Amazon EBS](../../diagrams/assets/icons/elasticblockstore.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 2 & 3 & 4, DVA-C03 Domain 1 (context), MLA-C02 (context)*

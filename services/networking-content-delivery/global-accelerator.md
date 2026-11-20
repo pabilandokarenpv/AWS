@@ -1,6 +1,6 @@
 # AWS Global Accelerator
 
-![AWS Global Accelerator icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Global-Accelerator.svg)
+![AWS Global Accelerator icon](../../diagrams/assets/icons/globalaccelerator.png)
 
 ## Definition
 

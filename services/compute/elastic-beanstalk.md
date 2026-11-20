@@ -1,6 +1,6 @@
 # AWS Elastic Beanstalk
 
-![AWS Elastic Beanstalk](https://icon.icepanel.io/AWS/svg/Compute/AWS-Elastic-Beanstalk.svg)
+![AWS Elastic Beanstalk](../../diagrams/assets/icons/awselasticbeanstalk.png)
 
 ## Definition
 

@@ -16,24 +16,31 @@ Common diagram types used:
 
 ## Service logos/icons
 
-For service identity (not architecture flow), reference AWS's **official Architecture Icons**
-package: https://aws.amazon.com/architecture/icons/ (free under AWS's trademark guidelines —
-icons may be used to illustrate AWS architectures; don't alter the icon or imply endorsement).
+All service icons in this repo are **committed locally** under [`diagrams/assets/icons/`](assets/icons)
+— no external CDN dependency, so images never go stale or 404.
 
-Convention used in this repo for inline icons (lightweight CDN mirror of the official set, kept
-in sync with AWS's category groupings):
+**Source:** [`awslabs/aws-icons-for-plantuml`](https://github.com/awslabs/aws-icons-for-plantuml)
+(AWS's own open-source, MIT-licensed repo, rebuilt directly from AWS's official
+[Architecture Icons](https://aws.amazon.com/architecture/icons/) asset package each release).
+Icons are used under AWS's trademark guidelines to illustrate AWS architectures — unaltered,
+no endorsement implied.
+
+Convention used in every doc's header image:
 
 ```markdown
-![Amazon S3](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service.svg)
+![Amazon S3](../../diagrams/assets/icons/amazons3.png)
 ```
 
-Category folders mirror AWS's own grouping: Compute, Storage, Database,
-Networking-Content-Delivery, Security-Identity-Compliance, Machine-Learning, Analytics,
-App-Integration, Management-Governance, Containers, Developer-Tools.
+(relative path depth adjusts based on how deep the doc lives — `services/<category>/x.md` is
+two levels down from repo root, so `../../diagrams/assets/icons/...`).
 
-If a specific icon URL 404s, pull the current one from the official AWS Architecture Icons zip
-(linked above), drop the SVG/PNG into `diagrams/assets/<category>/`, and reference it with a
-relative path instead — this is the fallback for icons not available via CDN mirror.
+Filenames are the service name lowercased with all non-alphanumeric characters stripped (e.g.
+"Amazon DynamoDB" → `amazondynamodb.png`, "AWS Key Management Service" → `awskeymanagementservice.png`).
+
+**Adding a new icon:** check `diagrams/assets/icons/` first (86+ already there). If missing,
+find it in a fresh clone of `aws-icons-for-plantuml` under `dist/<Category>/<Service>.png`,
+copy it in using the same normalized-filename convention, and reference it with a relative path.
+Never link an external icon CDN directly — always vendor the file into this repo.
 
 ## Screenshots
 

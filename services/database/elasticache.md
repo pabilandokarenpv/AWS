@@ -1,6 +1,6 @@
 # Amazon ElastiCache
 
-![Amazon ElastiCache icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-ElastiCache.svg)
+![Amazon ElastiCache icon](../../diagrams/assets/icons/amazonelasticache.png)
 
 ## Definition
 

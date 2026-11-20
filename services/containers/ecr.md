@@ -1,6 +1,6 @@
 # Amazon Elastic Container Registry (ECR)
 
-![Amazon ECR icon](https://icon.icepanel.io/AWS/svg/Containers/Elastic-Container-Registry.svg)
+![Amazon ECR icon](../../diagrams/assets/icons/elasticcontainerregistry.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 
 ## Definition

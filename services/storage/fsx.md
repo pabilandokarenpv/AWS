@@ -1,6 +1,6 @@
 # Amazon FSx
 
-![Amazon FSx](https://icon.icepanel.io/AWS/svg/Storage/FSx.svg)
+![Amazon FSx](../../diagrams/assets/icons/fsx.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 3, MLA-C02 Domain 1 (FSx for Lustre specifically)*

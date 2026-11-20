@@ -1,6 +1,6 @@
 # Amazon Redshift
 
-![Amazon Redshift icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-Redshift.svg)
+![Amazon Redshift icon](../../diagrams/assets/icons/amazonredshift.png)
 
 ## Definition
 

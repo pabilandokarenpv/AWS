@@ -1,6 +1,6 @@
 # Pricing & Billing Fundamentals
 
-![Billing icon](https://icon.icepanel.io/AWS/svg/Cloud-Financial-Management/AWS-Cost-Explorer.svg)
+![Billing icon](../diagrams/assets/icons/awscostexplorer.png)
 
 *Fundamentals · maps to all 3 certs (SAA-C03 Domain 1 & 4, DVA-C03 Domain 4, MLA-C02 Domain 4)*
 

@@ -1,6 +1,6 @@
 # Network Performance Architecture Patterns
 
-![Global Accelerator icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Global-Accelerator.svg)
+![Global Accelerator icon](../../../diagrams/assets/icons/globalaccelerator.png)
 
 ## Definition
 

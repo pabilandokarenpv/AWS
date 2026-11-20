@@ -1,6 +1,6 @@
 # The AWS Shared Responsibility Model — Deep Dive
 
-![AWS Security, Identity & Compliance category icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Shield.svg)
+![AWS Security, Identity & Compliance category icon](../../diagrams/assets/icons/awsshield.png)
 
 ## Definition
 

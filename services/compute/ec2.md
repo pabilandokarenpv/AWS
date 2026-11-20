@@ -1,6 +1,6 @@
 # Amazon EC2 (Elastic Compute Cloud)
 
-![Amazon EC2](https://icon.icepanel.io/AWS/svg/Compute/Amazon-EC2.svg)
+![Amazon EC2](../../diagrams/assets/icons/amazonec2.png)
 
 ## Definition
 

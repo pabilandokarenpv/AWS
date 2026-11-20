@@ -1,6 +1,6 @@
 # Amazon Elastic Container Service (ECS)
 
-![Amazon ECS icon](https://icon.icepanel.io/AWS/svg/Containers/Elastic-Container-Service.svg)
+![Amazon ECS icon](../../diagrams/assets/icons/elasticcontainerservice.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 
 ## Definition

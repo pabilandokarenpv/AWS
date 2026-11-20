@@ -1,6 +1,6 @@
 # The AWS Well-Architected Framework
 
-![AWS icon](https://icon.icepanel.io/AWS/svg/Management-Governance/AWS-Well-Architected-Tool.svg)
+![AWS icon](../diagrams/assets/icons/awswellarchitectedtool.png)
 
 *Fundamentals · maps to all 3 certs (SAA-C03 Domain 1, DVA-C03 Domain 4, MLA-C02 Domain 4) ·
 conceptual doc covering all 6 pillars, not a single service*

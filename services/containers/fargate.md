@@ -1,6 +1,6 @@
 # AWS Fargate
 
-![AWS Fargate icon](https://icon.icepanel.io/AWS/svg/Containers/Fargate.svg)
+![AWS Fargate icon](../../diagrams/assets/icons/fargate.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 
 ## Definition

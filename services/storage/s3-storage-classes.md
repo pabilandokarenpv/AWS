@@ -1,6 +1,6 @@
 # S3 Storage Classes
 
-![Amazon S3 Storage Classes](https://icon.icepanel.io/AWS/svg/Storage/Simple-Storage-Service.svg)
+![Amazon S3 Storage Classes](../../diagrams/assets/icons/simplestorageservice.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 
 *Service · Storage · maps to SAA-C03 Domain 4 (named task statement), DVA-C03 Domain 1, MLA-C02 Domain 1*

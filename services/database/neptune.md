@@ -1,6 +1,6 @@
 # Amazon Neptune
 
-![Amazon Neptune icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-Neptune.svg)
+![Amazon Neptune icon](../../diagrams/assets/icons/amazonneptune.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # VPC Endpoints & AWS PrivateLink
 
-![AWS PrivateLink icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/PrivateLink.svg)
+![AWS PrivateLink icon](../../diagrams/assets/icons/privatelink.png)
 
 ## Definition
 

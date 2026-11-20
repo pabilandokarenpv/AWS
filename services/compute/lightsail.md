@@ -1,6 +1,6 @@
 # Amazon Lightsail
 
-![Amazon Lightsail](https://icon.icepanel.io/AWS/svg/Compute/Amazon-Lightsail.svg)
+![Amazon Lightsail](../../diagrams/assets/icons/amazonlightsail.png)
 
 ## Definition
 

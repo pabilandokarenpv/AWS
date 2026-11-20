@@ -1,6 +1,6 @@
 # Messaging Patterns Overview — SQS, SNS, EventBridge & Step Functions Together
 
-![App Integration](https://icon.icepanel.io/AWS/svg/App-Integration/Simple-Notification-Service.svg)
+![App Integration](../../diagrams/assets/icons/simplenotificationservice.png)
 <!-- Composite overview doc; icon shown is illustrative of the App-Integration category —
 see diagrams/README.md for the convention -->
 

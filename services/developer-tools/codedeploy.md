@@ -1,6 +1,6 @@
 # AWS CodeDeploy
 
-![AWS CodeDeploy icon](https://icon.icepanel.io/AWS/svg/Developer-Tools/CodeDeploy.svg)
+![AWS CodeDeploy icon](../../diagrams/assets/icons/codedeploy.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 
 ## Definition

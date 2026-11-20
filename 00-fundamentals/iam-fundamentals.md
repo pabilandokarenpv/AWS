@@ -1,6 +1,6 @@
 # Identity, Authentication & Authorization — IAM Fundamentals
 
-![IAM icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Identity-and-Access-Management.svg)
+![IAM icon](../diagrams/assets/icons/awsidentityandaccessmanagement.png)
 
 *Fundamentals · maps to all 3 certs (SAA-C03 Domain 1 & 4, DVA-C03 Domain 4, MLA-C02 Domain 4) ·
 this is the beginner on-ramp — the deep technical doc lives at

@@ -1,6 +1,6 @@
 # AWS Batch
 
-![AWS Batch](https://icon.icepanel.io/AWS/svg/Compute/AWS-Batch.svg)
+![AWS Batch](../../diagrams/assets/icons/awsbatch.png)
 
 ## Definition
 

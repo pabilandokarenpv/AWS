@@ -1,7 +1,7 @@
 # ECS & EKS — Overview Note (see `services/containers/` for full docs)
 
-![Amazon ECS](https://icon.icepanel.io/AWS/svg/Containers/Amazon-Elastic-Container-Service.svg)
-![Amazon EKS](https://icon.icepanel.io/AWS/svg/Containers/Amazon-Elastic-Kubernetes-Service.svg)
+![Amazon ECS](../../diagrams/assets/icons/amazonelasticcontainerservice.png)
+![Amazon EKS](../../diagrams/assets/icons/amazonelastickubernetesservice.png)
 
 This is a short pointer, not the canonical doc. **Amazon ECS** (Elastic Container Service) and
 **Amazon EKS** (Elastic Kubernetes Service) are container **orchestrators** — they decide what

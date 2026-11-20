@@ -1,6 +1,6 @@
 # Amazon RDS (Relational Database Service)
 
-![Amazon RDS icon](https://icon.icepanel.io/AWS/svg/Database/Amazon-RDS.svg)
+![Amazon RDS icon](../../diagrams/assets/icons/amazonrds.png)
 
 ## Definition
 

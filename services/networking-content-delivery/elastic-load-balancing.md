@@ -1,6 +1,6 @@
 # Elastic Load Balancing (ALB / NLB / GWLB / CLB)
 
-![Elastic Load Balancing icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Elastic-Load-Balancing.svg)
+![Elastic Load Balancing icon](../../diagrams/assets/icons/elasticloadbalancing.png)
 
 ## Definition
 

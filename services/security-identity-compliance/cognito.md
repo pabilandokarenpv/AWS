@@ -1,6 +1,6 @@
 # Amazon Cognito
 
-![Amazon Cognito icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/Amazon-Cognito.svg)
+![Amazon Cognito icon](../../diagrams/assets/icons/amazoncognito.png)
 
 ## Definition
 

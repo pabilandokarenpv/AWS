@@ -1,6 +1,6 @@
 # AWS Glue (Glue ETL, Glue DataBrew, Glue Data Catalog)
 
-![AWS Glue](https://icon.icepanel.io/AWS/svg/Analytics/Glue.svg)
+![AWS Glue](../../diagrams/assets/icons/glue.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*
 

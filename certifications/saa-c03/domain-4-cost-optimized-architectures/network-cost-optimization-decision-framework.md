@@ -1,6 +1,6 @@
 # Network Cost-Optimization Decision Framework
 
-![VPC Endpoint icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Virtual-Private-Cloud.svg)
+![VPC Endpoint icon](../../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition
 

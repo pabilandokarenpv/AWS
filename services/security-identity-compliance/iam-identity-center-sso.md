@@ -1,6 +1,6 @@
 # AWS IAM Identity Center (SSO)
 
-![AWS IAM Identity Center icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-IAM-Identity-Center.svg)
+![AWS IAM Identity Center icon](../../diagrams/assets/icons/awsiamidentitycenter.png)
 
 ## Definition
 

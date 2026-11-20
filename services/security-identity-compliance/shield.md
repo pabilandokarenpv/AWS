@@ -1,6 +1,6 @@
 # AWS Shield (Standard & Advanced)
 
-![AWS Shield icon](https://icon.icepanel.io/AWS/svg/Security-Identity-Compliance/AWS-Shield.svg)
+![AWS Shield icon](../../diagrams/assets/icons/awsshield.png)
 
 ## Definition
 

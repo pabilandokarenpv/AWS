@@ -1,6 +1,6 @@
 # Amazon EC2 Auto Scaling
 
-![Amazon EC2 Auto Scaling](https://icon.icepanel.io/AWS/svg/Compute/Amazon-EC2-Auto-Scaling.svg)
+![Amazon EC2 Auto Scaling](../../diagrams/assets/icons/amazonec2autoscaling.png)
 
 ## Definition
 

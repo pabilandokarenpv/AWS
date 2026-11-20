@@ -1,6 +1,6 @@
 # Amazon SNS (Simple Notification Service)
 
-![Amazon SNS](https://icon.icepanel.io/AWS/svg/App-Integration/Simple-Notification-Service.svg)
+![Amazon SNS](../../diagrams/assets/icons/simplenotificationservice.png)
 <!-- If this icon 404s, pull "Simple-Notification-Service.svg" from the official AWS
 Architecture Icons zip (App-Integration category) — see diagrams/README.md -->
 

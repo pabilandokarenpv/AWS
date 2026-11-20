@@ -1,6 +1,6 @@
 # Database Selection Guide — Choosing the Right AWS Database
 
-![Database icon](https://icon.icepanel.io/AWS/svg/Database/Database.svg)
+![Database icon](../../diagrams/assets/icons/database.png)
 
 ## Definition
 

@@ -1,6 +1,6 @@
 # AWS Direct Connect
 
-![AWS Direct Connect icon](https://icon.icepanel.io/AWS/svg/Networking-Content-Delivery/Direct-Connect.svg)
+![AWS Direct Connect icon](../../diagrams/assets/icons/directconnect.png)
 
 ## Definition
 

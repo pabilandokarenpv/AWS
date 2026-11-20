@@ -1,5 +1,7 @@
 # Amazon CloudFront
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon CloudFront icon](../../diagrams/assets/icons/cloudfront.png)
 
 ## Definition

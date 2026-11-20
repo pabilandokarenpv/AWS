@@ -1,5 +1,7 @@
 # Amazon Kinesis Family (Data Streams, Data Firehose, Data Analytics)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon Kinesis](../../diagrams/assets/icons/kinesis.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*

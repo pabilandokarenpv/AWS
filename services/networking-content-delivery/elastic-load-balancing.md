@@ -1,5 +1,7 @@
 # Elastic Load Balancing (ALB / NLB / GWLB / CLB)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Elastic Load Balancing icon](../../diagrams/assets/icons/elasticloadbalancing.png)
 
 ## Definition

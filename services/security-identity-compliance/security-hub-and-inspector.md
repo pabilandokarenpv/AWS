@@ -1,5 +1,7 @@
 # AWS Security Hub & Amazon Inspector
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Security Hub icon](../../diagrams/assets/icons/awssecurityhub.png)
 
 ## Definition

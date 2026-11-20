@@ -1,5 +1,7 @@
 # AWS CodeCommit
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CodeCommit icon](../../diagrams/assets/icons/codecommit.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 

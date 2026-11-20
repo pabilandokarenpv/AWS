@@ -1,5 +1,7 @@
 # AWS Cost Management Tools
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Cost Explorer](../../diagrams/assets/icons/awscostexplorer.png)
 
 ## Definition

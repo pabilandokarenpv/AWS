@@ -1,5 +1,7 @@
 # Database Selection Guide — Choosing the Right AWS Database
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Database icon](../../diagrams/assets/icons/database.png)
 
 ## Definition

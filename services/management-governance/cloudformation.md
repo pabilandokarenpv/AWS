@@ -1,5 +1,7 @@
 # AWS CloudFormation
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CloudFormation](../../diagrams/assets/icons/awscloudformation.png)
 
 ## Definition

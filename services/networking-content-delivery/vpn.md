@@ -1,5 +1,7 @@
 # AWS Site-to-Site VPN & Client VPN
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS VPN icon](../../diagrams/assets/icons/sitetositevpn.png)
 
 ## Definition

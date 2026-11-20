@@ -1,5 +1,7 @@
 # AWS Well-Architected Tool
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS Well-Architected Tool](../../diagrams/assets/icons/awswellarchitectedtool.png)
 
 ## Definition

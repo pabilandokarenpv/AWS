@@ -1,5 +1,7 @@
 # AWS Fargate
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Fargate icon](../../diagrams/assets/icons/fargate.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 

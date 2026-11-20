@@ -1,5 +1,7 @@
 # AWS Batch
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Batch](../../diagrams/assets/icons/awsbatch.png)
 
 ## Definition

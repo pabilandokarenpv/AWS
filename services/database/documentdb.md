@@ -1,5 +1,7 @@
 # Amazon DocumentDB (with MongoDB compatibility)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon DocumentDB icon](../../diagrams/assets/icons/amazondocumentdb.png)
 
 ## Definition

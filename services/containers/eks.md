@@ -1,5 +1,7 @@
 # Amazon Elastic Kubernetes Service (EKS)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EKS icon](../../diagrams/assets/icons/elastickubernetesservice.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 

@@ -1,5 +1,7 @@
 # AWS CodePipeline
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md)
+
 ![AWS CodePipeline icon](../../diagrams/assets/icons/codepipeline.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 

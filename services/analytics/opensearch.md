@@ -1,5 +1,7 @@
 # Amazon OpenSearch Service
 
+> **Appears in:** [MLA-C02](../../certifications/mla-c02/README.md)
+
 ![Amazon OpenSearch Service](../../diagrams/assets/icons/opensearchservice.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*

@@ -1,5 +1,7 @@
 # Containers vs. VMs vs. Serverless — A Conceptual Comparison
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon ECS icon](../../diagrams/assets/icons/elasticcontainerservice.png)
 <!-- Conceptual doc spanning Compute + Containers categories; see diagrams/README.md -->
 

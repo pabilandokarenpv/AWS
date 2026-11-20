@@ -1,5 +1,7 @@
 # Amazon EBS (Elastic Block Store)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EBS](../../diagrams/assets/icons/elasticblockstore.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

@@ -1,5 +1,7 @@
 # AWS Serverless Application Model (SAM)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS SAM icon](../../diagrams/assets/icons/serverlessapplicationmodel.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 

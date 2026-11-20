@@ -1,5 +1,7 @@
 # Data Transfer Pricing (Networking Cost Model)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 <!-- Icon note: this is a pricing/cost concept, not a discrete AWS service, so there is no
      dedicated service icon. Using the generic VPC icon as a category marker; see
      diagrams/README.md for the icon-fallback convention. -->

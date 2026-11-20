@@ -1,5 +1,7 @@
 # AWS Global Accelerator
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Global Accelerator icon](../../diagrams/assets/icons/globalaccelerator.png)
 
 ## Definition

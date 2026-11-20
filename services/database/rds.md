@@ -1,5 +1,7 @@
 # Amazon RDS (Relational Database Service)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon RDS icon](../../diagrams/assets/icons/amazonrds.png)
 
 ## Definition

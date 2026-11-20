@@ -1,5 +1,7 @@
 # Amazon S3 Glacier
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon S3 Glacier](../../diagrams/assets/icons/simplestorageserviceglacier.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

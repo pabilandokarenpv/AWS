@@ -1,5 +1,7 @@
 # Amazon Route 53
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon Route 53 icon](../../diagrams/assets/icons/route53.png)
 
 ## Definition

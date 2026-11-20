@@ -1,5 +1,7 @@
 # Amazon Neptune
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon Neptune icon](../../diagrams/assets/icons/amazonneptune.png)
 
 ## Definition

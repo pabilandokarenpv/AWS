@@ -1,5 +1,7 @@
 # AWS Config
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS Config](../../diagrams/assets/icons/awsconfig.png)
 
 ## Definition

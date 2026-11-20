@@ -1,5 +1,7 @@
 # Amazon EFS (Elastic File System)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EFS](../../diagrams/assets/icons/elasticfilesystem.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

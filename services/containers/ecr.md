@@ -1,5 +1,7 @@
 # Amazon Elastic Container Registry (ECR)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md)
+
 ![Amazon ECR icon](../../diagrams/assets/icons/elasticcontainerregistry.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 

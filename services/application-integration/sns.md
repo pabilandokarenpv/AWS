@@ -1,5 +1,7 @@
 # Amazon SNS (Simple Notification Service)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon SNS](../../diagrams/assets/icons/simplenotificationservice.png)
 <!-- If this icon 404s, pull "Simple-Notification-Service.svg" from the official AWS
 Architecture Icons zip (App-Integration category) — see diagrams/README.md -->

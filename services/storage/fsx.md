@@ -1,5 +1,7 @@
 # Amazon FSx
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon FSx](../../diagrams/assets/icons/fsx.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

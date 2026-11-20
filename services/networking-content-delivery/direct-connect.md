@@ -1,5 +1,7 @@
 # AWS Direct Connect
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Direct Connect icon](../../diagrams/assets/icons/directconnect.png)
 
 ## Definition

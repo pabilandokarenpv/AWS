@@ -1,5 +1,7 @@
 # AWS CodeDeploy
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CodeDeploy icon](../../diagrams/assets/icons/codedeploy.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 

@@ -1,5 +1,7 @@
 # The AWS Shared Responsibility Model — Deep Dive
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS Security, Identity & Compliance category icon](../../diagrams/assets/icons/awsshield.png)
 
 ## Definition

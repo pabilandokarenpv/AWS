@@ -1,5 +1,7 @@
 # Amazon EC2 Auto Scaling
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EC2 Auto Scaling](../../diagrams/assets/icons/amazonec2autoscaling.png)
 
 ## Definition

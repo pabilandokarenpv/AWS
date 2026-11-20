@@ -1,5 +1,7 @@
 # AWS STS & Role Switching (AssumeRole)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS STS icon](../../diagrams/assets/icons/awsidentityandaccessmanagement.png)
 
 ## Definition

@@ -1,5 +1,7 @@
 # Amazon GuardDuty
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon GuardDuty icon](../../diagrams/assets/icons/amazonguardduty.png)
 
 ## Definition

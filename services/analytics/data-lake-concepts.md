@@ -1,5 +1,7 @@
 # Data Lake Concepts (S3 as a Data Lake, Lake House Architecture)
 
+> **Appears in:** [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon S3](../../diagrams/assets/icons/simplestorageservice.png)
 ![AWS Lake Formation](../../diagrams/assets/icons/lakeformation.png)
 

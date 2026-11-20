@@ -1,5 +1,7 @@
 # Amazon Lightsail
 
+> **Appears in:** Not currently in-scope for SAA-C03 / DVA-C03 / MLA-C02 (per official exam guide appendices) — included here for general AWS literacy.
+
 ![Amazon Lightsail](../../diagrams/assets/icons/amazonlightsail.png)
 
 ## Definition

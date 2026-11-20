@@ -1,5 +1,7 @@
 # Amazon EventBridge
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EventBridge](../../diagrams/assets/icons/eventbridge.png)
 <!-- If this icon 404s, pull "EventBridge.svg" from the official AWS Architecture Icons zip
 (App-Integration category) — see diagrams/README.md -->

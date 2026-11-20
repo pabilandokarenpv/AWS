@@ -1,5 +1,7 @@
 # AWS AppSync
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS AppSync](../../diagrams/assets/icons/appsync.png)
 <!-- If this icon 404s, pull "AppSync.svg" from the official AWS Architecture Icons zip
 (category may appear under Front-End-Web-Mobile in the official set — see diagrams/README.md) -->

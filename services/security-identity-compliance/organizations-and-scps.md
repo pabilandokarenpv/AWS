@@ -1,5 +1,7 @@
 # AWS Organizations & Service Control Policies (SCPs)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Organizations icon](../../diagrams/assets/icons/awsorganizations.png)
 
 ## Definition

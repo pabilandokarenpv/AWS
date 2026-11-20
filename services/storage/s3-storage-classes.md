@@ -1,5 +1,7 @@
 # S3 Storage Classes
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon S3 Storage Classes](../../diagrams/assets/icons/simplestorageservice.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

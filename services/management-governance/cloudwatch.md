@@ -1,5 +1,7 @@
 # Amazon CloudWatch
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![Amazon CloudWatch](../../diagrams/assets/icons/amazoncloudwatch.png)
 
 ## Definition

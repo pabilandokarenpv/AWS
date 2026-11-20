@@ -1,5 +1,7 @@
 # Amazon EC2 (Elastic Compute Cloud)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EC2](../../diagrams/assets/icons/amazonec2.png)
 
 ## Definition

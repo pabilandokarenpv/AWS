@@ -1,5 +1,7 @@
 # Security Groups vs. Network ACLs (NACLs)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![VPC security icon](../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition

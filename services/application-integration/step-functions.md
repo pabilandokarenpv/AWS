@@ -1,5 +1,7 @@
 # AWS Step Functions
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Step Functions](../../diagrams/assets/icons/stepfunctions.png)
 <!-- If this icon 404s, pull "Step-Functions.svg" from the official AWS Architecture Icons zip
 (App-Integration category) — see diagrams/README.md -->

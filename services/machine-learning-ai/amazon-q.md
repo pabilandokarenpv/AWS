@@ -1,5 +1,7 @@
 # Amazon Q
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![Amazon Q](https://awsfundamentals.com/assets/aws-icons/Arch_Amazon-Q_64.svg)
 <!-- icepanel CDN mirror (diagrams/README.md convention) doesn't carry Amazon Q yet since it's a
      newer service; fallback source used per that doc's instructions: official AWS Architecture

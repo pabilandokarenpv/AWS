@@ -1,5 +1,7 @@
 # AWS Pre-Built AI Services — Overview
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![Amazon Comprehend](../../diagrams/assets/icons/comprehend.png)
 ![Amazon Rekognition](../../diagrams/assets/icons/rekognition.png)
 ![Amazon Textract](../../diagrams/assets/icons/textract.png)

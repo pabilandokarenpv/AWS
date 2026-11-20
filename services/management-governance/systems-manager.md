@@ -1,5 +1,7 @@
 # AWS Systems Manager
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Systems Manager](../../diagrams/assets/icons/awssystemsmanager.png)
 
 ## Definition

@@ -1,5 +1,7 @@
 # SageMaker Deployment & Endpoints
 
+> **Appears in:** [MLA-C02](../../certifications/mla-c02/README.md)
+
 ![Amazon SageMaker](../../diagrams/assets/icons/sagemaker.png)
 
 ## Definition

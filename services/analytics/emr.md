@@ -1,5 +1,7 @@
 # Amazon EMR (Elastic MapReduce)
 
+> **Appears in:** [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon EMR](../../diagrams/assets/icons/emr.png)
 
 *Analytics · maps to SAA-C03 Domain 3 Task 3.5, MLA-C02 Domain 1 (Data Preparation for ML and AI)*

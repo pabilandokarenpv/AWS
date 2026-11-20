@@ -1,5 +1,7 @@
 # Subnets, Route Tables, Internet Gateway & NAT Gateway
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![VPC networking icon](../../diagrams/assets/icons/virtualprivatecloud.png)
 
 ## Definition

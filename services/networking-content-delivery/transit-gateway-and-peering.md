@@ -1,5 +1,7 @@
 # Transit Gateway & VPC Peering
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Transit Gateway icon](../../diagrams/assets/icons/transitgateway.png)
 
 ## Definition

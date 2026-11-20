@@ -1,5 +1,7 @@
 # AWS CloudTrail
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CloudTrail](../../diagrams/assets/icons/awscloudtrail.png)
 
 ## Definition

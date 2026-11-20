@@ -1,5 +1,7 @@
 # AWS Backup
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Backup](../../diagrams/assets/icons/backup.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

@@ -1,5 +1,7 @@
 # ECS & EKS — Overview Note (see `services/containers/` for full docs)
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md) · [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![Amazon ECS](../../diagrams/assets/icons/amazonelasticcontainerservice.png)
 ![Amazon EKS](../../diagrams/assets/icons/amazonelastickubernetesservice.png)
 

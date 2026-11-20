@@ -1,5 +1,7 @@
 # AWS Cloud9 & AWS CloudShell
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CloudShell icon](../../diagrams/assets/icons/cloudshell.png)
 <!-- AWS Architecture Icons, Developer Tools category; see diagrams/README.md for the convention -->
 

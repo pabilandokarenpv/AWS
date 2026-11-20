@@ -1,5 +1,7 @@
 # Amazon Elastic Container Service (ECS)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md) · [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon ECS icon](../../diagrams/assets/icons/elasticcontainerservice.png)
 <!-- AWS Architecture Icons, Containers category; see diagrams/README.md for the convention -->
 

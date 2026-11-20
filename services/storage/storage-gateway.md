@@ -1,5 +1,7 @@
 # AWS Storage Gateway
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![AWS Storage Gateway](../../diagrams/assets/icons/storagegateway.png)
 <!-- official AWS Architecture Icons asset; see diagrams/README.md for the convention -->
 

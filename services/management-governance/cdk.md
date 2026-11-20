@@ -1,5 +1,7 @@
 # AWS CDK (Cloud Development Kit)
 
+> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+
 ![AWS CDK](../../diagrams/assets/icons/awsclouddevelopmentkit.png)
 
 ## Definition

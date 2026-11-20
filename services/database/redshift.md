@@ -1,5 +1,7 @@
 # Amazon Redshift
 
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md)
+
 ![Amazon Redshift icon](../../diagrams/assets/icons/amazonredshift.png)
 
 ## Definition

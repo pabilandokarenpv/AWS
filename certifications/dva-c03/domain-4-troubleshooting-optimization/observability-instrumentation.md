@@ -5,6 +5,19 @@
 ![The X-Ray console's trace map page, showing service nodes colored by health and connected by edges.](https://docs.aws.amazon.com/xray/latest/devguide/images/console-servicemap-xray.png)
 *Source: [AWS Documentation — Using the X-Ray trace map](https://docs.aws.amazon.com/xray/latest/devguide/xray-console-servicemap.html). Green nodes are healthy, red is server faults, yellow is client errors, purple is throttling — knowing this color code cold saves real time on scenario questions that describe a service map's colors instead of raw numbers.*
 
+## Analogy
+
+Instrumenting an application without tracing is like running a relay race where each runner wears
+a blindfold and nobody is allowed to shout the time — the baton gets passed, the race finishes,
+but nobody can tell you which runner was slow. X-Ray hands every runner a stopwatch and a
+numbered bib (the trace ID), so after the race you can reconstruct exactly how long each leg
+took and who was carrying the baton when things slowed down. Structured logging is each runner
+also keeping a written note of what happened during their leg ("tripped at the 200m mark");
+custom metrics are the team keeping a running tally of how many races finished under 60 seconds
+this season. None of these three signals existed *during* the race by accident — someone decided,
+before the starting gun ever fired, that these specific measurements would matter afterward. That
+decision, made in advance, is the entire substance of Task 4.2.
+
 ## Definition
 
 Instrumentation is the practice of adding code to your application that reports what it's doing —
@@ -80,6 +93,32 @@ sequenceDiagram
   service needs its own X-Ray instrumentation (or at minimum, to honor a propagated trace header)
   for its segment to show up at all — X-Ray can't retroactively trace a service that never reports.
 
+## Log correlation: the sibling mechanism to trace propagation, and why it's separate
+
+A trace ID propagating automatically between AWS services solves "where did the time go." It does
+**not** automatically solve a related but genuinely different problem: "show me every log line
+any service wrote about this one request." That second problem needs its own, deliberately
+engineered mechanism — a correlation ID written into every structured log line — because a trace
+ID living in an HTTP header is invisible to your own `logger.info(...)` calls unless you
+explicitly read it and include it.
+
+```mermaid
+flowchart TD
+    TRACEID["X-Ray trace ID\n(propagates automatically\nvia HTTP/invocation headers)"] -.read by your code.-> CORRID["Same value used as the\ncorrelation ID in structured logs"]
+    CORRID --> L1LOG["Lambda 1: logger.info({'correlationId': traceId, 'event': 'order_received'})"]
+    CORRID --> L2LOG["Lambda 2: logger.info({'correlationId': traceId, 'event': 'payment_attempted'})"]
+    L1LOG -.land in separate log groups,\nunited by this shared field.-> QUERY["Logs Insights query:\nfilter correlationId = traceId"]
+    L2LOG -.-> QUERY
+    QUERY --> STORY[One request's full story, in order, across services]
+```
+
+The practical, frequently-missed lesson: **use the X-Ray trace ID itself as your logging
+correlation ID**, rather than inventing a separate request ID. Doing so means a single
+identifier lets you pivot freely between "the trace timeline in the X-Ray console" and "every
+structured log line for this exact request in CloudWatch Logs Insights" — which is precisely what
+**ServiceLens**/the CloudWatch Trace Map automates for you (see below), instead of maintaining two
+disconnected IDs that happen to refer to the same request.
+
 ## Instrumenting your own code (Task 4.2)
 
 - **Structured logging**: log in a consistent, parseable format (JSON) with request IDs, not free
@@ -137,6 +176,44 @@ def handler(event, context):
     except Exception as e:
         logger.error(json.dumps({"requestId": request_id, "orderId": order_id, "error": str(e)}))
         raise
+```
+
+The same pattern in Node.js, included because the SDK's shape differs enough to be worth seeing
+once — notice the same three signal types (log, metric, trace annotation) appear in the same
+order, just with different library calls:
+
+```javascript
+// Concrete Task 4.2 instrumentation example: the equivalent Node.js Lambda handler
+const AWSXRay = require('aws-xray-sdk-core');
+const AWS = AWSXRay.captureAWS(require('aws-sdk'));  // auto-instruments every AWS SDK call
+
+const cloudwatch = new AWS.CloudWatch();
+const ddb = new AWS.DynamoDB();
+
+exports.handler = async (event, context) => {
+    const requestId = context.awsRequestId;
+    const body = JSON.parse(event.body);
+    const orderId = body.orderId;
+
+    // Annotation: searchable in X-Ray traces by orderId — same concept as the Python put_annotation
+    const segment = AWSXRay.getSegment();
+    segment.addAnnotation('orderId', orderId);
+
+    try {
+        await ddb.getItem({ TableName: 'Orders', Key: { orderId: { S: orderId } } }).promise();
+        // Structured log, correlatable by requestId via Logs Insights — same JSON-log discipline
+        console.log(JSON.stringify({ requestId, orderId, status: 'success' }));
+        // Custom business metric — identical purpose to the Python PutMetricData call
+        await cloudwatch.putMetricData({
+            Namespace: 'CheckoutApp',
+            MetricData: [{ MetricName: 'OrdersLookedUp', Value: 1, Unit: 'Count' }],
+        }).promise();
+        return { statusCode: 200, body: JSON.stringify({ orderId }) };
+    } catch (err) {
+        console.error(JSON.stringify({ requestId, orderId, error: err.message }));
+        throw err;
+    }
+};
 ```
 
 ## Use Cases — When to Use It
@@ -199,6 +276,13 @@ app type / requirement / implementation decision spelled out:
    **Requirement:** avoid pivoting between the X-Ray console and the CloudWatch console
    separately while under time pressure. **Decision:** use ServiceLens/the CloudWatch Trace Map,
    which surfaces a given node's logs, metrics, and traces together on one map.
+10. **App type:** Fintech API where fraud investigators need to re-trace exactly what a specific
+    transaction did across services, months after the fact, for a dispute. **Requirement:** the
+    30-day default X-Ray trace retention isn't long enough for this compliance window.
+    **Decision:** export the relevant trace data (or the structured logs carrying the same
+    correlation ID) to S3/a longer-retention store proactively, rather than discovering the gap
+    only when the dispute actually arrives — X-Ray's own retention cannot be retroactively
+    extended for data that's already aged out.
 
 ## When NOT to Use It / Alternatives
 
@@ -250,7 +334,12 @@ map requires you to notice the anomaly yourself; Insights notices it for you). T
 distinct capability from the generic AI-assisted error analysis pattern in
 [`../domain-1-development/ai-assisted-development.md`](../domain-1-development/ai-assisted-development.md)
 even though they sound similar — Insights is a built-in X-Ray feature with no separate AI-tool
-integration required, worth knowing by name specifically.
+integration required, worth knowing by name specifically. Notice this is the exact same "learned
+baseline, flag the deviation" shape as **Cost Anomaly Detection**
+(see [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md)) and **CloudWatch
+Anomaly Detection** — the same underlying pattern (statistical baseline vs. fixed threshold)
+recurs across cost, performance, and trace data in this domain, just applied to a different
+signal each time.
 
 ## ServiceLens: the CloudWatch+X-Ray combined view
 
@@ -276,7 +365,11 @@ map alone (which shows trace/latency data only, without pivoting directly into t
   (overhead: routing the invocation, cold start if applicable) and one for *your function's code*.
   A trace showing high latency in the "Lambda service" segment rather than your function's segment
   is pointing at cold-start/initialization overhead, not your handler's logic — a distinct
-  diagnostic signal from Duration alone.
+  diagnostic signal from Duration alone. This is the trace-level view of the exact same diagnosis
+  covered in much more depth, with a full worked example, in
+  [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) — that doc's `Init Duration`
+  log-field check is the faster, cheaper way to confirm the same thing without even opening a
+  trace.
 - Enabling active tracing is a single Lambda configuration flag (`TracingConfig: Active`), but the
   function's execution role still needs permission to write trace data
   (`xray:PutTraceSegments`, `xray:PutTelemetryRecords` — commonly granted via the
@@ -286,6 +379,54 @@ map alone (which shows trace/latency data only, without pivoting directly into t
 - For functions behind API Gateway, enabling tracing on *both* API Gateway and the Lambda function
   is required to see the full chain in one trace — enabling it on only one side leaves a gap in
   the service map at that hop, similar to the cross-service propagation gap described above.
+
+## Worked Debugging Scenario: "The app is slow — here's the X-Ray evidence, diagnose it"
+
+A full worked exam-style scenario specific to this doc's subject matter, applying the annotation/
+metadata, sampling, and segment concepts above to one concrete investigation rather than discussing
+them in isolation.
+
+**Symptom.** A support team reports that searches for "premium tier" customers specifically feel
+slower than searches for everyone else, but they can't quantify it or point at a specific service.
+
+**Step 1 — this is exactly the shape of question an annotation answers, and metadata does not.**
+Before anything else, confirm whether the application tags segments with a `customerTier`
+annotation. If it only attaches tier information as metadata (or not at all), you *cannot* filter
+the X-Ray console's trace list by that field — metadata is visible once you've already found a
+trace, but it's not searchable across the whole trace population. **This is itself the first
+diagnosis**: if the support team's claim can't even be verified with the current instrumentation,
+the actual root cause investigation is blocked on a Task 4.2 gap, not a Task 4.1 question yet.
+
+**Step 2 — assuming the annotation already exists, filter traces by it.** Using the X-Ray
+console's filter expression `annotation.customerTier = "premium"` against the last few hours,
+compare the resulting p50/p90 latency to the same filter for `customerTier = "standard"`. Suppose
+this confirms premium-tier traces really do run meaningfully slower on average.
+
+**Step 3 — open one slow premium-tier trace's timeline and find the widest bar.** Per the
+timeline-reading technique from the X-Ray service doc, the single widest segment/subsegment bar is
+almost always the answer to "why was this one slow." Suppose it's a subsegment calling an external
+recommendation-personalization API, not a DynamoDB call.
+
+**Step 4 — check whether this is a sampling artifact before concluding anything broader.** Confirm
+how many premium-tier traces exist in the sample — if premium-tier traffic is low-volume relative
+to standard traffic, the default sampling rule (first request/second + 5%) may be capturing a
+smaller, less representative sample of premium traffic specifically. A custom sampling rule set to
+100% for premium-tier-flagged requests (if that's knowable at the sampling-decision point) would
+give a more statistically confident answer — otherwise, widen the time window to accumulate more
+samples before drawing a firm conclusion from a handful of traces.
+
+**Step 5 — root cause and fix.** Suppose the personalization API call is specifically triggered
+only for premium-tier customers (a business rule: premium gets personalized results, standard
+doesn't) — the slowdown isn't a bug, it's the deliberate extra work premium tier does, just not
+previously *measured* as a known, accepted latency cost. The fix here isn't code — it's
+documenting the tradeoff and, if it's genuinely too slow, optimizing or caching the
+personalization call specifically, now that it's been isolated with evidence rather than treated
+as a vague, unlocalized "premium feels slow" complaint.
+
+**The transferable lesson:** annotations are what make a scenario like "is group X slower than
+group Y" even askable in the first place — this worked example exists specifically to show that
+the annotation-vs-metadata distinction isn't just a vocabulary quiz item, it's the actual
+precondition for answering a realistic support question with evidence instead of a guess.
 
 ## Common exam scenarios
 
@@ -309,12 +450,16 @@ map alone (which shows trace/latency data only, without pivoting directly into t
   consoles"* → ServiceLens / CloudWatch Trace Map.
 - *"The Lambda service segment shows high latency but the function's own segment is fast"* →
   cold-start/initialization overhead, not application code — consider provisioned concurrency
-  (a Domain 1 lever) rather than optimizing the handler further.
+  (a Domain 1 lever) rather than optimizing the handler further; cross-reference with the
+  `Init Duration` field in the REPORT log line for a definitive confirmation.
 - *"A trace is missing the hop through API Gateway even though the Lambda function is fully
   traced"* → tracing wasn't enabled on the API Gateway stage itself, only on the Lambda function.
 - *"A security-focused question asks who changed a resource, phrased in a way that sounds like it
   might be about tracing"* → it's CloudTrail, not X-Ray — tracing is about request flow/timing,
   never about identity/audit of management-plane API calls.
+- *"A support team claims one customer segment's requests feel slower, but nothing's been
+  measured"* → this is a Task 4.2 instrumentation gap, not yet a Task 4.1 question — without an
+  annotation on the relevant field, the claim can't even be verified with a filter expression.
 - *"A RAG-style AI application should log which documents were retrieved for a given response, for
   later debugging"* → treat this as a custom annotation/structured log on the relevant subsegment,
   the same instrumentation discipline applied to a newer kind of workload — see the overlap with
@@ -355,10 +500,18 @@ the resulting trace segments, and Lab 4 for a hands-on annotation-filtering exer
   needs the data *attached and visible* without searching, that's metadata.
 - If a scenario says some requests have no trace despite CloudWatch showing them clearly occurred,
   think sampling before assuming something is broken.
+- **A correlation ID in your logs and an X-Ray trace ID are related but mechanically different
+  things** — one propagates automatically via headers, the other must be deliberately written
+  into log lines by your own code; using the same value for both is the recommended practice, not
+  something AWS does for you.
 
 ## Related Terms
 
 - [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md)
+- [`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md) — the query-side
+  payoff of the correlation-ID discipline covered above.
+- [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) — the deeper, log-field-based
+  version of the "Lambda service segment vs. function segment" diagnosis covered above.
 - [`services/management-governance/cloudtrail.md`](../../../services/management-governance/cloudtrail.md)
 - [`services/compute/lambda.md`](../../../services/compute/lambda.md)
 - [`services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md) — the first hop that typically originates a trace ID in an HTTP-triggered workflow.

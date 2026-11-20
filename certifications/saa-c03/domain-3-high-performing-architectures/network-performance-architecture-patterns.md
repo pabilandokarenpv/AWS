@@ -182,6 +182,158 @@ location rather than crossing the uncontrolled public internet the whole way to 
 CloudFront is deliberately *not* used for (c) because the data is non-cacheable; using it anyway
 would add an edge hop with no caching benefit.
 
+## Deeper Dive: Three Analogies for the Network-Performance Levers
+
+- **The postal-service analogy.** CloudFront is a chain of neighborhood post offices that each
+  keep common packages pre-stocked locally — most pickups never require a trip to the central
+  distribution warehouse. Global Accelerator is a priority courier service that, even for a custom
+  one-off package that can't be pre-stocked anywhere, still gets it onto the fastest private
+  overnight shipping network the instant it's handed over, rather than letting it ride the regular
+  public mail system the whole way. Direct Connect is a dedicated private pipeline laid directly
+  between two specific buildings — expensive and slow to install, but nothing else ever shares
+  that pipe's capacity.
+- **The highway-system analogy for Transit Gateway.** A full mesh of VPC peering connections is
+  building a brand-new, separate direct road between every single pair of cities in a country —
+  it works, but the number of roads needed explodes as more cities join. Transit Gateway is
+  building one central regional highway interchange that every city connects to exactly once,
+  letting traffic between any two cities flow through that one interchange instead of needing its
+  own dedicated road.
+- **The nightclub-bouncer analogy for ALB vs. NLB.** An ALB is a bouncer who actually reads your
+  ID, checks which specific room (path) you're trying to enter, and directs you accordingly — a
+  bit of processing overhead, but smart routing. An NLB is a turnstile at a subway station — it
+  doesn't look at anything about you individually, it just lets enormous numbers of people through
+  as fast as physically possible, which is exactly the job when raw throughput matters more than
+  content-aware decisions.
+
+## Architecture: VPC Endpoints — Removing the NAT Gateway Hop Entirely
+
+![AWS documentation diagram showing traffic from a VPC reaching an AWS service through an internet gateway, contrasted with the shorter, private path a VPC endpoint provides](https://docs.aws.amazon.com/images/vpc/latest/privatelink/images/access-with-igw.png)
+
+*This diagram shows the "before" picture this section's VPC endpoint performance win is measured
+against: traffic to an AWS service by default still has to traverse a NAT Gateway and Internet
+Gateway path even though it technically never leaves the AWS network's edge — a VPC endpoint
+collapses that into a direct, private path with one fewer hop and, for a Gateway Endpoint, zero
+additional cost. Source: [Amazon VPC User Guide — Access AWS services through AWS
+PrivateLink](https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html).*
+
+```mermaid
+flowchart LR
+    subgraph Before["Without a VPC Endpoint"]
+        App1["App in private subnet"] --> NAT["NAT Gateway"]
+        NAT --> IGW["Internet Gateway"]
+        IGW --> S3Svc1["S3 (public endpoint)"]
+    end
+    subgraph After["With a Gateway VPC Endpoint"]
+        App2["App in private subnet"] --> EP["Gateway Endpoint\n(route table entry, no ENI, free)"]
+        EP --> S3Svc2["S3"]
+    end
+```
+
+*Walkthrough:* removing the NAT Gateway from the path is both a cost win (NAT Gateway bills per-GB
+processed) and a genuine latency win — one fewer network hop per request, which compounds
+meaningfully across a high-request-volume application. This is the mechanism behind the "Lambda
+functions in private subnets reach S3 through a Gateway VPC Endpoint" use case named above, and
+the reason VPC endpoints appear in both the cost-optimization and performance decision frameworks
+for this domain.
+
+## Architecture: Transit Gateway Routing Tables for Segmented Traffic
+
+![AWS reference architecture diagram of a Transit Gateway connecting multiple VPC attachments, showing how it centralizes routing between them](https://docs.aws.amazon.com/images/vpc/latest/tgw/images/transit-gateway-overview.png)
+
+*Each VPC attachment's route table sends traffic destined for other attached VPCs to the Transit
+Gateway, which performs Layer 3 routing centrally — this is what replaces what would otherwise be
+a separate peering connection (and a separate routing decision) for every single VPC pair. Source:
+[Amazon VPC Transit Gateways — How AWS Transit Gateway
+works](https://docs.aws.amazon.com/vpc/latest/tgw/how-transit-gateways-work.html).*
+
+```mermaid
+flowchart TB
+    TGW{{"Transit Gateway"}}
+    subgraph RTAssoc["Route table: Production"]
+        ProdVPC["Production VPC attachment"]
+    end
+    subgraph RTAssocDev["Route table: Development"]
+        DevVPC["Development VPC attachment"]
+    end
+    subgraph RTShared["Route table: Shared Services"]
+        SharedVPC["Shared-services VPC attachment"]
+    end
+    ProdVPC --- TGW
+    DevVPC --- TGW
+    SharedVPC --- TGW
+    SharedVPC -.propagates routes to both.-> RTAssoc
+    SharedVPC -.propagates routes to both.-> RTAssocDev
+    ProdVPC -.does NOT propagate to Dev.-> RTAssocDev
+```
+
+*Walkthrough:* a Transit Gateway's performance benefit (one hop through a purpose-built router
+instead of a tangled peering mesh) doesn't come at the cost of flat, unsegmented connectivity —
+separate route tables per attachment, with selective route propagation, let the shared-services VPC
+reach (and be reached by) both Production and Development, while Production and Development still
+cannot reach each other directly, all through the same single hub, at the same low latency.
+
+## Architecture: Direct Connect Virtual Interfaces
+
+![AWS Direct Connect documentation diagram showing the three virtual interface types — private, public, and transit — all riding over one physical Direct Connect connection](https://docs.aws.amazon.com/images/directconnect/latest/UserGuide/images/dx-vifs.png)
+
+*A single physical Direct Connect connection can carry a **private VIF** (reaching one VPC), a
+**public VIF** (reaching AWS public service endpoints like S3/DynamoDB over the dedicated link
+instead of the internet), and a **transit VIF** (reaching a Transit Gateway, and through it, many
+VPCs) — all simultaneously, over the same physical fiber. Source: [AWS Direct Connect User Guide —
+What is AWS Direct Connect?](https://docs.aws.amazon.com/directconnect/latest/UserGuide/Welcome.html).*
+A scenario describing "we need our on-prem data center to reach both a specific VPC *and* S3's
+public endpoint, over the same dedicated connection, without crossing the internet for either" is
+testing recognition that one physical connection supports multiple VIF types concurrently — it is
+not a choice between a private VIF or a public VIF, but both running side by side when both needs
+exist.
+
+## Architecture: Global Accelerator Weighted Routing
+
+![AWS Global Accelerator documentation diagram illustrating how endpoint weights determine the proportion of traffic each endpoint in a group receives](https://docs.aws.amazon.com/images/global-accelerator/latest/dg/images/WRR_calculation.png)
+
+*Endpoint weight is calculated as each endpoint's weight divided by the sum of all weights in its
+endpoint group — setting a weight of 0 removes an endpoint from rotation entirely without deleting
+it, the standard mechanism for gracefully draining an endpoint ahead of planned maintenance without
+any DNS propagation delay. Source: [AWS Global Accelerator Developer Guide — About endpoint
+weights](https://docs.aws.amazon.com/global-accelerator/latest/dg/about-endpoints-endpoint-weights.html).*
+This is the performance-relevant detail that distinguishes Global Accelerator's traffic shifting
+from Route 53 weighted routing: because Global Accelerator operates at the network layer rather
+than through DNS resolution, a weight change (including draining an endpoint to zero) takes effect
+within seconds, with no dependency on resolver caching or record TTLs anywhere in the path.
+
+## Additional Worked Exam Scenarios
+
+**Scenario A — "The 'redundant' hybrid link that went down anyway."** A company sets up two Direct
+Connect connections for resiliency, both terminating at the same Direct Connect location through
+the same colocation provider's single router. During a router maintenance event at that location,
+both connections go down simultaneously. **Diagnosis:** this is the classic "Basic" resiliency
+pattern masquerading as redundancy — two connections through the same physical location and router
+share the exact same single point of failure one connection alone would have. **Fix:** AWS's
+published "High Resiliency" model requires connections terminating at two separate Direct Connect
+locations through separate devices; "Maximum Resiliency" adds separate routers at each location
+too — a scenario emphasizing "true" redundancy for Direct Connect is testing recognition of this
+specific multi-location requirement, not just "more than one connection."
+
+**Scenario B — "The ALB that couldn't satisfy a partner's firewall requirement."** An integration
+with a banking partner requires allowlisting a small, fixed set of IP addresses on the partner's
+firewall, but the application currently sits behind an ALB, whose IP addresses can change over
+time as AWS manages its underlying nodes. **Diagnosis:** ALB was never designed to expose static
+IPs — this is a structural property of the service, not a misconfiguration to fix. **Fix:** place
+an NLB in front of the application for a fixed per-AZ static IP, or place Global Accelerator in
+front of the existing ALB to gain fixed anycast IPs without an architecture rewrite — both are
+valid, with Global Accelerator being the lower-disruption choice when the ALB's Layer-7 routing
+features are still needed.
+
+**Scenario C — "Cross-Region latency that caching alone couldn't fix."** A SaaS company adds
+CloudFront in front of their globally-used API, expecting the same latency win their static assets
+saw, but per-request latency for their /api/orders endpoint barely improves. **Diagnosis:** the
+endpoint returns a unique, per-customer, constantly-changing response — there is nothing cacheable
+about it, so CloudFront's edge cache sees a near-100% miss rate and every request still travels all
+the way back to the origin Region, just with an extra CloudFront hop added on top. **Fix:** replace
+CloudFront with Global Accelerator for this specific non-cacheable API path, keeping CloudFront only
+for the genuinely cacheable static-asset paths — recognizing that "add a CDN" is not a universal
+latency fix independent of whether the content is actually cacheable.
+
 ## Why It's Important
 
 **Exam mapping:** SAA-C03 Domain 3, Task 3.4 ("determine high-performing and/or scalable network

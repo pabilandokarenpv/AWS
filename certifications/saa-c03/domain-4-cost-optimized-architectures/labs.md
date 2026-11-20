@@ -5,6 +5,21 @@ DynamoDB — genuinely emulated by Floci. Floci does not simulate actual AWS bil
 practice the **API calls and configuration** behind each cost lever; the dollar savings
 themselves are conceptual (see the linked decision-framework docs for the real numbers).
 
+```mermaid
+flowchart LR
+    Lab1["Lab 1 — S3 lifecycle<br/>(Task 4.1)"] --> Lab5["Lab 5 — Capstone<br/>audit (4.1+4.3+4.4)"]
+    Lab2["Lab 2 — DynamoDB<br/>billing mode (Task 4.3)"] --> Lab5
+    Lab3["Lab 3 — VPC Endpoint<br/>(Task 4.4)"] --> Lab5
+    Lab4["Lab 4 — EBS cleanup<br/>(Task 4.1)"] --> Lab5
+    Lab6["Lab 6 — Auto Scaling<br/>mixed instances (Task 4.2)"] --> Lab5
+    Lab7["Lab 7 — AWS Backup<br/>lifecycle plan (Task 4.1)"] --> Lab5
+```
+
+Walkthrough: Labs 1-4 and 6-7 each practice one isolated cost lever from one specific task
+statement; Lab 5 (the capstone) deliberately chains several of them together, mirroring how a
+real cost-optimization pass almost never touches just one category at a time — exactly the same
+multi-category shape as the README's GreenLedger Logistics case study.
+
 ## Lab 1 — S3 lifecycle policy: Standard → IA → Glacier (Task 4.1)
 
 Goal: configure the exact automation that moves aging data into progressively cheaper storage
@@ -114,11 +129,81 @@ use is one of the most common, easiest-to-miss real-world cost leaks — snapsho
 deleting captures the "safety net" behavior a careful cost-optimization pass should always follow
 rather than deleting data outright.
 
-## Lab 5 — Capstone: a mini cost audit across storage, database, and network (Tasks 4.1, 4.3, 4.4)
+## Lab 5 — Mixed instances Auto Scaling group: baseline + burst (Task 4.2)
+
+Goal: practice configuring the control-plane object behind the "blend a steady baseline with
+burst capacity" pattern from the Compute Cost-Optimization Decision Framework — one Auto Scaling
+group spanning multiple purchasing-model intents within a single mixed instances policy.
+
+```bash
+# 1. Create a launch template defining the instance configuration
+awslocal ec2 create-launch-template --launch-template-name cost-optimized-web-tier \
+  --launch-template-data '{"ImageId":"ami-12345678","InstanceType":"t3.medium"}'
+
+# 2. Create an Auto Scaling group with a mixed instances policy — multiple instance types
+#    for Spot diversification, and an explicit base capacity intended for On-Demand/Reserved
+awslocal autoscaling create-auto-scaling-group --auto-scaling-group-name cost-optimized-asg \
+  --mixed-instances-policy '{
+    "LaunchTemplate": {
+      "LaunchTemplateSpecification": {"LaunchTemplateName": "cost-optimized-web-tier", "Version": "$Latest"},
+      "Overrides": [{"InstanceType": "t3.medium"}, {"InstanceType": "t3a.medium"}]
+    },
+    "InstancesDistribution": {
+      "OnDemandBaseCapacity": 2,
+      "OnDemandPercentageAboveBaseCapacity": 0,
+      "SpotAllocationStrategy": "capacity-optimized"
+    }
+  }' \
+  --min-size 2 --max-size 10 --desired-capacity 4 \
+  --availability-zones us-east-1a us-east-1b
+
+# 3. Confirm the policy split — baseline instances vs. Spot burst capacity
+awslocal autoscaling describe-auto-scaling-groups --auto-scaling-group-names cost-optimized-asg \
+  --query 'AutoScalingGroups[0].MixedInstancesPolicy'
+```
+
+Why this matters: `OnDemandBaseCapacity` is the exact mechanism behind "cover the known floor on
+On-Demand/Savings-Plan-eligible capacity, let everything above it run on Spot" — the single
+highest-leverage compute pattern in the Compute Cost-Optimization Decision Framework's worked
+math, made concrete as one API call instead of two separately-managed fleets.
+
+## Lab 6 — AWS Backup plan with a tiered lifecycle rule (Task 4.1)
+
+Goal: practice configuring the centralized, policy-based retention lifecycle behind Section 1 of
+MASTER-CHUNK.md — one backup plan applying a tiered retention schedule instead of hand-rolling
+per-service snapshot lifecycle rules.
+
+```bash
+# 1. Create a backup vault to hold recovery points
+awslocal backup create-backup-vault --backup-vault-name cost-optimized-vault
+
+# 2. Create a backup plan with a tiered lifecycle — move to cold storage after 30 days,
+#    delete after the full retention period
+awslocal backup create-backup-plan --backup-plan '{
+  "BackupPlanName": "tiered-retention-plan",
+  "Rules": [{
+    "RuleName": "daily-with-cold-transition",
+    "TargetBackupVaultName": "cost-optimized-vault",
+    "ScheduleExpression": "cron(0 5 * * ? *)",
+    "Lifecycle": {"MoveToColdStorageAfterDays": 30, "DeleteAfterDays": 365}
+  }]
+}'
+
+# 3. Confirm the plan's lifecycle rule
+awslocal backup get-backup-plan --backup-plan-id <plan-id> \
+  --query 'BackupPlan.Rules[0].Lifecycle'
+```
+
+Why this matters: `MoveToColdStorageAfterDays` is the exact lever behind the worked cost-math
+example in MASTER-CHUNK.md Section 1 — tiering backup storage from hot to cold after 30 days
+instead of leaving everything in hot storage for the full retention period, cutting the blended
+storage rate by roughly three-quarters in that worked example.
+
+## Lab 7 — Capstone: a mini cost audit across storage, compute, database, and network (Tasks 4.1-4.4)
 
 Goal: chain the previous labs into one scenario resembling the domain README's GreenLedger
-Logistics case study — tier aging data, right-size database billing mode, and remove a NAT
-Gateway dependency, in one pass.
+Logistics case study — tier aging data, right-size database billing mode, remove a NAT
+Gateway dependency, and confirm the mixed-instances compute policy, in one pass.
 
 ```bash
 # 1. Storage: confirm the lifecycle policy from Lab 1 is active on the archive bucket
@@ -135,15 +220,23 @@ awslocal ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=<vpc-id> \
 # 4. Storage cleanup: confirm no unattached volumes remain after Lab 4's cleanup
 awslocal ec2 describe-volumes --query 'Volumes[?length(Attachments)==`0`]'
 
-# 5. Summarize the audit the way a real cost review would — one table per lever checked
-echo "Audit complete: lifecycle=OK, billing-mode=OK, VPC-endpoint=OK, orphaned-volumes=0"
+# 5. Compute: confirm the mixed instances policy from Lab 5 still shows the intended
+#    On-Demand baseline / Spot burst split
+awslocal autoscaling describe-auto-scaling-groups --auto-scaling-group-names cost-optimized-asg \
+  --query 'AutoScalingGroups[0].MixedInstancesPolicy.InstancesDistribution'
+
+# 6. Backup: confirm the tiered lifecycle rule from Lab 6 is still attached to the plan
+awslocal backup get-backup-plan --backup-plan-id <plan-id> --query 'BackupPlan.Rules[0].Lifecycle'
+
+# 7. Summarize the audit the way a real cost review would — one line per lever checked
+echo "Audit complete: lifecycle=OK, billing-mode=OK, VPC-endpoint=OK, orphaned-volumes=0, mixed-instances=OK, backup-lifecycle=OK"
 ```
 
 Why this matters: real cost-optimization work is rarely one dramatic fix — it's a checklist pass
-across storage tiering, database billing mode, and network routing, exactly mirroring this
-domain's four task statements (4.1 storage, 4.2 compute, 4.3 database, 4.4 network) applied
-together to one system, the same synthesis the domain README's case study walks through in
-narrative form.
+across storage tiering, compute purchasing model, database billing mode, network routing, and
+backup lifecycle, exactly mirroring this domain's four task statements (4.1 storage, 4.2 compute,
+4.3 database, 4.4 network) applied together to one system, the same synthesis the domain
+README's case study (and its fully worked dollar table) walks through end to end.
 
 ## Use Cases — Real Scenarios
 
@@ -156,8 +249,9 @@ narrative form.
   founding engineer runs through exactly this labs.md checklist — lifecycle policies, billing
   modes, VPC endpoints, orphaned volumes — to be able to tell investors confidently that spend is
   deliberately managed, not simply "whatever it ended up being."
-- **Agency managing cost across a dozen client AWS accounts.** The same five-lab pattern (storage
-  tiering, billing-mode review, endpoint configuration, EBS cleanup, consolidated audit) is run as
+- **Agency managing cost across a dozen client AWS accounts.** The same seven-lab pattern (storage
+  tiering, billing-mode review, endpoint configuration, EBS cleanup, mixed-instances compute
+  policy, backup lifecycle, consolidated audit) is run as
   a standardized monthly checklist against every client account, rather than being reinvented per
   client.
 - **New cloud engineer's first assigned ticket: "why is our AWS bill so high."** Working through
@@ -177,7 +271,7 @@ narrative form.
   billing-mode review every month rather than once, since every dollar saved directly extends how
   long the grant covers the organization's operations.
 - **Solo consultant auditing a legacy AWS account inherited from a previous developer.** With no
-  documentation to go on, the consultant runs this file's five labs in order against the real
+  documentation to go on, the consultant runs this file's seven labs in order against the real
   account as a fast, structured first pass — surfacing a dormant NAT Gateway, an unmonitored
   provisioned DynamoDB table, and a stack of orphaned EBS volumes within the first afternoon.
 

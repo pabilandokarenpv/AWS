@@ -93,6 +93,55 @@ awslocal logs get-query-results --query-id <id-from-step-2>
 failing" from logs before you go chasing a root cause, instead of debugging the first error you
 happen to spot.
 
+## Lab 2b — Correlating one failing request across multiple log lines (Task 4.1 / 4.2)
+
+**Why this lab:** the main README's log-correlation diagram and the
+[`observability-instrumentation.md`](observability-instrumentation.md) topic page both explain the
+*mechanism* — this lab makes the actual query pattern something you've run against real generated
+data, including the failure mode of a function that *doesn't* propagate a correlation ID, so the
+difference is concrete rather than theoretical.
+
+```bash
+# 1. Deploy a handler that DOES propagate a correlation ID through every log line
+cat > correlated_handler.py <<'EOF'
+import json, logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def handler(event, context):
+    correlation_id = event.get("correlationId", context.aws_request_id)
+    logger.info(json.dumps({"correlationId": correlation_id, "event": "order_received"}))
+    logger.info(json.dumps({"correlationId": correlation_id, "event": "inventory_checked", "inStock": True}))
+    logger.info(json.dumps({"correlationId": correlation_id, "event": "payment_attempted"}))
+    logger.error(json.dumps({"correlationId": correlation_id, "event": "payment_failed", "error": "card_declined"}))
+    return {"statusCode": 500}
+EOF
+zip correlated_function.zip correlated_handler.py
+awslocal lambda create-function --function-name correlated-order \
+  --runtime python3.12 --handler correlated_handler.handler \
+  --zip-file fileb://correlated_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role
+
+# 2. Invoke it with a known correlation ID, simulating one customer's one request
+awslocal lambda invoke --function-name correlated-order \
+  --payload '{"correlationId": "order-9981-trace"}' out.json
+
+# 3. Reconstruct that ONE request's full story, in order, from the log group
+awslocal logs start-query \
+  --log-group-name /aws/lambda/correlated-order \
+  --start-time $(date -d '10 minutes ago' +%s) \
+  --end-time $(date +%s) \
+  --query-string 'fields @timestamp, @message | filter correlationId = "order-9981-trace" | sort @timestamp asc'
+
+awslocal logs get-query-results --query-id <id-from-step-3>
+```
+
+**What to notice:** the query in step 3 only works *because* every log line in step 1 explicitly
+included `correlationId` — delete that field from even one `logger` call and that line silently
+drops out of the reconstructed story with no error raised, which is exactly the quiet,
+easy-to-introduce regression the main README's "instrument before the incident" principle warns
+about.
+
 ## Lab 3 — Lambda memory/performance tuning (Task 4.3)
 
 **Why this lab:** "should we raise or lower memory" is one of Domain 4's most commonly
@@ -133,6 +182,46 @@ finish the same CPU-bound loop noticeably faster than the 128MB one, which is th
 Task 4.3 tests: raising memory can *reduce* total cost even though the per-GB-second rate is
 higher, because duration drops enough to offset it. Always compute cost = (memory × duration), not
 just eyeball the memory setting.
+
+## Lab 3b — Reading the `Init Duration` field to prove a cold start (Task 4.1 / 4.3)
+
+**Why this lab:** [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) explains that
+`Init Duration`'s presence in a `REPORT` log line is the *definitive* signal of a cold start —
+this lab produces that exact log line yourself and compares it directly against a warm
+invocation's `REPORT` line, so the distinction stops being an abstract fact and becomes something
+you've read with your own eyes.
+
+```bash
+# 1. Create a fresh function (its very first invocation is guaranteed cold)
+cat > coldhandler.py <<'EOF'
+import time
+# This sleep simulates expensive static initialization work — e.g. loading a large
+# config file or ML model — that only runs once per NEW execution environment.
+time.sleep(0.5)
+
+def handler(event, context):
+    return {"statusCode": 200, "body": "warm now"}
+EOF
+zip coldfunction.zip coldhandler.py
+awslocal lambda create-function --function-name cold-start-demo \
+  --runtime python3.12 --handler coldhandler.handler \
+  --zip-file fileb://coldfunction.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role
+
+# 2. First invocation — this is cold. Pull its logs and look for Init Duration.
+awslocal lambda invoke --function-name cold-start-demo --log-type Tail out1.json \
+  --query 'LogResult' --output text | base64 --decode
+
+# 3. Immediately invoke again — this should reuse the already-initialized environment (warm)
+awslocal lambda invoke --function-name cold-start-demo --log-type Tail out2.json \
+  --query 'LogResult' --output text | base64 --decode
+```
+
+**What to notice:** compare the two `REPORT` lines side by side. The first should show a
+meaningfully higher `Duration` *and* include an `Init Duration` field; the second should be
+noticeably faster with **no** `Init Duration` field present at all — exactly the diagnostic signal
+[`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) describes, now something you've
+produced and read yourself rather than taken on faith.
 
 ## Lab 4 — X-Ray annotations for filterable traces (Task 4.2)
 
@@ -253,17 +342,66 @@ CloudTrail's event is the discrete "this API call happened at this time, by this
 while Config's history is the resulting "here's how this resource's configuration looked, over
 time." A real investigation typically needs both, in the order the README's diagram shows.
 
+## Lab 7 — Simulating a cost-anomaly investigation workflow (Task 4.3)
+
+**Why this lab:** [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md)'s
+whole point is that a cost anomaly alert never tells you *who* caused it — this lab reproduces the
+"forgotten weekend instance" scenario from that doc using Floci's synthesized cost data and
+CloudTrail together, so the two-tool handoff (Cost Explorer for *what*, CloudTrail for *who*) is
+something you've actually executed, not just read about.
+
+Builds the [cost-anomaly-detection-workflow.md full investigation workflow](cost-anomaly-detection-workflow.md#the-full-investigation-workflow-step-by-step).
+
+```bash
+# 1. Tag a resource for cost allocation, simulating a shared multi-team account
+awslocal ec2 run-instances --image-id ami-00000000 --instance-type m5.4xlarge \
+  --count 1 --tag-specifications 'ResourceType=instance,Tags=[{Key=Team,Value=ML}]'
+
+INSTANCE_ID=$(awslocal ec2 describe-instances --query \
+  'Reservations[0].Instances[0].InstanceId' --output text)
+
+# 2. Pull a Cost Explorer breakdown by usage type — this is the "WHAT and HOW MUCH" half
+awslocal ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-11-30 \
+  --granularity MONTHLY \
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Elastic Compute Cloud - Compute"]}}' \
+  --group-by Type=DIMENSION,Key=USAGE_TYPE \
+  --metrics "UnblendedCost"
+
+# 3. Find WHO launched it — the half Cost Explorer can never answer on its own
+awslocal cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=RunInstances
+
+# 4. Attribute to a team via the cost allocation tag, closing the loop
+awslocal ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-11-30 \
+  --granularity MONTHLY \
+  --group-by Type=TAG,Key=Team \
+  --metrics "UnblendedCost"
+```
+
+**What to notice:** step 2 alone never names a responsible team or person — only step 3
+(CloudTrail) and step 4 (tag-based attribution) close that gap. This mirrors the exact structural
+pairing used throughout Domain 4's cost and governance content: a detection/quantification tool
+paired with CloudTrail for "who," never answered by the detection tool alone.
+
 ## Lab wrap-up and cross-links
 
 | Lab | Task(s) reinforced | README / topic doc section |
 |---|---|---|
 | 1 | 4.1/4.2 (X-Ray tracing) | [How it fits together](README.md#how-it-fits-together-tracing-a-slow-request-to-its-root-cause) |
-| 2 | 4.1 (CloudWatch Logs Insights) | [CloudWatch Logs Insights, as a root-cause tool](README.md#cloudwatch-logs-insights-as-a-root-cause-tool) |
+| 2 | 4.1 (CloudWatch Logs Insights) | [`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md) |
+| 2b | 4.1/4.2 (log correlation) | [README's log-correlation diagram](README.md#log-correlation-across-a-distributed-system-explained-with-a-diagram) |
 | 3 | 4.3 (Lambda memory tuning) | [Lambda cost/performance math](README.md#lambda-costperformance-math-concretely) |
+| 3b | 4.1/4.3 (cold-start diagnosis) | [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) |
 | 4 | 4.2 (annotations vs. metadata) | [`observability-instrumentation.md`](observability-instrumentation.md#instrumenting-your-own-code-task-42) |
 | 5 | 4.3 (cost math, verified) | [Lambda cost/performance math](README.md#lambda-costperformance-math-concretely) |
 | 6 | 4.1 (Config + CloudTrail pairing) | [AWS Config: drift as a Task 4.1 investigative input](README.md#aws-config-drift-as-a-task-41-investigative-input) |
+| 7 | 4.3 (cost anomaly workflow) | [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md) |
 
-Run Labs 1, 2, and 6 in sequence against the same simulated incident if you want the closest
+Run Labs 1, 2, 2b, and 6 in sequence against the same simulated incident if you want the closest
 hands-on approximation of the README's [full worked case study](README.md#full-worked-case-study-diagnosing-and-fixing-a-slow-checkout-endpoint) —
-trace first, then logs/metrics, then the audit trail, in that order.
+trace first, then logs/metrics (including a correlated-ID reconstruction), then the audit trail,
+in that order. Run Labs 3, 3b, and 5 together for the complete Lambda performance-tuning picture —
+cost math, cold-start proof, and verified real numbers, the three pieces Task 4.3's Lambda content
+most often tests together.

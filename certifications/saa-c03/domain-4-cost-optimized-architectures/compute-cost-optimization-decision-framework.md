@@ -11,6 +11,19 @@
 A decision framework for minimizing compute spend — on top of `ec2.md`, `ec2-auto-scaling.md`,
 `lambda.md`, `fargate.md`, `containers-vs-vms-vs-serverless.md`.
 
+## Plain-English Analogy
+
+Buying EC2 capacity across these purchasing models is like booking airline travel for a whole
+year. A business traveler flying the exact same route every single week books an annual pass
+(Reserved Instance/Savings Plan) — a big discount in exchange for committing to that route ahead
+of time. A standby-fare flyer (Spot) gets the cheapest seat on the plane, but only if a full-fare
+passenger doesn't show up and bump them with short notice. Someone booking a single, one-off trip
+with no idea if they'll ever need to fly that route again (On-Demand) pays full fare, because
+paying full fare once is still cheaper than committing to a year of flights they might not take.
+And someone who genuinely only needs transportation a few random days a year calls a taxi each
+time instead of buying any kind of pass at all (Lambda/Fargate) — the taxi's per-trip rate is
+higher, but paying for 363 unused travel days a year would be far worse.
+
 ## Purpose
 
 EC2 pricing isn't one number — AWS offers multiple purchasing models for the *same* instance,
@@ -176,6 +189,62 @@ in a mixed-instances Auto Scaling policy, scaling up automatically as holiday tr
 back down after. The nightly ETL job, being short, interruption-tolerant, and schedule-flexible,
 runs on **Spot-backed AWS Batch**, capturing the deepest available discount for a workload that
 was never going to need a standing commitment at all.
+
+## Full Worked Numeric Case: The Exact Dollar Difference, Computed
+
+Putting real illustrative numbers against the mini-case above makes the size of the win concrete
+rather than conceptual. Assume an On-Demand rate of $0.192/hour per instance (m5.xlarge-
+equivalent, illustrative).
+
+- **Naive baseline — 80 instances On-Demand year-round** (treating the holiday peak capacity as
+  if it needed to exist all year, a common over-provisioning instinct): 80 × $0.192 × 8,760 ≈
+  **$134,553.60/year**.
+- **Correct baseline — 20 instances On-Demand year-round, no commitment at all:** 20 × $0.192 ×
+  8,760 ≈ **$33,638.40/year**, plus the 60-instance holiday burst for 10 days (240 hours): 60 ×
+  $0.192 × 240 ≈ **$2,764.80/year** — a combined **$36,403.20/year**, already a massive
+  improvement over the naive 80-instance-year-round baseline purely from not over-provisioning.
+- **Fully optimized — 20-instance baseline on a 1-year Compute Savings Plan (≈28% discount,
+  illustrative) + the same 60-instance holiday burst On-Demand:** 20 × $0.192 × 0.72 × 8,760 ≈
+  **$24,219.65/year**, plus the same $2,764.80/year burst ≈ **$26,984.45/year** total.
+- **Total improvement from naive to fully optimized:** $134,553.60 − $26,984.45 ≈ **$107,569.15/
+  year**, an 80% reduction — split roughly 73 percentage points from simply not provisioning
+  holiday-peak capacity year-round, and a further 7 percentage points from applying a Savings
+  Plan to the genuinely steady remainder. This split matters on the exam: right-sizing
+  (removing the 80-vs-20 instance over-provisioning) is consistently the larger lever than the
+  purchasing-model discount layered on top of it, even though Savings Plans/Reserved Instances
+  get more airtime in study material.
+
+## Architecture: A Second Real Diagram — Mixed Instances Policy Implementing the Blend
+
+```mermaid
+flowchart TD
+    ASG["Auto Scaling Group —<br/>mixed instances policy"] --> Baseline["20 instances —<br/>On-Demand, covered by<br/>1-yr Compute Savings Plan<br/>($24,219.65/year)"]
+    ASG --> HolidayBurst["+60 instances —<br/>On-Demand or Spot,<br/>only during 10-day<br/>holiday window<br/>($2,764.80/year)"]
+    ETLJob["Separate nightly ETL job<br/>(90 min, interruption-tolerant)"] --> Batch["AWS Batch —<br/>Spot-backed compute<br/>environment"]
+
+    Baseline -.->|"never drops below<br/>this floor — confirmed<br/>by Cost Explorer history"| SPCommit["Savings Plan commitment<br/>sized exactly to this floor,<br/>not a guess"]
+```
+
+Walkthrough: this diagram is the mini-case's purchasing decisions made concrete as infrastructure
+— one Auto Scaling group's mixed instances policy carries both the Savings-Plan-covered baseline
+and the holiday burst, while the unrelated nightly batch job sits entirely outside that group on
+its own Spot-backed AWS Batch environment, since it has a completely different traffic shape
+(short, nightly, interruption-tolerant) that doesn't belong blended into the web tier's scaling
+policy at all.
+
+## Real AWS Image: Mapping Services to Their Commitment-Discount Options
+
+![Diagram showing a sample web application built on Amazon Route 53, AWS WAF, Amazon CloudFront, Amazon EC2, Amazon RDS, Elastic Load Balancing, Amazon S3, and Amazon EFS, with each service mapped to the Reserved Instance or Savings Plans commitment options available.](https://docs.aws.amazon.com/wellarchitected/latest/framework/images/ri-sp-services.png)
+
+*Source: [AWS Well-Architected Framework — FND06-BP06, Build strategies for commitment discounts and volume-based pricing](https://docs.aws.amazon.com/wellarchitected/latest/framework/fnd06-bp06.html)*
+
+This is AWS's own Well-Architected reference diagram, and it makes a detail worth stating
+explicitly: **not every service in a typical stack has the same commitment-discount mechanism** —
+EC2 has both Reserved Instances and Savings Plans, RDS/ElastiCache/Redshift/DynamoDB have their
+own service-specific Reserved Instance variants, while CloudFront, S3, and Route 53 have no
+Reserved/Savings Plan mechanism at all (their own pricing is already volume-tiered or usage-based
+by design). A scenario asking you to "apply a purchasing-model discount" across an entire stack
+is implicitly asking which of its components even *have* that lever available.
 
 ## Why It's Important
 

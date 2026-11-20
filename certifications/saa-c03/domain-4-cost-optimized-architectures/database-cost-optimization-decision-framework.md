@@ -11,6 +11,16 @@
 A decision framework for minimizing database spend — on top of `database-selection-guide.md`,
 `rds.md`, `aurora.md`, `dynamodb.md`.
 
+## Plain-English Analogy
+
+Database capacity models map onto staffing a call center. A center with a known, steady call
+volume hires full-time staff on annual salaries (RDS/Aurora Reserved Instances) — cheaper per
+hour worked, but you pay them whether the phones ring or not. A center whose call volume swings
+wildly by season brings in temp staff whose headcount flexes with the forecast (Aurora Serverless
+v2) — a bit pricier per hour than a salaried employee, but nobody sits idle during a quiet month.
+And a brand-new hotline with zero call history yet pays a per-call answering service (DynamoDB
+On-Demand) until there's enough data to know how many staff to actually hire.
+
 ## Purpose
 
 Database cost optimization layers on top of the performance-driven engine choice from
@@ -174,6 +184,63 @@ removes both the engine mismatch and the cost of a permanently-provisioned RDS i
 pure key-value traffic. (3) is the textbook **Aurora Serverless v2** case — rather than paying
 for a fixed instance size 24 hours a day for a workload only active 9 hours, Serverless v2 scales
 down to near-zero capacity outside the business-hours window automatically.
+
+## Full Worked Numeric Case: All Three Workloads, Computed
+
+Putting real illustrative numbers against the three-workload mini-case above (rates: RDS/Aurora
+On-Demand db.r6g.xlarge ≈ $0.504/hr; Reserved ≈ 40% discount; DynamoDB On-Demand ≈ $1.25/million
+WRU; Aurora Serverless v2 ≈ $0.12/ACU-hr):
+
+1. **Order-processing database, On-Demand vs. Reserved:** 24/7 On-Demand costs 0.504 × 8,760 ≈
+   **$4,415.04/year**. A 1-year Reserved Instance at ~40% off: 0.504 × 0.60 × 8,760 ≈
+   **$2,649.02/year** — a **$1,766.02/year (40%)** saving for a workload the scenario already
+   confirms is steady and long-term.
+2. **"Recently viewed items" forced into a shared RDS instance vs. moved to DynamoDB:** if this
+   feature alone was responsible for needing a second, larger RDS instance (db.r6g.xlarge-
+   equivalent) running 24/7 purely to absorb its write volume: another **$4,415.04/year**
+   On-Demand. Moving it to DynamoDB On-Demand, assuming 100 million writes/month at its actual
+   (spiky, not-24/7-uniform) rate: 100 × $1.25 × 12 ≈ **$1,500/year** — a reduction of roughly
+   **66%**, and this also removes the engine mismatch entirely, not just the cost.
+3. **Reporting database, 9am-6pm only, on Aurora Serverless v2 vs. flat-provisioned:** per
+   Section 13 of MASTER-CHUNK.md and the dedicated crossover-math doc, an 8-ACU-equivalent
+   workload active ~195 hours/month costs roughly **$219.30/month ($2,631.60/year)** on
+   Serverless v2 versus **$4,415.04/year** flat-provisioned — a **$1,783.44/year (40%)**
+   reduction.
+4. **Combined saving across all three workloads:** $1,766.02 + $2,915.04 + $1,783.44 ≈
+   **$6,464.50/year** — note the middle figure ($4,415.04 − $1,500 = $2,915.04) is the largest
+   single contributor, reinforcing that the *database-selection* fix (moving a mismatched
+   workload to DynamoDB) outweighs either pure capacity-model optimization applied to an
+   already-correctly-chosen engine.
+
+## Architecture: A Second Diagram — The Maturity Path From Launch to Steady State
+
+```mermaid
+flowchart LR
+    Launch["Table/database launched —<br/>no usage history"] --> OnDemandPhase["On-Demand /<br/>Serverless v2<br/>(avoid guessing wrong)"]
+    OnDemandPhase -->|"6-12 months of<br/>stable observed traffic"| ProvisionedPhase["Provisioned + Auto Scaling<br/>(lower per-unit rate)"]
+    ProvisionedPhase -->|"1+ years confirmed<br/>stable, via Cost Explorer"| ReservedPhase["Reserved Capacity /<br/>Reserved Instance<br/>(deepest discount)"]
+
+    ProvisionedPhase -.->|"traffic becomes<br/>unpredictable again<br/>(e.g. product pivot)"| OnDemandPhase
+```
+
+Walkthrough: this maturity path is the single most generalizable idea in this entire framework —
+every database capacity-mode decision in this domain (DynamoDB, Aurora Serverless v2, RDS)
+follows the same left-to-right progression as confidence in the traffic pattern grows, with the
+dashed return arrow deliberately included because the path isn't strictly one-directional — a
+real product pivot or a new, unpredictable feature can legitimately justify stepping back to
+On-Demand/Serverless even after a database has spent time in a more committed phase.
+
+## Real AWS Image: RDS Multi-AZ, Revisited for Its Cost Doubling
+
+![High availability scenario for a Multi-AZ RDS instance deployment: a primary instance synchronously replicating to a standby instance in a different Availability Zone.](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/images/con-multi-AZ.png)
+
+*Source: [Amazon RDS User Guide — Multi-AZ deployments](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html)*
+
+Worth a second look here specifically through the cost lens: this is genuinely **two running,
+billed instances**, not one instance with background replication — which is why Common Mistake
+#1 above (dev/test mirroring production's Multi-AZ setting) is a straightforward doubling of
+compute cost for an environment that, by definition, doesn't carry production's availability
+requirement.
 
 ## Why It's Important
 

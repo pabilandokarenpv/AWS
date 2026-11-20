@@ -76,6 +76,109 @@ from every account are automatically centralized into the Log Archive and Securi
 accounts, so a compromised workload account can't delete evidence of its own breach — the logs
 never lived there in the first place.
 
+## Plain-English Analogy: Why the Account Is the Boundary, Not the Policy
+
+Imagine two companies sharing one office floor with no interior walls, just desks with name
+plates — "please only use your own desk" is an IAM policy: a rule everyone is expected to follow,
+enforceable only by whoever's watching. Now imagine the same two companies on two entirely
+different *floors*, reachable only by a guarded elevator that checks ID before letting anyone
+switch floors — that's an account boundary. A disgruntled employee on the open floor can simply
+walk to another desk; a disgruntled employee needs an actual, explicit, logged elevator-access
+grant to reach the other floor at all. AWS's own compliance guidance treats account boundaries this
+way deliberately: it is architecturally harder to accidentally or maliciously cross, not just
+procedurally discouraged.
+
+## Architecture: How an SCP Decision Is Actually Evaluated
+
+A detail many candidates get backwards: an SCP is **not** a grant — it never gives a principal
+permission to do anything. It only ever *removes* permission from whatever the account's own IAM
+policies would otherwise allow. Tracing exactly how AWS evaluates this matters for scenario
+questions that describe seemingly-contradictory policies.
+
+```mermaid
+flowchart TD
+    Req["IAM principal attempts an action"] --> IAMEval{"Does an IAM identity-based\nor resource-based policy ALLOW it?"}
+    IAMEval -- No --> Denied1["Denied — no IAM grant exists"]
+    IAMEval -- Yes --> SCPEval{"Do ALL applicable SCPs\n(every OU level up to the root)\nALLOW it too?"}
+    SCPEval -- "Any SCP denies or\nfails to allow it" --> Denied2["Denied — SCP ceiling blocks it,\nregardless of the IAM grant"]
+    SCPEval -- "Every SCP level allows it" --> Allowed["Action proceeds"]
+```
+
+**Step by step:** (1) AWS first checks whether any IAM identity-based or resource-based policy
+actually grants the action — if nothing grants it, the request is denied immediately, full stop,
+no SCP is even relevant yet. (2) Only if an IAM grant exists does AWS then check **every SCP in the
+chain** from the account up through every parent OU to the Organization root — all of them must
+permit the action; a single denying SCP anywhere in that chain blocks it regardless of how
+permissive the IAM policy is. This two-step order is the source of a very common point of
+confusion: a question describing "the IAM policy grants full access but the action still fails" is
+always testing step 2, never implying step 1 was skipped. SCPs are evaluated as an **intersection**,
+never an addition — attaching an SCP can only narrow what's possible, never widen it, which is why
+the default `FullAWSAccess` SCP exists (it permits everything at that level, by default, until an
+administrator deliberately narrows it with a more restrictive SCP).
+
+## Architecture: Delegated Administrator — Org-Wide Visibility Without Org-Wide Admin Rights
+
+```mermaid
+sequenceDiagram
+    participant Mgmt as Management Account
+    participant SecAcct as Security Tooling Account
+    participant Member as Member/Workload Account
+    Mgmt->>Mgmt: EnableAWSServiceAccess (e.g., for GuardDuty)
+    Mgmt->>SecAcct: RegisterDelegatedAdministrator (GuardDuty)
+    SecAcct->>Member: CreateMembers / InviteMember (or auto-enroll via Organizations)
+    Member-->>SecAcct: Findings stream into Security Tooling account's GuardDuty console
+    Note over Mgmt,Member: The management account itself never holds standing<br/>GuardDuty admin rights in any member account after this —<br/>it only performed the one-time delegation
+```
+
+**Step by step:** the management account's *only* involvement is a one-time act of delegation — it
+enables the service for the Organization and names the Security Tooling account as the delegated
+administrator. After that handoff, the Security Tooling account (not the management account) is
+the one that actually manages GuardDuty/Security Hub/Macie configuration and sees every member
+account's findings. This is a deliberate, tested design choice: it means the single
+most-privileged account in the entire Organization (the management account) does **not** need
+standing operational access into GuardDuty's day-to-day findings review — reducing the blast radius
+if the management account's own credentials were ever compromised, since an attacker there still
+wouldn't automatically inherit hands-on security-tooling access.
+
+![Diagram of the security services configured in the Org Management account, showing AWS Organizations, Control Tower, and the SCP-enforcement layer at the top of the account hierarchy.](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/images/guide-img/91d313fc-d5f1-45a8-a5a6-2f4fc7abc93a/images/20032423-a649-4f28-8127-9c1e71793b9d.png)
+
+*Source: [AWS Prescriptive Guidance — Security Reference Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/), © Amazon Web Services.*
+
+**Discussion.** This diagram makes visible exactly where SCP enforcement structurally sits: at the
+very top of the account hierarchy, above every workload account, administered from the management
+account but never requiring the management account to touch any individual workload's resources
+directly. It's worth contrasting this with the delegated-admin pattern above it: SCPs are a
+**preventive ceiling** pushed down from the top, while delegated administration is a **detective
+visibility** grant pushed sideways into a dedicated account — two different directions of control,
+both deliberately kept away from requiring the single most powerful account (management) to hold
+day-to-day operational access anywhere.
+
+## More Worked Scenarios
+
+**Scenario — a well-intentioned but wrong SCP.** An administrator attaches an SCP to the Workloads
+OU that *allows* `s3:*` and `ec2:*` explicitly, believing this "grants" those permissions to every
+account under that OU, and is confused when developers still can't create S3 buckets without an
+IAM policy of their own. What's the misunderstanding?
+
+*Answer:* SCPs **never grant** anything — they only narrow what's already allowed by IAM. An SCP
+that explicitly lists `s3:*`/`ec2:*` as allowed does nothing by itself if no IAM identity-based
+policy grants those actions to begin with; the developer still needs an actual IAM policy. The
+administrator's SCP is redundant at best (most accounts start with the default `FullAWSAccess`
+SCP, which already permits everything until narrowed) — the fix here isn't an SCP at all, it's
+simply attaching the right IAM policy to the developers' permission set.
+
+**Scenario — moving an account between OUs.** A company reorganizes and moves `payments-prod` from
+the `Workloads` OU into a new, more restrictive `PCI-Scoped` OU with an additional SCP blocking any
+Region outside `us-east-1`. An EC2 instance already running in `eu-west-1` inside that account
+before the move — what happens to it?
+
+*Answer:* the SCP change takes effect **immediately** on all *future* API calls, but it does not
+retroactively terminate or affect already-running resources — the EC2 instance in `eu-west-1`
+keeps running. However, almost any *management* action on it (stopping, modifying, even describing
+it via certain calls, depending on exact SCP wording) would now be blocked by the new Region
+restriction, effectively "orphaning" that resource until it's manually terminated or an exception
+is carved out — a real operational gotcha when restructuring OUs around already-running workloads.
+
 ## Account vesting order — how a landing zone actually gets built
 
 Teams new to this pattern often ask "what order do we even do this in?" The practical sequence

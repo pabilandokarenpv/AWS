@@ -11,6 +11,17 @@
 A decision framework for minimizing storage spend without losing data you actually need — on
 top of `s3-storage-classes.md`, `s3-glacier.md`, `ebs.md`, `aws-backup.md`.
 
+## Plain-English Analogy
+
+Storage tiering is exactly how a busy restaurant manages its pantry. Today's ingredients sit on
+the counter (S3 Standard) — instant reach, but counter space is the most expensive square footage
+in the kitchen. Ingredients used a few times a week move to the walk-in fridge (Standard-IA) —
+cheaper per shelf, a short walk away. Things used once a season go to the basement freezer
+(Glacier) — very cheap, but you plan ahead because defrosting takes time. And the box of decade-
+old tax receipts nobody has opened in years goes to an off-site storage unit across town (Glacier
+Deep Archive) — the cheapest option by far, accepted only because nobody expects to need same-day
+access to it, ever.
+
 ## Purpose
 
 Storage cost optimization is rarely "use a cheaper service" — it's almost always "match each
@@ -175,6 +186,56 @@ never, and 12-hour retrieval is tolerable" — exactly Deep Archive's profile. T
 applies **S3 Object Lock** in compliance mode for the full 10-year retention window, satisfying
 the regulatory immutability requirement without changing which storage class/cost tier the
 documents sit in at any given time.
+
+## Full Worked Numeric Case: Lifecycle Savings at Real Scale
+
+Putting real numbers against the healthcare retention mini-case above, for 5 TB (5,120 GB) of
+patient records, using illustrative per-GB-month rates (Standard $0.023, Standard-IA $0.0125,
+Glacier Deep Archive $0.00099):
+
+- **Naive approach — everything stays in S3 Standard for the full 10-year retention:** 5,120 ×
+  $0.023 × 120 months ≈ **$14,131.20** total over 10 years.
+- **Tiered approach per the framework** (60 days Standard, then Standard-IA to 2 years, then
+  Deep Archive for the remaining ~8 years): roughly 5,120 × $0.023 × 2 months (the first 60 days)
+  ≈ $235.52, plus 5,120 × $0.0125 × 22 months (day 60 to 2 years) ≈ $1,408, plus 5,120 ×
+  $0.00099 × 96 months (years 2-10) ≈ $486.78 — a total of roughly **$2,130.30** over the same
+  10 years.
+- **Savings:** $14,131.20 − $2,130.30 ≈ **$12,000.90**, an **85% reduction** for data whose actual
+  access pattern (per the scenario) genuinely supports every one of these transitions without a
+  single early-deletion penalty, since each transition happens well past that tier's minimum
+  storage duration.
+
+## Architecture: Where AWS Backup's Lifecycle Fits Alongside S3's
+
+```mermaid
+flowchart TD
+    S3Data["S3 object data<br/>(application-managed<br/>lifecycle rule)"] --> S3Standard["Standard"] --> S3IA["Standard-IA"] --> S3Glacier["Glacier Deep Archive"]
+
+    BackupData["AWS Backup recovery points<br/>(backup-plan-managed<br/>lifecycle rule)"] --> WarmBackup["Warm/hot backup storage<br/>(35-90 days, illustrative)"] --> ColdBackup["Cold backup storage<br/>(transitioned automatically<br/>per the backup plan's rule)"]
+
+    S3Glacier -.->|"same underlying principle —<br/>age-based tiering —<br/>two separate configuration<br/>surfaces"| ColdBackup
+```
+
+Walkthrough: this diagram exists to clear up a common point of confusion — an **S3 lifecycle
+rule** and an **AWS Backup plan's lifecycle rule** are two entirely separate configuration
+surfaces, even though they implement the identical underlying principle (age-based tiering to
+cheaper storage). A scenario about *data* living in S3 needs an S3 lifecycle policy; a scenario
+about *backup recovery points* managed by AWS Backup needs that service's own backup-plan rule —
+conflating the two is a common exam trap when a question describes a backup strategy but the
+candidate reaches for S3's lifecycle configuration instead.
+
+## Real AWS Image: EBS Snapshot Lifecycle Automation
+
+![Diagram showing Snap B taken from Vol 2 (itself restored from Snap A of Vol 1) storing only the newly changed blocks, while referencing Snap A for the unchanged data, demonstrating cross-volume incremental snapshots](https://docs.aws.amazon.com/ebs/latest/userguide/images/snapshot_1c.png)
+
+*Source: [Amazon EBS User Guide — Amazon EBS snapshots](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-snapshots.html)*
+
+This is the cross-volume incremental case worth knowing beyond the simpler single-volume example
+earlier in this doc: a snapshot taken from a *restored* volume still only stores the blocks that
+changed since the snapshot it was restored from, referencing that earlier snapshot for everything
+unchanged — which is exactly why deleting an early snapshot in a chain that later snapshots still
+reference doesn't necessarily free as much space as its own listed size might suggest, a detail
+the Key Decision Points section above calls out explicitly.
 
 ## Why It's Important
 

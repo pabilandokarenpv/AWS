@@ -10,9 +10,30 @@
 
 This is the decision layer on top of `aws-backup.md`, `route53.md`, and the Multi-AZ features
 documented inside `rds.md`/`aurora.md` — it names the four standard DR strategies AWS (and the
-exam) organizes around, ordered by how much it costs vs. how fast it recovers.
+exam) organizes around, ordered by how much it costs vs. how fast it recovers. For the prerequisite
+judgment call of *whether a requirement even needs Multi-Region DR in the first place* (as opposed
+to being satisfied by same-Region Multi-AZ alone), see
+`multi-az-vs-multi-region-failover-decision-framework.md`; for more worked RTO/RPO numeric
+exercises beyond the one in this doc, see `rto-rpo-worked-scenarios.md`.
 
-## Purpose
+## Analogy
+
+Think of these four strategies as four different answers to "how do I keep a second, backup
+kitchen ready in case my main restaurant burns down?" **Backup & Restore** is keeping your
+recipes and supplier contact list in a fireproof safe — if disaster strikes, you still have to
+find a new building, buy new equipment, and hire a new crew before you can cook again; slow, but
+cheap to maintain in the meantime. **Pilot Light** is keeping that same fireproof safe, plus a
+walk-in fridge in a second building already stocked and kept fresh daily — the hardest thing to
+quickly replace (fresh ingredients) is already handled, but you still need to bring in stoves and
+staff before you can actually serve a meal. **Warm Standby** is running a small, fully-functional
+second restaurant in that second building right now, just with a skeleton crew and a short menu —
+if the main location burns down, you call in the rest of the staff and expand the menu, and you're
+serving full dinner service again within the hour. **Multi-Site Active/Active** is running two
+full, independently profitable restaurants in two different cities simultaneously, every single
+day — if one burns down, the other was already open, already fully staffed, and simply absorbs
+the displaced customers starting immediately; nobody ever has to "reopen" anything.
+
+## How It Works — The Four Strategies
 
 "Highly available" and "disaster-recoverable" are related but different goals: high availability
 handles routine failures (one server dies, one AZ has an issue) automatically and fast; disaster
@@ -21,8 +42,6 @@ about how much money you're willing to spend standing by versus how long you're 
 down when it happens. The exam tests this as a direct cost/speed tradeoff using two numbers:
 **RTO (Recovery Time Objective)** — how long you can be down — and **RPO (Recovery Point
 Objective)** — how much data you can afford to lose, measured in time since the last backup.
-
-## How It Works — The Four Strategies
 
 ```mermaid
 flowchart LR
@@ -99,6 +118,90 @@ only launched once a disaster is actually declared — this is precisely why Pil
 than Warm Standby (no idle compute bill) but recovers slower than it (compute still needs to
 launch from scratch).
 
+## Architecture Detail: What "Warm Standby" Actually Looks Like
+
+```mermaid
+flowchart TB
+    subgraph Primary["Primary Region — full production"]
+        ALB1["ALB"] --> ASG1["Auto Scaling Group<br/>(full capacity, e.g. 10 instances)"]
+        ASG1 --> DBPrimary[("Aurora/RDS Primary")]
+    end
+    subgraph DR["DR Region — warm standby"]
+        ALB2["ALB — already provisioned,<br/>already receiving health checks"]
+        ASG2["Auto Scaling Group<br/>(minimum capacity, e.g. 1-2 instances,<br/>ALREADY RUNNING)"]
+        DBStandby[("Aurora Global Database<br/>secondary cluster<br/>— sub-second replication")]
+        ALB2 --> ASG2
+        ASG2 --> DBStandby
+    end
+    DBPrimary <-->|"continuous, near-synchronous<br/>cross-Region replication"| DBStandby
+    R53["Route 53 Failover Routing<br/>+ health checks"] -->|"100% traffic, normal ops"| ALB1
+    R53 -.->|"on declared failover:<br/>scale ASG2 to full capacity,<br/>shift traffic here"| ALB2
+```
+
+The detail that separates Warm Standby from Pilot Light, made visible in the diagram: **every
+piece of infrastructure in the DR Region is already running**, just at reduced scale — the ALB is
+provisioned and already passing health checks, and the Auto Scaling group already has at least
+one instance in service, not merely a launch template sitting dormant. On failover, the only work
+required is a scale-out event (minimum to full capacity) and a traffic redirect — there's no
+"launch from scratch" step at all, which is exactly why Warm Standby's RTO lands in minutes rather
+than Pilot Light's tens of minutes.
+
+## Architecture Detail: What "Multi-Site Active/Active" Actually Looks Like
+
+```mermaid
+flowchart TB
+    subgraph RegionA["Region A — full production, always serving"]
+        ALBA["ALB"] --> ASGA["Auto Scaling Group<br/>(full capacity)"]
+        ASGA --> DBA[("Aurora Global Database<br/>writer cluster")]
+    end
+    subgraph RegionB["Region B — full production, always serving"]
+        ALBB["ALB"] --> ASGB["Auto Scaling Group<br/>(full capacity)"]
+        ASGB --> DBB[("Aurora Global Database<br/>writer cluster")]
+    end
+    DBA <-->|"bidirectional, continuous<br/>replication — conflict<br/>resolution required"| DBB
+    R53["Route 53<br/>Latency or Weighted Routing<br/>+ health checks"] -->|"share of traffic,<br/>ALL THE TIME"| ALBA
+    R53 -->|"share of traffic,<br/>ALL THE TIME"| ALBB
+```
+
+*Source: [AWS Well-Architected Framework — Reliability Pillar, REL13-BP02, "Multi-site active/active"](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_planning_for_recovery_disaster_recovery.html)*
+
+Notice the structural difference from every rung below it: there is no "DR Region" label at all in
+this diagram — both Regions are symmetric, both running full production capacity, both receiving
+real traffic continuously via Route 53's normal (not failover-only) routing policy. The
+Well-Architected Framework's own guidance calls out the real cost of this symmetry directly:
+bidirectional replication means **write conflicts between two Regions must be actively avoided or
+resolved** — a genuinely harder engineering problem than any lower rung faces, which is exactly
+why Active/Active is explicitly described as "the most operationally complex of the DR strategies,
+and should only be selected when business requirements necessitate it."
+
+## Sequence View: Warm Standby Failover, Step by Step
+
+```mermaid
+sequenceDiagram
+    participant R53 as Route 53
+    participant HC as Health Checker
+    participant PrimaryALB as Primary Region ALB
+    participant DRALB as DR Region ALB (warm)
+    participant DRASG as DR Region ASG (minimum capacity)
+    participant DRDB as DR Region DB (replica)
+
+    HC->>PrimaryALB: periodic health check
+    Note over PrimaryALB: Region-wide failure — health check fails
+    HC->>R53: primary unhealthy
+    R53->>R53: failover routing policy triggers
+    R53->>DRALB: traffic now directed here
+    Note over DRASG: Scale-out triggered\n(minimum -> full capacity)
+    DRASG->>DRASG: launch additional instances
+    DRDB->>DRDB: promote to primary (if not already writable)
+    DRASG-->>R53: new instances pass health checks
+    Note over R53,DRDB: Full production restored —\ntypically minutes, not tens of minutes
+```
+
+Compare this directly against the Pilot Light activation diagram above: Warm Standby's sequence
+skips the "launch ASG from template" step entirely (it already has running instances to scale
+*from*, not launch *from nothing*) — that's the single biggest contributor to the RTO gap between
+the two rungs.
+
 ## Key Decision Points
 
 - **RTO vs. RPO drive everything** — a scenario stating "cannot lose more than 5 minutes of data"
@@ -139,6 +242,36 @@ Standby is the correct answer**, chosen specifically because Pilot Light's typic
 is too close to the stated ceiling to be a safe fit, while Active/Active would be the wrong,
 over-engineered answer for a 30-minute/2-minute requirement that Warm Standby already satisfies.
 
+## Second Worked Example: A Looser Requirement, Deliberately Choosing a Cheaper Rung
+
+A regional non-profit's donor-management system states: "We can tolerate up to 12 hours of
+downtime during a Regional outage, and losing up to 6 hours of the most recent donation records is
+acceptable, since paper receipts exist as a fallback record for that window. Our board has
+explicitly asked us to minimize ongoing AWS spend." Walking the ladder from the bottom this time:
+Backup & Restore's typical profile (hours-level RTO, hours-level RPO) fits comfortably inside both
+stated ceilings, and the explicit cost-minimization instruction removes any reason to consider a
+rung above it — **Backup & Restore is correct here**, using AWS Backup with a scheduled snapshot
+plan and a documented (and periodically tested) restore runbook. This example exists specifically
+to counterbalance the first one: not every requirement points toward Warm Standby or higher, and
+recognizing when the *cheapest* rung is the correct answer is tested just as often as recognizing
+when a tighter requirement rules it out.
+
+## Third Worked Example: When RTO and RPO Disagree About Which Rung Fits
+
+A mid-size logistics company's shipment-tracking database states: "Losing more than 2 minutes of
+the most recent tracking scans is unacceptable because customs documentation depends on it being
+current (tight RPO), but if the Region goes down, we can tolerate up to 3 hours of downtime while
+operations staff manually coordinate with carriers in the meantime (looser RTO)." This is a
+deliberately asymmetric requirement. Checking each number against its own mechanism (as
+`rto-rpo-worked-scenarios.md` explores in more depth): the 2-minute RPO requires continuous,
+near-real-time replication — ruling out Backup & Restore's snapshot-based model regardless of how
+loose the RTO is — while the 3-hour RTO is comfortably cleared even by Pilot Light's tens-of-
+minutes profile, with no need to pay for Warm Standby's always-running compute. **The correct
+answer is Pilot Light specifically**, built with continuous cross-Region replication to satisfy
+the tight RPO, while leaving compute dormant (templates only) since the RTO doesn't demand an
+already-running fleet — a deliberately "mixed" answer that a simple "pick one rung for both
+numbers" habit would miss.
+
 ## Use Cases — Real Scenarios
 
 - **Regional airline's reservation system choosing Warm Standby.** A 4-hour RTO and 10-minute RPO
@@ -174,6 +307,16 @@ over-engineered answer for a 30-minute/2-minute requirement that Warm Standby al
   than hand-rolling cross-Region replication logic, the processor's transaction-ledger table uses
   DynamoDB Global Tables' built-in multi-Region active-active replication as the data layer
   underneath its Multi-Site Active/Active application tier.
+- **A university research computing platform choosing Pilot Light for its grant-funded
+  supercomputing cluster's metadata store.** A tight budget (grant funding, not ongoing revenue)
+  and a tolerant 45-minute RTO for the (non-time-critical) metadata layer push the architecture
+  team toward Pilot Light specifically, deliberately avoiding Warm Standby's always-on compute
+  cost for a research workload where a 45-minute recovery window genuinely doesn't harm anyone.
+- **A ride-sharing platform's surge-pricing engine running Warm Standby while its driver-location
+  tracking runs Active/Active.** The same company applies two different DR tiers to two different
+  subsystems based on their actual requirements — surge pricing can tolerate a few minutes of
+  staleness during failover, but live driver-location data directly affects rider safety and ETA
+  accuracy, justifying the higher Active/Active cost for that one subsystem specifically.
 
 ## Common Mistakes (what wrong answers look like)
 
@@ -223,6 +366,10 @@ to name it.
 - [`../../../services/compute/ec2-auto-scaling.md`](../../../services/compute/ec2-auto-scaling.md)
 - [`event-driven-microservice-architecture-patterns.md`](event-driven-microservice-architecture-patterns.md) —
   the Task 2.1 scalability patterns this doc's Warm Standby/Active-Active fleets still need to use
+- [`multi-az-vs-multi-region-failover-decision-framework.md`](multi-az-vs-multi-region-failover-decision-framework.md) —
+  the prerequisite judgment call for whether a requirement is even asking for Multi-Region DR
+- [`rto-rpo-worked-scenarios.md`](rto-rpo-worked-scenarios.md) — five more fully worked numeric
+  RTO/RPO exercises beyond the three in this doc
 - [`../domain-1-secure-architectures/README.md`](../domain-1-secure-architectures/README.md) —
   every DR Region copy must preserve the same KMS encryption and VPC security posture as primary
 - [`../domain-4-cost-optimized-architectures/README.md`](../domain-4-cost-optimized-architectures/README.md) —

@@ -41,6 +41,7 @@ stems — it tells you which half of this domain you're in before you even look 
 | RDS read replicas | [`services/database/rds.md`](../../../services/database/rds.md) |
 | Aurora (replicas, Aurora Serverless) | [`services/database/aurora.md`](../../../services/database/aurora.md) |
 | Event-driven & microservice architecture patterns — how it all composes *(new — decision-level topic)* | [`event-driven-microservice-architecture-patterns.md`](event-driven-microservice-architecture-patterns.md) |
+| Loose coupling patterns deep dive — the reusable techniques behind this task's one-sentence theme *(new — decision-level topic)* | [`loose-coupling-patterns-deep-dive.md`](loose-coupling-patterns-deep-dive.md) |
 | AWS Amplify (full-stack app scaffolding — auth/API/storage wired together) | [`services/front-end-web-mobile/amplify.md`](../../../services/front-end-web-mobile/amplify.md) |
 | AWS Device Farm (real-device mobile testing before a scaled backend ever sees traffic) | [`services/front-end-web-mobile/device-farm.md`](../../../services/front-end-web-mobile/device-farm.md) |
 | Amazon Pinpoint (multi-channel engagement messaging, decoupled from the core app) | [`services/front-end-web-mobile/pinpoint.md`](../../../services/front-end-web-mobile/pinpoint.md) |
@@ -85,6 +86,8 @@ different problem than the greenfield SQS/SNS decoupling this task otherwise tes
 | Elastic Load Balancing (spans multiple AZs) | [`services/networking-content-delivery/elastic-load-balancing.md`](../../../services/networking-content-delivery/elastic-load-balancing.md) |
 | Disaster recovery strategies (RTO/RPO, backup→pilot light→warm standby→multi-site) *(new — decision-level topic)* | [`disaster-recovery-strategies.md`](disaster-recovery-strategies.md) |
 | AWS X-Ray — distributed tracing for workload visibility across decoupled components | [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) |
+| Multi-AZ vs. Multi-Region decision framework — which failure scope a requirement actually describes *(new — decision-level topic)* | [`multi-az-vs-multi-region-failover-decision-framework.md`](multi-az-vs-multi-region-failover-decision-framework.md) |
+| RTO/RPO worked numeric scenarios — placing a stated RTO/RPO on the right DR rung *(new — decision-level topic)* | [`rto-rpo-worked-scenarios.md`](rto-rpo-worked-scenarios.md) |
 
 A critical distinction this task hinges on: **availability is automatic and routine; disaster
 recovery is deliberate and rare.** Multi-AZ RDS failing over to its standby, an Auto Scaling group
@@ -360,11 +363,171 @@ requirement (4-hour RTO, not near-zero) that Warm Standby already satisfies — 
   whole fleet must be scaled to compensate."* → Extract that component into its own independently
   scaled service (microservice) instead of oversizing the entire monolith's fleet.
 
+## Architecture: Auto Scaling Health-Check Lifecycle (State View)
+
+A third lens on the same resilience story — this time following one EC2 instance through its
+entire health-check-driven lifecycle, useful for any scenario asking "what state is this instance
+in, and what happens next."
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: ASG launches instance\n(desired capacity below target)
+    Pending --> InService: passes EC2 status check\nAND registers healthy with ALB
+    InService --> Unhealthy: fails ELB health check\n(app-level failure)
+    InService --> Unhealthy: fails EC2 status check\n(hardware-level failure)
+    Unhealthy --> Terminating: ASG marks for replacement
+    Terminating --> [*]: instance terminated,\nconnections drained first
+    Terminating --> Pending: ASG launches replacement\nto restore desired capacity
+    InService --> Terminating: scale-in event\n(lifecycle hook allows\ngraceful drain first)
+```
+
+The detail this state diagram makes explicit: an instance can become `Unhealthy` via **two
+independent paths** — a hardware-level EC2 status-check failure, or an application-level ELB
+health-check failure — and only the second one catches an instance that's technically running but
+silently failing to serve real requests, which is exactly the gap behind this file's
+"EC2 status checks alone" exam trap. Notice also that a *scale-in* event (not a failure at all)
+takes the same `Terminating` path, but passes through a lifecycle hook first specifically so
+in-flight connections can drain before the instance disappears — graceful scale-in, not an abrupt
+kill.
+
+## Architecture: Disaster Recovery Runbook Execution (Sequence View)
+
+A fourth lens, this time on the *deliberate, human-decision* half of Task 2.2 — what actually
+happens, in order, when a Regional disaster is declared and a Warm Standby runbook executes.
+
+```mermaid
+sequenceDiagram
+    participant Ops as On-call / Automated Runbook
+    participant R53 as Route 53
+    participant PrimaryRegion as Primary Region (down)
+    participant DRRegion as DR Region (Warm Standby)
+    participant DRAsg as DR Region Auto Scaling Group
+    participant DRDb as DR Region Database (promoted)
+
+    Note over PrimaryRegion: Region-wide outage detected
+    Ops->>Ops: Confirm outage meets "declared disaster" criteria
+    Ops->>DRDb: Promote standby/replica to primary
+    Ops->>DRAsg: Scale Auto Scaling group from minimum to full capacity
+    DRAsg-->>Ops: New instances pass health checks
+    Ops->>R53: Update failover record / trigger health-check-driven failover
+    R53->>DRRegion: All new DNS resolutions now point here
+    Note over Ops,DRRegion: RTO clock stops here — workload fully serving traffic
+```
+
+This sequence is the mechanical answer to "what does Warm Standby's RTO number actually consist
+of" — it's not one instantaneous event, it's: detect, confirm, promote the database, scale compute
+up from its warm-but-reduced baseline, pass health checks, then redirect traffic. Each of those
+steps consumes part of the stated RTO budget, which is exactly why a tight RTO (see
+`rto-rpo-worked-scenarios.md`'s Worked Scenario 2) needs a rung with enough pre-warmed headroom to
+clear all five steps reliably, not just a rung whose "typical" number happens to be smaller than
+the ceiling on paper.
+
+## Common Mistakes (What Wrong Answers Look Like Across This Domain)
+
+- **Conflating Multi-AZ with disaster recovery** — "we have Multi-AZ, so we're protected if the
+  Region goes down" is never true; Multi-AZ's blast-radius ceiling is one AZ, never the whole
+  Region. See `multi-az-vs-multi-region-failover-decision-framework.md` for the full decision tree
+  this mistake violates.
+- **Scaling the whole fleet to compensate for one slow component** instead of extracting that
+  component into its own independently-scaled piece — this is the "oversized monolith" trap this
+  domain's StreamVista case study solves by extracting the recommendations job specifically,
+  rather than just adding more identical monolith instances.
+- **Picking the most resilient-sounding DR tier regardless of the stated RTO/RPO** — Multi-Site
+  Active/Active "to be safe" when Backup & Restore already clears the actual numbers is an
+  over-engineering trap tested about as often as its under-engineering mirror image. See
+  `rto-rpo-worked-scenarios.md`'s Worked Scenario 4.
+- **Decoupling the transport without decoupling the failure mode** — inserting an SQS queue
+  between two services is only half the fix if the consumer isn't also idempotent; a crash between
+  receiving and deleting a message redelivers it, and a non-idempotent consumer turns that
+  resilience feature into a duplicate-processing bug. See `loose-coupling-patterns-deep-dive.md`
+  Pattern 6.
+- **Relying on EC2 status checks alone** for an Auto Scaling group's health determination — an
+  instance that's technically "up" but failing every application request keeps serving (and
+  failing) traffic until an ELB health check, not an EC2 status check, catches it.
+- **Treating a read replica and a Multi-AZ standby as interchangeable** — one serves live read
+  traffic and does nothing for failover by itself; the other exists purely for automatic failover
+  and never serves application traffic on its own. Needing both read scaling *and* availability
+  means provisioning both, not picking one and assuming it covers the other's job too.
+
+## Full Worked Case Study 2: NorthPeak Logistics — A Regulated, Multi-Region Freight Platform
+
+**Company requirements.** NorthPeak Logistics runs a freight-tracking and billing platform used
+by trucking partners across the US and EU. Unlike StreamVista's single-company SLA, NorthPeak
+operates under a regulatory requirement (cross-border freight documentation must be retrievable
+within a legally defined window even during a declared disaster) and a separate, purely
+commercial requirement (EU partners have complained about latency routing through the US).
+
+**Solution design.**
+
+1. **Separate the regulatory requirement from the commercial one (Task 2.1 + 2.2, applied
+   per-workload, not uniformly).** The architecture team resists the instinct to apply one
+   resilience posture company-wide — the freight-documentation subsystem gets a different DR tier
+   than the general billing dashboard, because their actual requirements differ.
+2. **EU latency problem, solved independently of DR (Task 2.1).** A second Region is stood up in
+   `eu-west-1`, serving EU partners directly via Route 53 latency-based routing, with its own ALB,
+   ECS on Fargate service, and Aurora Global Database secondary cluster. This decision is driven
+   purely by latency — DR benefit is a side effect, not the primary justification (see
+   `multi-az-vs-multi-region-failover-decision-framework.md`'s distinction between the two
+   justifications for active/active).
+3. **Regulatory RTO/RPO, solved specifically for the documentation subsystem (Task 2.2).** The
+   freight-documentation service has a legally defined 1-hour RTO and a 10-minute RPO. Applying
+   `rto-rpo-worked-scenarios.md`'s reasoning: Pilot Light's typical tens-of-minutes RTO clears a
+   1-hour ceiling with real margin (unlike the tighter 30-minute case in that doc's Worked
+   Scenario 2), so the team selects **Pilot Light** for this specific subsystem — continuously
+   replicated core data (meeting the 10-minute RPO) with minimal standing compute, scaled up only
+   on a declared disaster.
+4. **The general billing dashboard gets a cheaper tier still (Task 2.2).** With no regulatory
+   RTO/RPO attached and an internal tolerance of several hours' downtime, the billing dashboard
+   uses plain **Backup & Restore** via AWS Backup with cross-Region copy rules — deliberately the
+   cheapest rung, because nothing about this specific subsystem's actual requirements demands more.
+5. **Loose coupling between the two subsystems (Task 2.1).** The documentation subsystem and the
+   billing dashboard were historically entangled in the same monolith's codebase and database.
+   They're split so that documentation availability during a disaster doesn't depend on, or get
+   dragged down by, the billing dashboard's own health — applying
+   `loose-coupling-patterns-deep-dive.md`'s Pattern 5 (service discovery) and Pattern 1 (queue-
+   mediated handoff) to decouple them operationally, not just logically.
+
+**Why this design, not a simpler one.** A single, uniform DR tier applied company-wide (e.g.,
+Warm Standby everywhere) was explicitly rejected — it would satisfy the regulatory requirement
+with margin to spare, but at needlessly high standing cost for the billing dashboard, which never
+had a tight RTO/RPO requirement in the first place. This case study's core lesson, distinct from
+StreamVista's: **resilience tier is a per-workload decision, not a company-wide one** — the right
+architecture applies exactly the rung each specific piece's actual requirements demand, no more,
+no less.
+
+## Use Cases — Real Scenarios (continued)
+
+- **A multi-tenant SaaS platform isolating one noisy tenant's traffic spike from affecting every
+  other tenant.** Per-tenant SQS queues (or per-tenant rate-limited API Gateway usage plans) mean
+  one tenant's burst only backs up that tenant's own queue/quota, never starving the others of
+  shared capacity.
+- **A company's disaster-recovery runbook fails its first live drill because the DR Region's Auto
+  Scaling group takes longer to reach full capacity than expected.** The fix isn't a faster DR
+  tier necessarily — it's often pre-warming the DR Region's launch templates/AMIs and testing the
+  actual scale-up step under realistic load, exactly the "RTO consists of several sequential
+  steps, each with its own variability" lesson from the Disaster Recovery Runbook sequence diagram
+  above.
+- **A logistics company needs its EU customers' requests to stop routing through a US Region
+  entirely, for both latency and data-residency reasons.** Multi-Region active/active with Route
+  53 geolocation (not just latency-based) routing, ensuring EU traffic never crosses the Atlantic
+  even when US Region latency happens to test faster on a given day.
+- **An e-commerce platform's Auto Scaling group passes a live disaster-recovery drill for compute,
+  but the drill reveals the database read replica in the DR Region was silently lagging by six
+  hours due to a misconfigured replication link.** This is specifically why DR drills must
+  validate the *data* layer's actual currency, not just confirm compute can scale up — a scaled-up
+  app tier serving six-hour-stale data is not a successful recovery.
+- **A video platform's recommendation engine periodically times out, and because it was called
+  synchronously from the main page-load path, every page load slows down with it.** Moving the
+  recommendation call to an asynchronous, cached, pre-computed pattern (or gracefully degrading
+  to "no personalized recommendations" rather than blocking) removes an unrelated feature's failure
+  from the critical page-load path entirely.
+
 ## Hands-on Labs
 
-See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 5 labs
+See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 8 labs
 covering SQS decoupling, Step Functions orchestration, RDS replica/Multi-AZ distinctions, SNS
-fan-out, and a capstone chaining all four into one resilient mini-architecture.
+fan-out, EventBridge content-based routing, Route 53 failover routing, and a capstone chaining
+multiple patterns into one resilient mini-architecture.
 
 ## Where This Domain Connects
 
@@ -376,3 +539,10 @@ fan-out, and a capstone chaining all four into one resilient mini-architecture.
 - Domain 4 (`../domain-4-cost-optimized-architectures/`) revisits Multi-AZ and Warm Standby from a
   cost angle — this domain's case study's Warm Standby fleet is a direct Domain 4 cost
   optimization target once the resilience requirement is satisfied.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — all 22 of this domain's services/topics in one
+  standalone file, each with its own diagram, real AWS image, and exam tips, for a single-file
+  night-before-the-exam review.
+- [`multi-az-vs-multi-region-failover-decision-framework.md`](multi-az-vs-multi-region-failover-decision-framework.md),
+  [`loose-coupling-patterns-deep-dive.md`](loose-coupling-patterns-deep-dive.md), and
+  [`rto-rpo-worked-scenarios.md`](rto-rpo-worked-scenarios.md) — three focused topic docs going
+  deeper than this README on specific decision frameworks this domain leans on repeatedly.

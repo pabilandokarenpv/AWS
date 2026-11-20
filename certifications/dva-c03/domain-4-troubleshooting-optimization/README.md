@@ -10,6 +10,23 @@ Domains 1-3 are about building and shipping correctly, Domain 4 assumes you didn
 everything — because nobody does — and tests whether you know how to find out what you missed
 quickly, and cheaply enough to do it routinely rather than only during a crisis.
 
+## The domain in one analogy
+
+Think of your application as a car and yourself as the mechanic who didn't build it. **CloudWatch**
+is the dashboard — the gauges and warning lights telling you *something* is wrong right now (a
+spiking metric, an alarm). **X-Ray** is popping the hood and following one specific fuel line
+from tank to engine to see exactly where a leak is, hop by hop. **CloudTrail** is the service
+log book — a timestamped record of every mechanic (human or automated) who's touched this car and
+what they did, so you can check "did someone change something before this started." **CloudWatch
+Logs Insights** is reading the engine's own diagnostic codes directly instead of guessing from the
+dashboard alone. **AWS Config** is comparing the car's current state against its factory spec
+sheet to see what's drifted. **Trusted Advisor** and the **Well-Architected Tool** are two
+different kinds of inspection — one is a quick automated checklist a mechanic runs in five
+minutes, the other is a thorough, structured annual inspection where you answer detailed questions
+about how the car's actually been driven and maintained. Keep this mapping in your head: almost
+every Domain 4 question is really asking "which gauge/tool would a mechanic reach for first,
+given this specific symptom," and that's exactly the skill this entire domain tests.
+
 ## Task statements (verbatim from the exam guide)
 
 **Task 4.1 — Assist in root cause analysis**
@@ -32,19 +49,21 @@ quickly, and cheaply enough to do it routinely rather than only during a crisis.
 | Task | What to read | Where |
 |---|---|---|
 | 4.1 — Logs and metrics | [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) |
+| 4.1 — Reading Logs Insights queries specifically, for debugging | Full topic page: query syntax, debugging a query that returns nothing, a complete "app is slow" worked investigation | [`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md) |
 | 4.1 — X-Ray tracing to find *where* in a distributed call chain something broke | Full X-Ray service deep dive: segments/subsegments, service maps, sampling rules, annotations vs. metadata | [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) |
 | 4.1 — Who/what made an API call | [`services/management-governance/cloudtrail.md`](../../../services/management-governance/cloudtrail.md) |
 | 4.1 — AI-assisted error analysis | Cross-link — see below |
 | 4.2 — Instrumenting code (custom metrics, structured logs, trace segments) | [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) (metrics/logs side); [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) (the X-Ray SDK/daemon mechanics of emitting segments/subsegments/annotations from your own code) — see also the [`observability-instrumentation.md`](observability-instrumentation.md) topic page in this folder, which ties both together specifically for Task 4.2 |
 | 4.2 — Automating remediation/runbooks once an issue is found | [`services/management-governance/systems-manager.md`](../../../services/management-governance/systems-manager.md) |
 | 4.2 — Auditing config drift as a troubleshooting input | [`services/management-governance/aws-config.md`](../../../services/management-governance/aws-config.md) |
-| 4.3 — Lambda performance tuning | [`services/compute/lambda.md`](../../../services/compute/lambda.md) |
-| 4.3 — Cost visibility to inform tradeoffs | [`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md) |
+| 4.3 — Lambda performance tuning | [`services/compute/lambda.md`](../../../services/compute/lambda.md), and specifically cold-start diagnosis: [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) |
+| 4.3 — Cost visibility to inform tradeoffs | [`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md), and specifically the full anomaly-to-root-cause workflow: [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md) |
 | 4.3 — Architecture-level cost/performance guidance | [`services/management-governance/well-architected-tool.md`](../../../services/management-governance/well-architected-tool.md), [`services/management-governance/trusted-advisor.md`](../../../services/management-governance/trusted-advisor.md) |
 | 4.3 — Data store choice tradeoffs feeding optimization | [`services/database/database-selection-guide.md`](../../../services/database/database-selection-guide.md) |
 | 4.3 — Caching as a performance/cost lever | [`services/database/elasticache.md`](../../../services/database/elasticache.md) |
 | 4.3 — AI-assisted optimization recommendations | Cross-link — see below |
 | Supporting — the data store whose consistency choices show up again here as a performance lever | [`services/database/dynamodb.md`](../../../services/database/dynamodb.md) |
+| Supporting — API Gateway as the typical first hop whose throttling/timeout often shows up as a troubleshooting symptom | [`services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md) |
 | Supporting — the identity every CloudTrail event is ultimately attributing an action to | [`services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md) |
 
 ### AI-assisted development cross-link
@@ -57,19 +76,28 @@ Domain 3's test-gen/approvals). Read the canonical explanation once:
 — see the "Domain 4" section of that doc's diagram for how an assistant reads CloudWatch/X-Ray
 data and proposes a root cause or a tuning change, while a human still verifies before acting.
 
-### New in this folder
+### Topic pages in this folder
 
-X-Ray distributed tracing is now covered two ways: the full service deep dive —
-[`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) (segments,
-subsegments, service maps, sampling rules, annotations vs. metadata, the SDK/daemon split) — and a
-Domain-4-specific topic page that applies those concepts directly to Task 4.1/4.2's framing:
+This folder now has five topic pages beyond this README and `labs.md`, each going deeper into a
+specific thin slice of Domain 4 than the service docs alone cover:
 
 ➡️ **[`observability-instrumentation.md`](observability-instrumentation.md)** — X-Ray tracing
 concepts (segments, subsegments, service maps) plus how to instrument code for Task 4.2.
 
-Read the service doc first for the concepts, then the topic page for how Task 4.1 (root cause —
-"which hop is slow") and Task 4.2 (instrumentation — "emit a trace segment from your own code")
-each use them.
+➡️ **[`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md)** — reading
+and writing Logs Insights queries specifically as a debugging tool, including the single most
+useful and least-documented skill: diagnosing *why a query returns nothing*.
+
+➡️ **[`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md)** — proving a slow
+invocation is actually a cold start (not a downstream dependency), and matching the mitigation
+(SnapStart, package trimming, provisioned concurrency) to the actual cause.
+
+➡️ **[`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md)** — the complete
+loop from an anomaly alert to a quantified, attributed root cause, and why the "what" tool and the
+"who" tool are always paired.
+
+Read each service doc first for the underlying concepts, then the relevant topic page for how the
+specific Domain 4 task statement applies those concepts in practice.
 
 ## How it fits together: tracing a slow request to its root cause
 
@@ -112,6 +140,101 @@ Step by step:
    path.
 8. **New CloudWatch metrics after the fix confirm the improvement** — closing the loop back to
    Task 4.2's "instrument so you can tell."
+
+## Distributed tracing, explained in full: how one trace ID survives five service boundaries
+
+The diagram above shows *where* X-Ray fits into an investigation; this section explains the
+underlying mechanism in more depth, because "how does a single trace stay coherent across five
+independently-scaling services" is the part of Task 4.1 that's easy to use without actually
+understanding — and understanding it is what lets you debug a *broken* trace, not just read a
+working one.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant ALB as Load Balancer / API Gateway
+    participant L1 as Lambda: Order Function
+    participant DDB as DynamoDB
+    participant L2 as Lambda: Payment Function
+    participant Ext as External Payment API
+
+    Client->>ALB: HTTP request, no trace ID yet
+    ALB->>ALB: Generate trace ID, inject X-Amzn-Trace-Id header
+    ALB->>L1: Invoke, trace ID passed via Lambda context/env
+    L1->>L1: X-Ray SDK reads trace ID, opens a segment
+    L1->>DDB: GetItem (SDK auto-instruments as a subsegment)
+    DDB-->>L1: Item returned
+    L1->>L2: Invoke, trace ID forwarded
+    L2->>L2: X-Ray SDK opens its OWN segment, same trace ID
+    L2->>Ext: captureHTTPsGlobal-wrapped call injects X-Amzn-Trace-Id header
+    Ext-->>L2: Response (if Ext also instruments X-Ray, its segment joins too)
+    L2-->>L1: Return
+    L1-->>ALB: Return
+    ALB-->>Client: Response
+    Note over ALB,Ext: Every segment above was sent ASYNCHRONOUSLY to X-Ray,<br/>independent of the request/response path itself
+```
+
+Three facts make this work, and each is a specific, separately testable idea:
+
+1. **The trace ID is generated once, at the first hop, and carried as an HTTP header
+   (`X-Amzn-Trace-Id`) from then on.** Nothing downstream generates a *new* ID for the same
+   logical request — every participating service reads and re-forwards the same one.
+2. **AWS-to-AWS propagation (load balancer → Lambda → DynamoDB) is automatic** once active
+   tracing is enabled on each hop — you don't manually thread the header through. **Crossing to a
+   non-AWS HTTP call** requires the X-Ray SDK's HTTP instrumentation (`captureHTTPsGlobal` in
+   Node.js, `patch_all()` in Python) to inject the header — if that instrumentation isn't wired up,
+   the trace simply stops at that hop, which is the single most common cause of "my trace has a
+   gap."
+3. **Segments are sent asynchronously, decoupled from the actual request/response flow.** The
+   client gets its response at normal speed; X-Ray assembles the full trace from independently
+   arriving segment reports afterward, which is why a trace sometimes takes a few seconds to
+   fully populate in the console even after the request itself has already completed.
+
+A trace with a visible gap between two services that *should* be connected is diagnosable from
+this exact mechanism: either the downstream service never runs the X-Ray SDK at all, or it runs
+it but the specific outbound call wasn't wrapped by the SDK's auto-instrumentation (a raw socket
+call instead of the SDK-wrapped HTTP client, for example) — in either case, X-Ray can't
+retroactively trace a hop that never reported data, no matter how the calling side is configured.
+
+## Log correlation across a distributed system, explained with a diagram
+
+Distributed tracing (X-Ray) answers "where did the time go." **Log correlation** is the sibling
+skill — answering "show me everything every service said about this one request" — and it depends
+on a completely different mechanism: a correlation ID deliberately propagated through every log
+line, not an AWS-managed header.
+
+```mermaid
+flowchart TD
+    REQ[Incoming request] --> GENID["Generate (or read) a correlation ID\ne.g. the X-Ray trace ID, or your own UUID"]
+    GENID --> L1LOG["Lambda 1 logs:\n{'correlationId': 'abc', 'event': 'order_received'}"]
+    GENID --> L1CALL[Lambda 1 calls Lambda 2, passing the ID explicitly in the payload]
+    L1CALL --> L2LOG["Lambda 2 logs:\n{'correlationId': 'abc', 'event': 'payment_attempted'}"]
+    L2LOG --> L2ERR["Lambda 2 logs:\n{'correlationId': 'abc', 'event': 'payment_failed', 'error': 'timeout'}"]
+    L1LOG -.all land in DIFFERENT log groups,\nunited only by the shared correlationId field.-> QUERY["Logs Insights query:\nfilter correlationId = 'abc' across each log group, sorted by timestamp"]
+    L2ERR -.-> QUERY
+    QUERY --> STORY["Full reconstructed story of ONE request,\nacross services, in order"]
+```
+
+Walking through why this is a genuinely separate mechanism from X-Ray's trace ID propagation,
+even though the two are often (and ideally) the *same* ID:
+
+1. **X-Ray's trace ID propagates automatically for AWS-to-AWS calls** — but it propagates as an
+   HTTP/invocation header, not as a field inside your own structured log lines. Nothing writes it
+   into your `logger.info(...)` call for you.
+2. **You must deliberately include that same ID (or your own correlation ID) in every structured
+   log line yourself** — this is Task 4.2's instrumentation discipline, not something AWS does on
+   your behalf. A function that logs `{"message": "processed order"}` with no ID attached cannot
+   be correlated with anything else later, no matter how good your tracing setup is.
+3. **The payoff is a single Logs Insights query reconstructing one request's full story across
+   every log group it touched** — see
+   [`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md) for the exact
+   query shape. This is only possible because every hop wrote the same ID into its own logs; it
+   is not something CloudWatch infers for you after the fact.
+4. **Using the X-Ray trace ID itself as your correlation ID (rather than inventing a separate
+   one) is the recommended practice**, since it means a single ID lets you pivot between "the
+   trace timeline" and "every structured log line for this request" without maintaining two
+   separate identifiers — this is exactly what ServiceLens/the CloudWatch Trace Map does for you
+   automatically, described further in the X-Ray service doc.
 
 ## The symptom-to-tool lookup, as one diagram
 
@@ -200,6 +323,94 @@ This case study's shape — "trace first to find *where*, metrics to find *what*
 the master pattern for nearly every Domain 4 scenario question, regardless of which specific
 services the question names.
 
+## Second worked case study: "the app is slow" with full CloudWatch/X-Ray evidence, diagnosed step by step
+
+A second, independent worked scenario — deliberately a different failure shape from the one above
+— because recognizing the *pattern* of investigation matters more than memorizing one specific
+answer.
+
+**Symptom as reported to you.** "Our recommendation API is slow. Customers are seeing spinners for
+3-5 seconds instead of the usual instant response. It started sometime this morning. Nobody
+changed any code yesterday."
+
+**Evidence you're given (exactly as it would appear on the exam):**
+- A CloudWatch dashboard shows the Lambda function's `Duration` metric p50 steady at 45ms, but p99
+  spiking to 4,800ms starting at roughly 08:00 this morning.
+- The function's `REPORT` log lines for the slow invocations show `Init Duration: 3,912 ms`
+  present on nearly every one of the slow requests.
+- An X-Ray trace for one of the fast (p50) requests shows a single Lambda segment with no
+  meaningful subsegment breakdown — this function makes no downstream calls at all.
+- CloudTrail shows no configuration changes to this function or any related resource in the last
+  7 days.
+
+**Diagnosis, step by step:**
+
+1. **Rule out a downstream dependency immediately.** The X-Ray trace for a typical request shows
+   this function has no downstream calls to trace in the first place — there is no DynamoDB
+   table, no external API, nothing for a trace to implicate. This immediately rules out "a slow
+   downstream call" as the cause, which narrows the investigation to the function's own execution.
+2. **Read the `REPORT` log line's `Init Duration` field — this is the decisive piece of
+   evidence.** Its presence, and its size (3,912ms, nearly the entire 4,800ms Duration), is the
+   definitive fingerprint of a cold start, not a code-performance regression. See
+   [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) for exactly how this field
+   is read and why it's conclusive.
+3. **Rule out "nobody changed any code" as contradicting the cold-start theory — it doesn't.**
+   Cold starts are not caused by a code change; they're caused by the *invocation pattern*
+   changing (a traffic lull, then a burst, forcing new environments to spin up) or a redeploy
+   that happened for an unrelated reason (even a configuration-only change triggers a new version,
+   and therefore a cold fleet). CloudTrail showing "no configuration changes" to *this specific
+   resource* doesn't rule out an upstream trigger — check whether a *different*, related resource
+   (a Lambda layer version, an environment variable change, a concurrency setting) changed instead.
+4. **Confirm the frequency and timing with a Logs Insights query** (see
+   [`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md)) counting
+   invocations with a present `Init Duration` per hour — this confirms whether cold starts have
+   become a *large, sustained* fraction of traffic (a real, ongoing problem) starting at 08:00, or
+   whether the dashboard's p99 spike is being driven by just a handful of outliers around a
+   specific, narrow trigger event (e.g., exactly one scale-up burst).
+5. **Identify the actual trigger.** Suppose the query confirms a sustained, elevated cold-start
+   rate beginning exactly at 08:00 and continuing since. Checking the account's overall traffic
+   pattern shows a marketing campaign started at 08:00, driving sustained higher concurrency than
+   this function has seen before — meaning a larger number of brand-new execution environments
+   are being provisioned continuously to keep up, each one paying the cold-start cost once.
+6. **Fix, matched to the actual cause.** Since this is a *sustained* traffic-shape change (not a
+   one-off burst), provisioned concurrency sized to the new baseline concurrency level is the
+   correct, durable fix — scheduled ahead of the next campaign if it's a recurring event, or set
+   as a standing baseline if the new, higher traffic level is now simply normal. Reaching for
+   "increase memory" here would be the wrong fix: the evidence already shows the bottleneck is
+   `Init Duration` (the cold path), not handler execution time, so more memory would speed up an
+   already-small fraction of the total latency rather than address the actual cause.
+
+**Why this scenario's shape matters.** Notice that *none* of the fixes considered here involved
+guessing — every step either confirmed or ruled out a specific hypothesis using a specific,
+named piece of evidence (an X-Ray trace, a `REPORT` log field, a Logs Insights count, a traffic
+correlation). This evidence-driven elimination process, not a memorized answer, is exactly what
+Domain 4 scenario questions are built to test, and it's the same shape as the checkout case study
+above even though the specific symptom, tools emphasized, and fix are completely different.
+
+## Third worked case study: API Gateway throttling masquerading as "the Lambda is broken"
+
+A shorter third scenario, specifically because API Gateway sits in front of so many of this
+domain's services and its own failure modes are easy to misattribute to the backend behind it.
+
+**Symptom.** A partner integration reports intermittent `429` errors calling your public API,
+but your own Lambda function's CloudWatch metrics show no errors, no throttling, and completely
+normal `Duration` — the function appears to be running fine every time it's actually invoked.
+
+**Diagnosis.** A `429` with a *healthy-looking backend* is the signature of a rejection that never
+reached the Lambda function at all — API Gateway itself rejected the request before invoking
+anything downstream. Checking API Gateway's own throttling layers (account-level, per-method, and
+usage-plan — see [`services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md#throttling--layered-limits-most-restrictive-wins))
+shows this specific partner's API key is on a usage plan with a tighter-than-expected rate limit,
+and their traffic pattern is bursty enough to occasionally exceed it — while *other* partners on a
+more generous plan never see this. **The fix** is adjusting that specific usage plan's burst/rate
+limit (or moving the partner to a different plan), not touching the Lambda function at all, which
+was never the bottleneck.
+
+**The transferable lesson:** when a client-visible error doesn't correlate with any backend
+metric showing distress, the rejection is happening *in front of* the backend — API Gateway
+throttling, a WAF rule, or an authorizer denial are all candidates worth checking before assuming
+the compute layer is lying about its own health.
+
 ## Use Cases — Real Scenarios
 
 Concrete developer/SRE situations where Task 4.1/4.2/4.3 decisions actually get made, with app
@@ -260,6 +471,17 @@ type / requirement / implementation decision spelled out:
     **Decision:** run a structured AWS Well-Architected Tool review across the relevant pillars,
     rather than relying only on Trusted Advisor's automated per-resource checks, which answer a
     narrower question.
+11. **App type:** Shared, multi-team AWS account running dozens of services. **Requirement:** a
+    weekend cost spike needs attribution to a specific team before Monday's finance review.
+    **Decision:** follow the Cost Anomaly Detection → Cost Explorer → CloudTrail → cost allocation
+    tag workflow in order — the anomaly alert alone never names a responsible team, and skipping
+    straight to "ask every team if they launched something" wastes the time the automated tooling
+    is specifically built to save.
+12. **App type:** Public-facing partner API with per-partner usage plans. **Requirement:** one
+    partner reports intermittent failures while every backend metric looks completely healthy.
+    **Decision:** check API Gateway's own throttling layers before touching the Lambda function —
+    a healthy backend with client-visible errors points at a rejection happening in front of the
+    backend, not inside it.
 
 ## Common exam scenarios
 
@@ -284,12 +506,20 @@ type / requirement / implementation decision spelled out:
 - *"A Lambda function times out intermittently under load, and profiling shows it's CPU-bound, not
   idle-waiting"* → increase memory (which scales CPU proportionally in Lambda), not just the
   timeout value.
+- *"A slow invocation shows a large `Init Duration` field in its REPORT log line"* → this is the
+  definitive fingerprint of a cold start, not a code-performance regression — see
+  [`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md) for the full diagnosis-to-fix
+  flow and why "add more memory" is usually the wrong first move here.
 - *"Need a single chart to understand overall error rate and latency trend over the last 24 hours
   for a service made of 6 different Lambda functions"* → a CloudWatch dashboard with a custom
   metric math expression, not six separate default dashboards.
 - *"Cost grew significantly after a traffic increase and the team needs to know if a cheaper
   architecture meets the same requirements"* → the cost/performance tradeoff is Task 4.3 — check
   Trusted Advisor/Cost Explorer and the Well-Architected Tool's cost pillar review, don't guess.
+- *"Cost grew steadily over several weeks but never crossed any single day's Budget threshold"* →
+  Cost Anomaly Detection's learned-baseline model, not a static Budget — see
+  [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md) for why a fixed
+  threshold structurally can't catch a gradual, sustained deviation.
 - *"An AI tool suggests a specific root cause for a production incident from the logs it was given"*
   → treat it as a hypothesis to verify against the actual CloudWatch/X-Ray data, not a confirmed
   diagnosis — see [`../domain-1-development/ai-assisted-development.md`](../domain-1-development/ai-assisted-development.md#when-not-to-use-it--limits).
@@ -302,6 +532,9 @@ type / requirement / implementation decision spelled out:
 - *"A function shows high Duration in CloudWatch but low actual CPU/memory utilization"* → the
   function is likely I/O-bound, waiting on a slow downstream call — trace it with X-Ray to find
   which downstream hop is actually slow, rather than tuning the function's own memory.
+- *"Client-visible 429/403 errors with a completely healthy-looking backend"* → the rejection is
+  happening in front of the backend — check API Gateway throttling layers, a WAF rule, or an
+  authorizer denial before assuming the compute layer is broken.
 - *"Alarms exist but nobody noticed the incident for two days"* → the alarm wasn't wired to a
   notification action (SNS topic → on-call), or the alarm didn't exist for the specific failure
   mode at all — distinguishing "we had no visibility" from "we had visibility but no alerting."
@@ -328,6 +561,12 @@ type / requirement / implementation decision spelled out:
       not just eyeball the memory number.
 - [ ] Diagnose a DynamoDB throttling symptom as either a hot-key problem or a capacity problem, and
       know the different fix for each.
+- [ ] Prove a slow Lambda invocation is actually a cold start using the `Init Duration` field,
+      rather than assuming it — and match the mitigation (SnapStart, package trimming, provisioned
+      concurrency) to the actual cause.
+- [ ] Read a Logs Insights query pipeline stage by stage, and diagnose why one returns zero rows.
+- [ ] Walk through the full cost-anomaly workflow from alert to attributed root cause, and explain
+      why the detection tool alone never answers "who."
 - [ ] Describe where AI-assisted error analysis and optimization recommendations fit, and what a
       human still verifies before acting on either.
 - [ ] Walk through the case study's investigation order (trace → metrics → CloudTrail → fix →
@@ -364,10 +603,19 @@ memory number alone — always reason through (or ask for) the Duration change i
 # "Max Memory Used" far below the limit → the function is NOT memory-constrained; look elsewhere (I/O wait, cold starts)
 ```
 
+This same math is the reason "is this actually a cold start or a memory constraint" has to be
+answered *before* reaching for a memory change — see
+[`lambda-cold-start-diagnosis.md`](lambda-cold-start-diagnosis.md)'s diagnosis flow for how the
+`Init Duration` field separates the two.
+
 ## CloudWatch Logs Insights, as a root-cause tool
 
 Task 4.1 expects you to recognize what a Logs Insights query is *for*, not to write one from
-scratch under exam pressure:
+scratch under exam pressure. This is covered here at a summary level; the full topic page —
+[`cloudwatch-logs-insights-debugging.md`](cloudwatch-logs-insights-debugging.md) — walks through
+the query pipeline stage by stage, a complete "app is slow" worked investigation using real query
+output, and (the part most references skip) how to diagnose a query that mysteriously returns
+zero rows.
 
 ```sql
 -- "How often is this function actually failing, and what are the top error messages?"
@@ -386,7 +634,8 @@ fields @timestamp, @message
 The second query pattern — filtering by a correlation/request ID across potentially many log
 groups — only works if Task 4.2's instrumentation discipline (propagate a correlation ID through
 every log line) was actually followed. This is the concrete, queryable payoff of "instrument before
-the incident," not an abstract principle.
+the incident," not an abstract principle — see the log-correlation diagram above for exactly why
+this mechanism is separate from X-Ray's own trace ID propagation.
 
 ## Automated remediation: Systems Manager Automation and Config rules
 
@@ -414,6 +663,7 @@ picking the right one for a given question's framing:
 |---|---|---|
 | **CloudWatch Metrics/Dashboards** | Real-time, resource-level telemetry | "Is this specific metric trending badly right now" |
 | **Cost Explorer** | Historical billing data, filterable/groupable | "Where did the money actually go last month, broken down by service/tag" |
+| **Cost Anomaly Detection** | ML-learned spend-pattern deviation, not a fixed threshold | "Did something change that doesn't look like us, even within budget" — full workflow: [`cost-anomaly-detection-workflow.md`](cost-anomaly-detection-workflow.md) |
 | **Trusted Advisor** | Automated checks against AWS best practices (cost, performance, security, fault tolerance, service limits) | "Flag idle/underutilized resources and common misconfigurations automatically" |
 | **AWS Well-Architected Tool** | Structured, pillar-based architecture review (you answer questions, it surfaces risks) | "A holistic review of whether this workload's *architecture*, not just one resource, follows best practices" |
 
@@ -421,7 +671,20 @@ A scenario describing "want an automated, ongoing check for idle EC2 instances a
 over-provisioned EBS volumes" is Trusted Advisor. A scenario describing "want a structured review
 of whether our whole payments system's architecture follows AWS best practices before a big
 launch" is the Well-Architected Tool — a qualitatively different, broader exercise than checking
-individual resource-level recommendations.
+individual resource-level recommendations. A scenario describing "spend grew in a way that
+doesn't match our usual pattern, but never crossed our monthly cap" is Cost Anomaly Detection,
+distinct from both.
+
+## Reading a real Cost Explorer screen, discussed
+
+![Cost Explorer showing daily cost and usage data, analyzed by service usage type](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/images/ce.png)
+*Source: [AWS Documentation — Amazon CloudWatch User Guide (Cost Explorer integration)](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/images/ce.png). This is the exact view you land in during Step 2 of the cost-anomaly workflow above: having been told "EC2 spend was anomalous this weekend," this is where you confirm precisely which usage type drove it and quantify the dollar impact — the difference between a vague alert and an attributable, defensible number for a post-mortem.*
+
+Notice what this view *can't* tell you on its own: a usage-type breakdown by dollar amount says
+nothing about *who* launched the resource responsible. That's the exact gap CloudTrail closes in
+the next step of the same workflow — a repeating structural pattern across this entire domain
+(a detection/quantification tool paired with CloudTrail for attribution), not a coincidence
+specific to cost.
 
 ## AWS Config: drift as a Task 4.1 investigative input
 

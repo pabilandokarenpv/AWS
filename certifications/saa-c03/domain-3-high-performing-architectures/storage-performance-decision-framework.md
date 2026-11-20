@@ -171,6 +171,149 @@ clear **EC2 Instance Store** fit — ultra-low latency, genuinely disposable dat
 requirement, and avoiding Instance Store here (e.g., using EBS instead) would add unnecessary
 network-attached latency to a workload that explicitly doesn't need persistence.
 
+## Deeper Dive: More Analogies for the Three Storage Shapes
+
+Three different everyday analogies for the same object/file/block split, because different
+framings click for different people:
+
+- **The library analogy.** S3 is a library's public catalog system — you hand the librarian a
+  call number (key) and she returns the whole book (object); you cannot check out "just chapter
+  3, page 10" the way you can seek into the middle of an open file on a real filesystem. EFS is a
+  shared office binder that multiple coworkers can open, flip to any page, and write on
+  simultaneously. EBS is a notebook that belongs to exactly one desk — only the person sitting at
+  that desk can write in it, though they can hand the whole notebook to someone else's desk later
+  (detach/reattach).
+- **The apartment-building analogy.** EBS is your own private apartment unit — one tenant, full
+  control over the interior, but it's physically tied to one building (Availability Zone) and
+  moving it to another building means literally packing it into a truck (a snapshot/restore).
+  EFS is a shared community laundry room in the building complex — every tenant (EC2 instance)
+  in the complex (Region, via mount targets per AZ) can walk in and use it concurrently. S3 is a
+  citywide package locker network (like an Amazon Locker) — you don't "live" in it, you just drop
+  off and pick up whole packages (objects) from any locker location (AWS Region) that has one.
+- **The restaurant kitchen analogy.** EC2 Instance Store is the chef's own cutting board at their
+  station — blisteringly fast to reach for mid-service, but it's wiped clean (and effectively
+  disappears) the moment that chef's shift/station is broken down. FSx for Lustre is a specialized
+  walk-in freezer built for one specific high-throughput purpose (bulk ingredient prep for a huge
+  catering order) — overkill for a small neighborhood diner, essential for a stadium's concession
+  operation.
+
+## Architecture: S3 Transfer Acceleration — Why Distance Hurts and How It's Fixed
+
+```mermaid
+flowchart LR
+    subgraph Slow["Without Transfer Acceleration"]
+        ClientAU["Client in Australia"] -->|"long-haul public internet,\nmany hops, variable latency"| BucketUSStd["S3 bucket in us-east-1"]
+    end
+    subgraph Fast["With Transfer Acceleration"]
+        ClientAU2["Client in Australia"] -->|"short hop to nearest\nCloudFront edge location"| EdgeAU["Edge location (Sydney)"]
+        EdgeAU -->|"optimized AWS backbone,\nnot public internet"| BucketUSAcc["S3 bucket in us-east-1"]
+    end
+```
+
+*Walkthrough:* a direct upload from Australia to a bucket in `us-east-1` rides the public internet
+for the entire geographic distance — every router hop along that path adds latency and jitter S3
+itself has no control over. Transfer Acceleration instead routes the upload to the *nearest*
+CloudFront edge location (a short, fast hop), and from there onto AWS's own optimized global
+backbone network for the long-haul portion — the same "get onto AWS's network as early as
+possible" principle Global Accelerator uses for non-S3 traffic, applied specifically to S3
+uploads/downloads over long distances.
+
+## Architecture: EBS Multi-Attach for Clustered Applications
+
+```mermaid
+flowchart TD
+    Vol[("io1/io2 volume\nMulti-Attach enabled")]
+    I1["EC2 Instance 1\n(cluster node A)"]
+    I2["EC2 Instance 2\n(cluster node B)"]
+    I3["EC2 Instance 3\n(cluster node C)"]
+    Vol --- I1
+    Vol --- I2
+    Vol --- I3
+    Note["Up to 16 instances,\nsame AZ only —\napplication must handle\nconcurrent write coordination"]
+```
+
+*Walkthrough:* Multi-Attach is the narrow, explicitly-named exception to "EBS attaches to one
+instance at a time" — it exists specifically for clustered applications (certain configurations of
+clustered Linux databases, cluster-aware file systems) that already implement their own
+write-coordination/locking logic at the application layer. EBS itself does **not** provide any
+file-locking or write-ordering guarantee across the attached instances — a scenario describing an
+application *without* its own cluster-aware concurrency control is describing a bad fit for
+Multi-Attach regardless of how attractive "shared block storage" sounds; that scenario should
+point to EFS (a real POSIX filesystem with proper concurrent-access semantics) instead.
+
+## Real AWS Documentation Image: FSx for Lustre at HPC/Genomics Scale
+
+![AWS reference architecture diagram showing Amazon FSx for Lustre used for genomics workflows, with data moving between S3 and a high-performance Lustre file system accessed by a compute cluster](https://d2908q01vomqb2.cloudfront.net/e1822db470e60d090affd0956d743cb0e7cdf113/2020/01/22/Architecture-for-using-Amazon-FSx-for-Lustre-for-genomics-workflows.png)
+
+*This architecture shows the specific pattern FSx for Lustre is built for: a large genomics compute
+cluster needs to read/write a shared dataset at very high aggregate throughput (far beyond what
+standard EFS throughput modes are designed to sustain), with S3 serving as the durable long-term
+store that Lustre can lazily load from and write back to. Source: [AWS Storage Blog — Using Amazon
+FSx for Lustre for genomics workflows](https://aws.amazon.com/blogs/storage/).* This is the exact
+diagram pattern the exam is testing when a scenario says "thousands of parallel compute nodes need
+the highest possible shared-filesystem throughput" — the answer is never "a bigger EFS filesystem,"
+because EFS's throughput ceiling (even on Elastic mode) is a different performance tier than
+Lustre's purpose-built parallel filesystem design.
+
+## Real AWS Documentation Image: EFS Mount Targets Across Availability Zones
+
+![Diagram showing Amazon EC2 instances in multiple Availability Zones mounting the same Amazon EFS file system through per-AZ mount targets](https://docs.aws.amazon.com/efs/latest/ug/images/efs-ec2-how-it-works-Regional_china-world.png)
+
+*Each Availability Zone gets its own EFS **mount target** (an ENI with its own IP in that AZ's
+subnet) — this is why an EFS file system functions as one logical shared filesystem across an
+entire Region, not just within a single AZ: every EC2 instance mounts the mount target that's
+local to its own AZ, and all mount targets present the identical underlying file system data.
+Source: [Amazon EFS User Guide — How Amazon EFS
+works](https://docs.aws.amazon.com/efs/latest/ug/how-it-works.html).* A scenario describing an EFS
+file system that needs to be reachable from instances in three different AZs is really asking "did
+you create a mount target in each of those AZs" — a frequently tested operational detail, since a
+missing mount target in one AZ means instances there simply cannot reach the file system at all,
+not that they experience degraded performance.
+
+## Additional Worked Exam Scenarios
+
+**Scenario A — "The database that silently got slower after a 'successful' migration."** A team
+migrates their self-managed PostgreSQL database's data volume from a larger gp2 volume to a
+smaller gp3 volume of the exact same provisioned IOPS, expecting identical performance since IOPS
+"are the same." Performance instead degrades under peak load. **Diagnosis:** gp2's IOPS scale with
+volume *size* (3 IOPS per GB, with a burst credit bucket), while gp3's IOPS are provisioned
+independently of size — but gp2's *burst* behavior could have been masking an actual baseline IOPS
+need higher than what was explicitly provisioned on the new gp3 volume. **Fix:** calculate what the
+old gp2 volume's actual *sustained* (non-burst) IOPS were, and provision at least that much
+explicitly on gp3, rather than assuming "it reported fine before" meant burst credits weren't doing
+quiet, invisible work.
+
+**Scenario B — "The ML training job that kept getting slower the longer it ran."** A SageMaker-
+adjacent training job reads its dataset repeatedly from an EFS file system in Bursting Throughput
+mode; early epochs are fast, but each subsequent epoch gets progressively slower. **Diagnosis:**
+Bursting Throughput mode draws down a burst credit balance that replenishes based on stored data
+size — a training job hammering the file system continuously, faster than credits replenish, will
+eventually exhaust the burst balance and fall back to the (much lower) baseline throughput rate.
+**Fix:** switch the file system to Provisioned or Elastic Throughput mode, decoupling available
+throughput from the credit-balance mechanic entirely.
+
+**Scenario C — "Database restore took 6 hours and the team wants to know why."** A team restoring
+an EBS volume from a snapshot notices the restored volume's performance is poor for the first
+several hours of use, even though the snapshot and target volume type/size are identical to the
+original. **Diagnosis:** a newly-restored EBS volume from a snapshot uses **lazy loading** — data
+blocks are fetched from S3 (where snapshots are stored) on first access, not pre-loaded onto the
+new volume, so the first pass over the whole volume is slower until every block has been
+touched/initialized at least once. **Fix:** either accept this is expected one-time startup
+behavior, or run `fio`/`dd`-style pre-warming reads over the whole volume (or use EBS's
+Fast Snapshot Restore feature for snapshots that will be restored repeatedly and need to be fully
+performant immediately) before putting it into production traffic.
+
+## Real AWS Documentation Image: EBS Snapshots Are Incremental, Not Full Copies
+
+![Diagram illustrating how Amazon EBS snapshots incrementally save only the blocks that have changed since the previous snapshot](https://docs.aws.amazon.com/ebs/latest/userguide/images/snapshot_1a.png)
+
+*Only the blocks that changed since the previous snapshot are actually saved — this is the
+mechanism behind both why snapshots are fast/cheap at scale and why a restored volume's first-read
+"lazy loading" behavior (Scenario C above) exists: a snapshot is a chain of incremental deltas
+referencing the original full copy, not a flat, fully materialized duplicate sitting ready to go.
+Source: [Amazon EBS User Guide — Amazon EBS
+snapshots](https://docs.aws.amazon.com/ebs/latest/userguide/EBSSnapshots.html).*
+
 ## Why It's Important
 
 **Exam mapping:** SAA-C03 Domain 3, Task 3.1 ("determine high-performing and/or scalable storage

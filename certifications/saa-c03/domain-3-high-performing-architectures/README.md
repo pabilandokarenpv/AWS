@@ -357,11 +357,130 @@ bound, not memory- or I/O-bound" is what justified the C-family switch specifica
   scale, with access patterns known in advance."* → DynamoDB, not RDS/Aurora — the exam frames
   this as a performance decision (DynamoDB's latency profile at scale), not just a cost decision.
 
+## Deeper Dive: Three More Analogies That Tie the Whole Domain Together
+
+- **The restaurant analogy for the full request path.** CloudFront is the restaurant's host stand
+  pre-setting tables for regulars who always order the same thing (cached content) — no trip to
+  the kitchen needed. The ALB is the host directing each new arrival to the correct section
+  (target group) based on what they're there for. ElastiCache is the server remembering the
+  table's last order instead of walking back to ask the kitchen again. The database is the kitchen
+  itself — the authoritative source, but the slowest stop if every single request has to go there.
+- **The library-branch analogy for data ingestion.** Raw CSV logs landing directly in S3 are like
+  dumping every book donation into one disorganized bin — technically "stored," but a search
+  through it is painfully slow. Glue's CSV-to-Parquet conversion with partitioning is the
+  librarian cataloging those books by subject and shelf (partition), so Athena's query is a
+  direct walk to the right shelf instead of reading the entire bin cover to cover.
+- **The relay-race analogy for placement groups and ENA.** A cluster placement group with Enhanced
+  Networking is a relay team standing shoulder-to-shoulder on adjacent tracks, so the baton
+  (network packet) barely travels any distance at all between handoffs — the fastest possible
+  exchange, at the cost of everyone being vulnerable to the exact same track (AZ) going out of
+  service.
+
+## Real AWS Documentation Image: DynamoDB Partitioning and Key Design
+
+![AWS documentation diagram showing how Amazon DynamoDB partitions data across multiple physical partitions based on the hash of a partition key](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/images/HowItWorksPartitionKey.png)
+
+*DynamoDB hashes a table's partition key and distributes items across physical partitions based on
+that hash — this is the mechanism behind the matchmaking-service use case above achieving
+single-digit-millisecond latency "at any scale": a well-chosen partition key spreads both storage
+and request load evenly, while a poorly chosen one (e.g., a key with very few distinct values, or
+one value receiving disproportionate traffic — a "hot partition") concentrates requests onto a
+small number of partitions and throttles despite the table having plenty of overall provisioned
+capacity. Source: [Amazon DynamoDB Developer Guide — Partitions and data
+distribution](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.Partitions.html).*
+A scenario describing throttling on a DynamoDB table that still has headroom in its *overall*
+provisioned/on-demand capacity is almost always a hot-partition key-design problem, not a capacity
+problem — the fix is redesigning the partition key (or adding a random suffix to spread a hot key
+across several logical partitions), not simply provisioning more throughput.
+
+## Real AWS Documentation Image: Redshift's Leader Node and Compute Node Architecture
+
+![AWS documentation diagram of Amazon Redshift's cluster architecture, showing a leader node coordinating query execution across multiple compute nodes, each with its own local storage slices](https://docs.aws.amazon.com/redshift/latest/gsg/images/architecture.png)
+
+*A Redshift cluster's leader node receives the SQL query, builds an execution plan, and
+distributes the work across compute nodes, each of which scans only its own local storage
+slices in parallel — this massively parallel processing (MPP) architecture is exactly why Redshift
+out-performs Athena for the "complex joins across curated, structured data at BI scale" use case
+named in the Task 3.3 section above: the data is pre-loaded and distributed deliberately across
+nodes ahead of query time, rather than scanned fresh from S3 per query. Source: [Amazon Redshift
+Getting Started Guide — Amazon Redshift
+architecture](https://docs.aws.amazon.com/redshift/latest/gsg/working-with-clusters.html).*
+
+## Real AWS Documentation Image: The Kinesis Data Streams Shard Model
+
+![AWS documentation diagram of Amazon Kinesis Data Streams showing producers writing to shards and consumers reading from them](https://docs.aws.amazon.com/images/streams/latest/dev/images/architecture.png)
+
+*Each shard provides a fixed throughput ceiling (1 MB/sec or 1,000 records/sec write; 2 MB/sec
+read) — this is the mechanism behind the "Kinesis Data Streams application is falling behind"
+exam scenario named above: records aren't lost outright when a shard is overwhelmed, but
+write-throttling and growing processing lag are the direct, predictable consequence of too few
+shards for the actual aggregate write rate. Source: [Amazon Kinesis Data Streams Developer Guide —
+Key concepts](https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html).*
+
+## Additional Worked Exam Scenarios
+
+**Scenario D — "The dashboard that got faster for 99% of queries but one query stayed slow."**
+After PixelForge's Parquet migration (described in the case study above), nearly every dashboard
+query runs in sub-second time, but one specific report — a full-history, all-time "lifetime
+revenue by customer" query — still takes 15 seconds. **Diagnosis:** that one query, by definition,
+can't benefit from date-based partition pruning the way the "top products this week" query does,
+because it genuinely needs to scan the entire history, not a narrow date range — partitioning
+helps queries that filter on the partition column, and this one structurally doesn't. **Fix:**
+recognize this as a different workload shape entirely — a scheduled, pre-aggregated summary table
+(maintained by a nightly Glue job, or moved to Redshift for genuinely complex, full-history
+analytical joins) is the right lever here, not more partitioning tricks on the existing table.
+
+**Scenario E — "Why did adding more EC2 instances not fix the slow checkout page?"** An e-commerce
+site's checkout page remains slow during a flash sale even after the Auto Scaling group doubles its
+instance count. **Diagnosis:** profiling shows the application tier itself has plenty of spare
+capacity — the actual bottleneck is the relational database being hit directly for every single
+page load's inventory-count check, and doubling the stateless app tier just means twice as many
+instances making the same database calls at the same rate, with no new caching layer absorbing any
+of it. **Fix:** this is a database/cache-layer problem, not a compute-layer one — adding
+ElastiCache in front of the inventory-count reads (with a short TTL appropriate for how stale an
+inventory count can tolerably be) addresses the actual bottleneck; more EC2 instances alone cannot.
+
+## Why This Domain Is the Highest-Weighted on the Exam
+
+At 24% of the exam, Domain 3 is tied for the largest single domain in SAA-C03 — a direct
+reflection of how much of real-world AWS architecture work is, fundamentally, performance
+engineering: picking the storage shape that matches the access pattern, picking the compute model
+and instance family that matches the actual bottleneck, layering a cache in front of a database
+before reaching for a bigger database, and getting a request onto AWS's own network as early in
+its journey as possible. A useful standard of readiness for this domain specifically: pick any of
+the 37 service/topic docs linked throughout this README at random, and verify you can state its
+one-sentence Definition, one concrete Use Case where it's clearly the right fit, and one scenario
+where it would be clearly the *wrong* fit — because nearly every Domain 3 exam question is built
+exactly that way, presenting a scenario and testing whether the right/wrong-fit line is drawn
+correctly.
+
 ## Hands-on Labs
 
-See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 5 labs
+See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 7 labs
 covering Kinesis ingestion, DynamoDB throughput modes, EC2/Auto Scaling mechanics, ElastiCache
-cache-aside, and a capstone data-pipeline lab chaining ingestion through to query.
+cache-aside, a capstone data-pipeline lab chaining ingestion through to query, simulated
+content-based routing with S3 prefixes, and local I/O benchmarking mapped to EBS volume types.
+
+## New Decision-Level Topic Docs (Cross-Cutting Deep Dives)
+
+Three subtopics that cut across multiple Task statements got their own dedicated, standalone
+deep-dive doc rather than being folded into a single service's page:
+
+| Doc | Cuts across | Covers |
+|---|---|---|
+| [`caching-strategy-deep-dive.md`](caching-strategy-deep-dive.md) | Task 3.3, 3.4 | Every caching layer in a real stack (browser, CloudFront, API Gateway, ElastiCache, DAX, engine-internal) and how they relate — cache-aside vs. read-through vs. write-through, TTL/invalidation design, DAX vs. ElastiCache. |
+| [`database-read-write-scaling-decision-tree.md`](database-read-write-scaling-decision-tree.md) | Task 3.3 | Diagnosing read-bound vs. write-bound vs. availability-bound database problems and routing to the correct fix — read replicas, Aurora Serverless v2, sharding, DynamoDB re-architecture, Multi-AZ (and why it's *not* a scaling feature). |
+| [`data-partitioning-and-sharding-patterns.md`](data-partitioning-and-sharding-patterns.md) | Task 3.1, 3.3, 3.5 | The single "pick a key, spread the load" idea as it appears differently in DynamoDB partitions, Kinesis shards, S3/Athena query-pruning partitions, and manual database sharding — plus the hot-key/hot-partition/hot-shard failure mode that's identical in spirit across all of them. |
+
+## One-File, Full-Depth Reference
+
+[`MASTER-CHUNK.md`](MASTER-CHUNK.md) covers every one of this domain's 34+ services and topics —
+EBS through VPC Endpoints & PrivateLink — in one self-contained file with a Definition, analogy,
+Purpose, When to Use/NOT to Use, Use Cases, a Mermaid diagram, a real curl-verified AWS
+documentation image, and Exam Tips for each, organized by the same five Task statements as this
+README. Use it to study the whole domain in one pass without tab-jumping between the 34+
+individual `services/<category>/*.md` files — those remain the deeper, more authoritative
+references each `MASTER-CHUNK.md` entry links back to.
 
 ## Where This Domain Connects
 

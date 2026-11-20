@@ -469,7 +469,244 @@ Before moving to Domain 2, make sure you can do all of the following without loo
 - [ ] Recognize when AI-assisted code generation/review is the pattern being tested (see
       [`ai-assisted-development.md`](ai-assisted-development.md)) vs. when it's a distractor.
 
+## Real AWS image: API Gateway's own architecture diagram
+
+![API Gateway architecture diagram](https://docs.aws.amazon.com/images/apigateway/latest/developerguide/images/Product-Page-Diagram_Amazon-API-Gateway-How-Works.png)
+
+*Source: [AWS API Gateway Developer Guide — What is Amazon API Gateway?](https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html)
+(curl-verified 200). Worth reading literally against the sequence diagram above: this shows the
+front door (API Gateway) sitting between "apps" on the left and a fan of backend targets on the
+right — Lambda, EC2, and "any web application" are all valid integration targets, not just
+Lambda. The exam likes to test that API Gateway is not Lambda-exclusive; a REST or HTTP API can
+just as easily proxy to an ALB fronting EC2/ECS, or to any publicly reachable HTTP endpoint via an
+HTTP_PROXY integration — the "serverless API" shape this domain emphasizes is the *common* case on
+the exam, not the *only* case API Gateway supports.*
+
+## Analogy bank: pinning down the abstractions with everyday comparisons
+
+Several Domain 1 concepts resist intuition the first time you meet them. These analogies are
+deliberately plain, because the exam rewards being able to re-derive the correct behavior under
+pressure, not recite a textbook definition:
+
+- **Synchronous vs. asynchronous Lambda invocation** is a phone call vs. a voicemail. A phone call
+  (synchronous — API Gateway, SDK `Invoke` with `RequestResponse`) means the caller is on the line
+  waiting; if you don't answer, *they* know immediately and must decide what to do. A voicemail
+  (asynchronous — S3, SNS, EventBridge) means the caller dropped a message and hung up; if you
+  never call back, nothing tells the caller anything is wrong — someone else has to notice the
+  voicemail was never returned (that's the DLQ/failure destination's job).
+- **Reserved vs. provisioned concurrency** is a reserved parking spot vs. a car already running in
+  that spot with the engine warm. A reserved spot (reserved concurrency) *guarantees* you a place
+  to park, but you still have to walk up, get in, and start the engine (a cold start) every time. A
+  pre-warmed car (provisioned concurrency) is already idling — you just get in and drive, no
+  startup delay, but it costs money to keep the engine running even when nobody's using it.
+- **Eventually consistent vs. strongly consistent DynamoDB reads** is asking a local branch
+  manager vs. calling headquarters directly. The local branch (eventually consistent, cheaper,
+  faster) usually has the right answer but might be a beat behind on the very latest update that
+  hasn't propagated down yet. Headquarters (strongly consistent, costs double) always has the
+  absolute latest truth, because you're asking the source of record directly, at the cost of
+  always making the longer call.
+- **An idempotency key** is the claim-ticket number at a dry cleaner. Handing over the same ticket
+  twice doesn't get you two sets of cleaned clothes — the clerk recognizes the ticket number and
+  hands you the *same* order, whether you ask once or five times.
+- **A Lambda layer** is a shared toolbox kept in a common supply closet instead of every worker
+  carrying their own duplicate set of tools. Update the toolbox once; every worker who checks it
+  out next gets the new version, without you having to visit each worker individually.
+
+## Worked exam scenario: debugging a 502 with SDK/CLI evidence, step by step
+
+A Lambda function behind API Gateway returns a 502 to clients even though CloudWatch Logs show the
+function completing without an unhandled exception. Here's the actual investigation sequence a
+developer (and the exam) expects:
+
+```bash
+# 1. Confirm the function itself isn't erroring at the Lambda level (this rules out a crash)
+aws lambda invoke --function-name OrdersHandler --payload '{"queryStringParameters":{"userId":"u1"}}' \
+  --cli-binary-format raw-in-base64-out out.json
+cat out.json
+```
+
+```json
+// The function's own returned payload, inspected directly — this is the smoking gun
+{"statusCode": 200, "body": {"orderId": "abc-123", "item": "widget"}}
+```
+
+The bug is visible immediately once you look at the raw returned object: `body` is a JSON
+**object**, not a JSON **string** — exactly the Lambda proxy integration trap called out earlier
+in this doc. API Gateway's proxy integration requires `body` to already be a serialized string;
+handed an object instead, it can't build a valid HTTP response and returns a 502 to the client,
+while the function itself logs a totally clean, successful completion — which is exactly why
+checking CloudWatch Logs alone misses this bug; you have to inspect the *returned payload shape*,
+not just whether an exception was thrown.
+
+```python
+# The fix — one line, but it's the entire bug
+import json
+
+def handler(event, context):
+    result = {"orderId": "abc-123", "item": "widget"}
+    return {
+        "statusCode": 200,
+        "body": json.dumps(result),   # <-- must be a string, not the raw dict
+    }
+```
+
+```bash
+# 2. Re-invoke directly to confirm the fix before even touching API Gateway
+aws lambda invoke --function-name OrdersHandler --payload '{"queryStringParameters":{"userId":"u1"}}' \
+  --cli-binary-format raw-in-base64-out out2.json && cat out2.json
+# Expect: {"statusCode": 200, "body": "{\"orderId\": \"abc-123\", \"item\": \"widget\"}"}
+
+# 3. Only now call it through the actual API Gateway stage, confirming the whole path end to end
+curl -s -o /dev/null -w "%{http_code}\n" https://abc123.execute-api.us-east-1.amazonaws.com/prod/orders?userId=u1
+# Expect: 200
+```
+
+The methodology matters as much as the fix: **invoke Lambda directly first** to isolate whether the
+bug is in the function or in API Gateway's handling of the function's response, *then* test through
+the full stage URL — collapsing straight to "call the API and see what happens" obscures exactly
+which layer introduced the defect, and the exam's troubleshooting-flavored questions reward
+candidates who know to peel the stack apart one layer at a time.
+
+## Worked exam scenario: choosing between SNS, SQS, and EventBridge with CLI evidence
+
+A scenario gives three requirements and asks which messaging service fits each — a classic Domain 1
+"same category, different right answer per requirement" pattern:
+
+**Requirement A** — "every one of five independent downstream systems must receive every order
+event, and we need to add new independent subscribers over time without touching existing code."
+
+```bash
+# SNS fan-out: publish once, every subscriber gets its own independent copy
+aws sns publish --topic-arn arn:aws:sns:us-east-1:123456789012:order-events \
+  --message '{"orderId":"abc-123","status":"placed"}'
+# Each of the 5 subscribed SQS queues now independently holds its own copy of this one message —
+# adding a 6th subscriber later requires zero changes to the publisher or the other 5 subscribers.
+```
+
+**Requirement B** — "a single downstream worker fleet must process each order exactly once, and the
+fleet should be able to scale workers up/down based on backlog depth."
+
+```bash
+# SQS: one logical queue, many competing consumers, each message consumed once
+aws sqs send-message --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/order-processing \
+  --message-body '{"orderId":"abc-123","status":"placed"}'
+# Any number of worker processes can poll this one queue; AWS-managed or self-managed auto scaling
+# can key off ApproximateNumberOfMessagesVisible to add/remove workers.
+```
+
+**Requirement C** — "route order events differently depending on their *content* (high-value orders
+to a fraud-check pipeline, everything else to standard fulfillment), without each subscriber
+re-implementing the same filtering logic."
+
+```bash
+# EventBridge: content-based routing via rules, not a single blanket fan-out
+aws events put-rule --name high-value-orders \
+  --event-pattern '{"source":["orders"],"detail":{"amount":[{"numeric":[">","1000"]}]}}'
+aws events put-targets --rule high-value-orders \
+  --targets "Id"="1","Arn"="arn:aws:lambda:us-east-1:123456789012:function:FraudCheck"
+```
+
+The pattern underneath all three: **SNS fans the same message out to every subscriber** (good for
+"everyone needs a copy"), **SQS lets many workers compete for one message each** (good for "process
+once, scale the workforce"), and **EventBridge routes based on event content via rules** (good for
+"different events should go different places, decided by what's *in* the event, not just who's
+subscribed"). A scenario that emphasizes content-based routing virtually always points at
+EventBridge over a blanket SNS fan-out, even though both can technically reach multiple targets.
+
+## Full worked case study #2: a media-processing pipeline with mixed invocation models
+
+**Requirement.** A video-sharing platform needs to generate thumbnails and a transcript for every
+uploaded video, notify the uploader when processing finishes, and guarantee that a transient
+transcription-service outage never silently loses a video — while keeping the user-facing upload
+response fast (under 2 seconds) regardless of how long the actual processing takes.
+
+```mermaid
+flowchart TD
+    U[User uploads video] -->|PUT, returns 200 immediately| S3[S3 Bucket: raw-uploads]
+    S3 -->|s3:ObjectCreated, async| EB[EventBridge]
+    EB -->|rule: generate thumbnail| L1[Lambda: GenerateThumbnail]
+    EB -->|rule: start transcription| SF[Step Functions: TranscriptionWorkflow]
+    SF -->|Task with Retry/Catch| L2[Lambda: CallTranscriptionAPI]
+    L2 -->|on exhausted retries| DLQ[(SQS DLQ: transcription-failures)]
+    L1 -->|success| DDB[(DynamoDB: VideoStatus table,\nconditional UpdateItem)]
+    SF -->|success| DDB
+    DDB -->|DynamoDB Stream| L3[Lambda: NotifyUploader]
+    L3 --> SNS[SNS: push notification]
+```
+
+**Why each choice:**
+- **The upload response returns immediately** because `S3 PutObject` itself is synchronous and fast
+  — none of the actual processing blocks the HTTP response the uploader sees; everything after the
+  upload is event-driven and asynchronous, satisfying the "under 2 seconds" requirement by
+  construction rather than by optimizing slow work.
+- **EventBridge, not a direct S3-to-Lambda trigger, fans the one upload event out to two
+  independent consumers** (thumbnail generation and transcription) — exactly the Task 1.1
+  decoupling pattern from the README's first case study, reused here for a second, unrelated
+  reason (two genuinely different pieces of work, not retry-of-the-same-work).
+- **Step Functions orchestrates transcription specifically because it has distinct retry/catch
+  semantics worth expressing declaratively** (see
+  [`idempotency-and-retry-patterns.md`](idempotency-and-retry-patterns.md#worked-exam-scenario-step-functions-retrycatch-on-a-side-effecting-task))
+  — a transient transcription-API hiccup retries automatically with backoff; a definitive "this
+  codec isn't supported" error should route straight to the DLQ without wasting retries.
+- **DynamoDB conditional `UpdateItem`, not a blind write**, records each stage's completion — so a
+  duplicate EventBridge delivery (at-least-once, like every AWS event bus) doesn't double-count a
+  stage as "done twice" or race against a later stage's write.
+- **A DynamoDB Stream, not a direct Lambda call from the processing functions, triggers the
+  notification** — decoupling "record that this stage finished" from "tell the user about it" means
+  a notification-delivery bug (SNS misconfiguration, say) can never prevent the actual status record
+  from being written correctly; the two concerns fail independently instead of one masking the other.
+
+## Full worked case study #3: a third-party integration calling your API with least-privilege cross-account access
+
+**Requirement.** A SaaS partner needs read-only access to call your `GET /metrics` endpoint on
+behalf of multiple customers, without any of them ever receiving a long-lived AWS access key, and
+without one customer's compromised partner integration being usable to access a different
+customer's data.
+
+```mermaid
+sequenceDiagram
+    participant Partner as Partner's backend
+    participant STS as Your account's STS
+    participant Role as MetricsReaderRole (your account)
+    participant APIGW as API Gateway
+
+    Partner->>STS: AssumeRole(RoleArn=MetricsReaderRole, ExternalId=customer-9f82-unique-id)
+    STS->>Role: Check trust policy: sts:ExternalId must equal customer-9f82-unique-id
+    Role-->>STS: Match — issue temporary credentials (max 1 hour)
+    STS-->>Partner: AccessKeyId, SecretAccessKey, SessionToken
+    Partner->>APIGW: SigV4-signed GET /metrics, using temporary credentials
+    APIGW->>APIGW: Validate signature against IAM, check MetricsReaderRole's permissions policy
+    APIGW-->>Partner: 200, metrics payload (read-only scope enforced)
+```
+
+**Why each choice:** this reuses the [STS & role-switching cross-account pattern](../../../services/security-identity-compliance/sts-and-role-switching.md)
+directly — `ExternalId` is unique **per customer**, so a leaked set of temporary credentials from
+one customer's integration cannot be replayed to assume the role under a *different* customer's
+`ExternalId`, and even if it could, the credentials expire within the hour regardless. API Gateway
+with IAM authorization (`aws_iam` authorizer type), not an API key or a custom Lambda authorizer,
+is the right choice here specifically *because* the caller is already an AWS principal (the
+assumed role) — reusing SigV4 signing means no separate secret-distribution problem is created on
+top of the one STS already solved.
+
 ## Labs
 
 See [`labs.md`](labs.md) for hands-on Floci exercises covering this domain — now including the
 idempotent-write and event-source-mapping patterns from the case study above.
+
+## Deep-dive companion docs
+
+Three subtopics in this domain are substantial enough to warrant their own standalone files,
+cross-linked from the relevant sections above:
+
+- [`idempotency-and-retry-patterns.md`](idempotency-and-retry-patterns.md) — the full mechanics of
+  idempotency keys, conditional writes, and backoff-with-jitter, expanding the flash-sale case
+  study's retry handling into a general-purpose reference.
+- [`aws-sdk-credential-resolution-chain.md`](aws-sdk-credential-resolution-chain.md) — exactly
+  where an SDK call's credentials come from in each compute environment (Lambda, EC2, ECS, local
+  dev), expanding the request-flow diagram's "Lambda assumes its execution role" step.
+- [`lambda-event-source-mapping-deep-dive.md`](lambda-event-source-mapping-deep-dive.md) — the
+  poll-based invocation model (Kinesis/DynamoDB Streams/SQS) in full depth, including
+  `ReportBatchItemFailures`, scaling behavior, and visibility-timeout tuning.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — a single self-contained reference covering every one of
+  this domain's 24+ services (definition, analogy, use cases, diagram, image, code, exam tips),
+  useful as a last-pass review file that doesn't require following cross-links into `services/`.

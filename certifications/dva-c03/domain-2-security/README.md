@@ -310,6 +310,9 @@ app type / requirement / implementation decision spelled out:
 
 ## IAM policy evaluation, precisely
 
+![IAM policy evaluation flow chart for a role within a single account, showing Deny checks followed by permission-boundary/SCP ceiling checks followed by an identity/resource-policy union check.](https://docs.aws.amazon.com/IAM/latest/UserGuide/images/PolicyEvaluationSingleAccountRole.png)
+*Source: [AWS Documentation — IAM policy evaluation logic](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html). This is the official version of the flowchart below — read it top to bottom exactly once before memorizing the three-rule summary, because the official chart shows the ceiling checks (SCP, permission boundary) as separate steps BEFORE the Allow/Deny check, which the three-rule summary compresses.*
+
 Task 2.1 assumes you can reason about what a *combination* of policies actually allows, not just
 read a single policy document. The evaluation logic the exam tests:
 
@@ -441,6 +444,254 @@ publicly trusted certificate would be unnecessary (and sometimes undesirable, si
 log issued certificate hostnames to public transparency logs, which can leak internal naming).
 A scenario mentioning "internal-only hostnames that should never appear in a public certificate
 transparency log" is pointing at Private CA specifically, not regular ACM.
+
+## Deep-dive topic docs (this folder)
+
+Three sub-topics kept getting flattened into one paragraph each above — they're thin enough on
+their own to deserve a standalone doc, and each is its own common exam-question cluster:
+
+| Doc | What it covers that the sections above only summarize |
+|---|---|
+| [`iam-policy-evaluation-logic.md`](iam-policy-evaluation-logic.md) | The full evaluation algorithm including SCPs, RCPs, permission boundaries, and session policies as four *different* ceilings — and the subtle identity-vs-resource-policy precedence rule that depends on principal type |
+| [`securing-lambda-environment-variables-and-secrets.md`](securing-lambda-environment-variables-and-secrets.md) | The two separate encryption layers Lambda env vars get (at-rest vs. in-transit helpers), why they're still not enough for real secrets, and the exact IAM+KMS grants a function's execution role needs to read a Secrets-Manager-stored value |
+| [`prompt-injection-and-genai-security-deep-dive.md`](prompt-injection-and-genai-security-deep-dive.md) | Direct vs. indirect prompt injection, why it's structurally unlike SQL injection, the six-layer defense-in-depth stack, and three worked attack scenarios |
+
+## More worked IAM policy examples
+
+The "looks permissive but isn't" pattern from earlier is one of three IAM-reasoning shapes the
+exam repeats with different services. Here are the other two, each paired with the question it's
+actually testing:
+
+```json
+// Shape 2: a permission boundary that silently caps a much broader identity policy.
+// The ROLE's own policy (not shown) grants full S3 access — but this boundary, attached
+// separately, means the role's EFFECTIVE permission is only ever the intersection of the two.
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:ListBucket"],
+    "Resource": "arn:aws:s3:::team-reports-bucket/*"
+  }]
+}
+```
+Exam angle: a question showing a role's identity policy with broad `s3:*` access, then separately
+mentioning "a permission boundary is also attached," and asking what the role can *actually* do —
+the answer is always the intersection, i.e. whatever this second, narrower document allows, no
+matter how broad the first one looks. See
+[`iam-policy-evaluation-logic.md#permission-boundaries-vs-scps-vs-rcps-vs-session-policies-four-ceilings-four-different-scopes`](iam-policy-evaluation-logic.md#permission-boundaries-vs-scps-vs-rcps-vs-session-policies-four-ceilings-four-different-scopes)
+for how this differs from an SCP doing a similar-looking job at a different scope.
+
+```json
+// Shape 3: condition keys that make an otherwise-broad Allow effectively scoped.
+// Grants DynamoDB access to ANY table — but only when the call carries a matching tag,
+// a common pattern for tag-based multi-tenant or multi-team access control.
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+    "Resource": "arn:aws:dynamodb:us-east-1:111122223333:table/*",
+    "Condition": {
+      "StringEquals": { "aws:ResourceTag/team": "${aws:PrincipalTag/team}" }
+    }
+  }]
+}
+```
+Exam angle: this is a *variable-driven* condition (`${aws:PrincipalTag/team}`), not a fixed value —
+the same policy document grants different effective access depending on who's using it, which is
+how a single reusable IAM policy can enforce "each team can only touch its own tagged tables"
+without writing one policy per team. Recognizing `${...}` policy variables is a specific, testable
+exam skill distinct from reading a fixed `Resource` ARN.
+
+## Encryption in transit vs. at rest, one more worked walkthrough
+
+A single request often needs *both* kinds of encryption, and the exam likes scenarios that ask you
+to identify which one a described gap is actually about:
+
+```mermaid
+sequenceDiagram
+    participant Client as Mobile client
+    participant CF as CloudFront (ACM cert)
+    participant APIGW as API Gateway
+    participant L as Lambda
+    participant KMS as KMS
+    participant DDB as DynamoDB
+
+    Client->>CF: HTTPS request (TLS via ACM-issued cert) — ENCRYPTION IN TRANSIT, hop 1
+    CF->>APIGW: HTTPS (re-encrypted) — ENCRYPTION IN TRANSIT, hop 2
+    APIGW->>L: Invoke (AWS-internal, always encrypted)
+    L->>KMS: GenerateDataKey — gets plaintext + encrypted data key
+    L->>L: Encrypt payload locally with plaintext data key — ENCRYPTION AT REST, prep step
+    L->>DDB: Write ciphertext + encrypted data key — ENCRYPTION AT REST, stored
+    DDB-->>L: Ack
+```
+
+Two gaps that produce two different symptoms, and two different fixes:
+- **A gap in encryption *in transit*** shows up as "data was intercepted on the wire between two
+  hops" — fixed with TLS everywhere (ACM certs on every public-facing hop; re-encryption at any
+  point where traffic would otherwise drop to plaintext internally, like a load balancer
+  configured for TLS passthrough vs. termination).
+- **A gap in encryption *at rest*** shows up as "data was readable directly from the storage layer
+  (a DynamoDB table export, an S3 object, an EBS snapshot) without going through the application
+  at all" — fixed with KMS-backed encryption at rest on the storage service itself, independent of
+  how well-encrypted the traffic getting there was.
+A question describing "an attacker who got read access to the underlying storage, not through the
+API, still couldn't read the data" is testing at-rest encryption; a question about "data sniffed
+on the network between two services" is testing in-transit encryption — conflating the two is the
+most common wrong-answer trap on this pairing.
+
+## Analogy recap: the whole domain in one metaphor
+
+If you only remember one mental model for all of Domain 2, use this: **every control in this
+domain is either a bouncer (decides who gets in) or a safe (protects what's already inside).**
+IAM, STS, Cognito, IAM Identity Center, SCPs, Guardrails' access-control angle, and VPC
+endpoints/PrivateLink are all bouncers — they decide *whether a request happens at all*. KMS,
+Secrets Manager, Parameter Store, ACM/Private CA, and Macie (a bouncer that also audits the safe
+after the fact) are all safes — they protect *the data itself*, assuming a request already got
+past the bouncer. GuardDuty, Security Hub, and Inspector are the security cameras watching both —
+detecting when a bouncer or a safe failed, after the fact, rather than preventing anything
+directly. When a scenario question stumps you, first classify which of the three roles
+(bouncer/safe/camera) it's describing — it immediately narrows which few services could possibly
+be the right answer.
+
+## Organizations/SCP guardrails, with the official reference image
+
+![Diagram of the security services configured in an Organizations Management account, showing AWS Organizations, Control Tower, and the SCP-enforcement layer sitting above every member account.](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/images/guide-img/91d313fc-d5f1-45a8-a5a6-2f4fc7abc93a/images/20032423-a649-4f28-8127-9c1e71793b9d.png)
+*Source: [AWS Documentation — AWS Security Reference Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/welcome.html). The management account sits structurally above every member account in the org — SCPs attached here (or at an OU) apply down the tree to every account below, which is exactly why "even an administrator in a member account can't override it" is true: the administrator's permissions are scoped to their own account, while the SCP is enforced one layer above where any account-level identity policy could possibly reach.*
+
+This picture is the structural reason SCPs behave the way
+[`iam-policy-evaluation-logic.md`](iam-policy-evaluation-logic.md) describes: they're not another
+IAM policy living *alongside* a role's permissions, they're enforced from an entirely separate
+layer of the account hierarchy that no in-account identity can modify (only someone with access to
+the *management account itself* can change an SCP). A scenario describing "a company wants a
+guardrail that developers in member accounts cannot work around even with full admin rights in
+their own account" is describing exactly this structural separation.
+
+## IAM Identity Center vs. Cognito, with the structural reason they're different services
+
+![Diagram showing AD Connector establishing a two-way trust between on-premises Active Directory and IAM Identity Center, synchronizing identities without caching them in the cloud.](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture-identity-management/images/guide-img/1bf8562a-50f2-4dfa-9a24-c4edfe7b936c/images/5e7d04d3-d2bb-4040-a207-4545ab07abed.png)
+*Source: [AWS Documentation — AWS Security Reference Architecture, Identity Management](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture-identity-management/welcome.html). This is IAM Identity Center's actual job: brokering a workforce's existing corporate identity (often Active Directory) into AWS account/console access — structurally nothing like Cognito, which has no concept of "on-premises directory sync" at all because it's solving a completely different problem.*
+
+The repeated exam confusion between these two services dissolves once you see what each one is
+*actually plugged into*: **Cognito plugs into your application** (sign-up forms, social login
+buttons, your own user pool) because its job is authenticating *your product's customers*.
+**IAM Identity Center plugs into your organization's existing workforce directory** (Active
+Directory via AD Connector, as pictured, or an external IdP via SAML/SCIM) because its job is
+giving *your employees* console/CLI access across many AWS accounts without a separate IAM user
+per account. Neither service can substitute for the other because they're solving different sides
+of "who is this human" — a customer vs. an employee — and that distinction, not a feature
+checklist, is what the exam is actually testing when it asks you to pick one.
+
+## Security Hub, GuardDuty, and Inspector — detective controls, visualized together
+
+![Diagram illustrating AWS security services configured in a centralized Security Tooling account, including Security Hub, GuardDuty, Inspector, and Macie as delegated-administered services.](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/images/guide-img/91d313fc-d5f1-45a8-a5a6-2f4fc7abc93a/images/f8a9de61-8b84-410c-8ffc-d3935eb7f5b3.png)
+*Source: [AWS Documentation — AWS Security Reference Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/welcome.html). All four detective services are delegated to ONE centralized Security Tooling account — the exam's recurring "where should a security team look to see findings across every account in the org" answer is always this pattern, not "check each account individually."*
+
+```mermaid
+flowchart LR
+    subgraph ACCOUNTS["Member accounts"]
+        EC2[EC2 instances] --> INS[Inspector: vulnerability scanning]
+        LOGS[VPC Flow Logs, DNS logs,\nCloudTrail] --> GD[GuardDuty: threat detection]
+        S3B[S3 buckets] --> MAC[Macie: sensitive-data discovery]
+    end
+    INS -->|findings| SH[Security Hub: aggregated,\nnormalized findings + compliance checks]
+    GD -->|findings| SH
+    MAC -->|findings| SH
+    SH -->|single pane of glass| SECTEAM[Centralized security team,\none delegated admin account]
+```
+
+Each service answers a different question, and the exam tests whether you can match symptom to
+service: **Inspector** asks "does this EC2/ECR/Lambda artifact have a *known* vulnerability"
+(continuous, automated vulnerability scanning against CVE databases). **GuardDuty** asks "does
+this *account's activity* look like an attack in progress" (anomaly/threat detection from
+CloudTrail, VPC Flow Logs, DNS logs — no agent required). **Macie** asks "is there sensitive data
+sitting somewhere in S3 that shouldn't be there" (data-classification scanning). **Security Hub**
+doesn't generate its own findings for any of these — it's the aggregation/normalization layer that
+collects all three (plus others) into one dashboard and maps them against compliance standards
+(CIS, PCI-DSS, etc.). A question asking "which single service gives a consolidated compliance
+posture view across GuardDuty, Inspector, and Macie findings" is always Security Hub; a question
+asking "which service found this specific unpatched package" is Inspector, never Security Hub
+directly.
+
+## Worked scenario: picking the right control from a one-line symptom
+
+A compressed drill for exam day — each line is a realistic one-sentence prompt, answered in one
+line, with the reasoning that gets you there fast:
+
+- *"Unusual API call pattern suggesting compromised credentials"* → **GuardDuty** (anomaly
+  detection on account activity, not a vulnerability or a content issue).
+- *"An EC2 instance is running a package with a known CVE"* → **Inspector** (vulnerability
+  scanning against known CVEs, not anomalous behavior).
+- *"A data lake S3 bucket may contain unredacted SSNs from an old migration"* → **Macie**
+  (sensitive-data discovery/classification, a one-time or ongoing scan, not real-time threat
+  detection).
+- *"Need one dashboard showing compliance posture against CIS benchmarks across 40 accounts"* →
+  **Security Hub** (aggregation + compliance-standard mapping, not a detection engine itself).
+- *"A Lambda's permissions look fine but a call to a customer-managed KMS key still fails"* →
+  check the **KMS key policy** specifically — see
+  [`iam-policy-evaluation-logic.md`](iam-policy-evaluation-logic.md) for why IAM policy alone is
+  never sufficient for this one resource type.
+- *"A secret needs to rotate automatically with zero app downtime during rotation"* → **Secrets
+  Manager** (native rotation with staged version labels), never Parameter Store.
+- *"A chatbot's underlying role has `bedrock:*` on `Resource: *`"* → scope to specific model
+  ARNs; see [`ai-service-security-risks.md`](ai-service-security-risks.md#access-control-for-ai-services).
+- *"A support ticket's text seems to have changed a RAG chatbot's behavior for an unrelated user"*
+  → indirect prompt injection; see
+  [`prompt-injection-and-genai-security-deep-dive.md`](prompt-injection-and-genai-security-deep-dive.md#direct-vs-indirect-prompt-injection).
+
+## WAF and Shield, visualized as layered perimeter defense
+
+![Diagram showing users connecting to Route 53 and CloudFront, both protected by Shield Advanced, with CloudFront forwarding requests through AWS WAF to a load balancer and EC2 origin.](https://docs.aws.amazon.com/waf/latest/developerguide/images/shield-resilient-web-app-arch.png)
+*Source: [AWS Documentation — AWS Shield resilient web application architecture](https://docs.aws.amazon.com/waf/latest/developerguide/ddos-attack-protection-availability.html). Notice WAF sits INSIDE the perimeter Shield already protects — they're not alternatives, they're stacked: Shield absorbs volumetric/network-layer DDoS before traffic reaches the app, WAF then inspects the traffic that got through for malicious request *content* (SQLi, XSS, bad bot signatures).*
+
+```mermaid
+flowchart LR
+    ATTACKER[Attacker: volumetric DDoS] -.absorbed at the edge.-> SHIELD[AWS Shield Standard\nfree, automatic, always on]
+    ATTACKER2[Attacker: SQLi/XSS payloads,\napplication-layer floods] --> WAF[AWS WAF: Web ACL\nrule-based request inspection]
+    SHIELD --> CF[CloudFront / Route 53 / ALB]
+    CF --> WAF
+    WAF -->|clean requests only| ORIGIN[Origin: ALB → EC2/ECS,\nor API Gateway → Lambda]
+    SHIELDADV[Shield Advanced: paid tier] -.adds.-> DRT[24/7 DDoS Response Team\n+ cost protection for scaling during an attack]
+```
+
+The exam-relevant layering: **Shield Standard is free and automatic for every AWS customer**,
+protecting against the most common network/transport-layer (layer 3/4) DDoS patterns with zero
+configuration. **Shield Advanced** is a paid tier adding larger-scale attack protection, a 24/7
+Shield Response Team you can escalate to, and — notably for a cost-optimization-flavored question —
+**cost protection**, crediting scaling charges incurred specifically because of a DDoS event.
+**WAF operates one layer up**, at layer 7 (the actual HTTP request content), with rules you write
+or import from AWS Managed Rules (common SQLi/XSS/bot patterns) — it's what catches a request that
+*looks* legitimate at the network level but carries a malicious payload. A scenario combining
+"stop a volumetric UDP flood" with "also block SQL injection attempts in query parameters" is
+asking for *both* services together, not an either/or choice.
+
+## Encryption key hierarchy, the KMS picture the envelope-encryption diagram assumes
+
+![Envelope encryption diagram showing a root key encrypting key-encryption keys, which in turn encrypt data keys, which encrypt the actual data.](https://docs.aws.amazon.com/kms/latest/developerguide/images/key-hierarchy-root.png)
+*Source: [AWS Documentation — AWS KMS cryptographic details](https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html). This is what's happening ABOVE the `GenerateDataKey` call in the envelope-encryption sequence diagram earlier in this doc — KMS's own root keys never leave AWS's HSMs, and every layer below them exists so that your application only ever has to handle one small data key per encryption operation, never a root key.*
+
+Three tiers, each existing specifically so the tier below it can be rotated/regenerated without
+re-encrypting everything above: **root keys** (inside AWS's HSMs, never exported, never directly
+used to encrypt your data), **key-encryption keys / your KMS keys (CMKs)** (what you actually
+create, reference by ARN, and set a key policy on), and **data keys** (generated per
+encryption operation via `GenerateDataKey`, used locally, then discarded plaintext — the envelope
+mechanism from earlier). When a question asks "why does KMS automatic key rotation not require
+re-encrypting all existing data," the answer lives in this hierarchy: rotating a CMK's backing
+key material only changes how *future* data keys get wrapped — previously encrypted data keys
+remain decryptable because KMS retains old key material versions internally for exactly this
+reason.
+
+## Macie's role in the encryption story: finding what should have been encrypted all along
+
+Macie doesn't encrypt anything — worth stating plainly, since its placement next to KMS/Secrets
+Manager in Task 2.2 can make it feel like a preventive control. It's the audit step that answers
+"did any unencrypted/unmasked sensitive data already land somewhere it shouldn't have," which is a
+fundamentally different question than "is new data being encrypted going forward." A scenario
+combining both — "ensure new uploads are encrypted AND find out if old ones already leaked PII" —
+needs **both** a preventive control (bucket policy requiring `s3:x-amz-server-side-encryption`, or
+default bucket encryption) **and** Macie as the detective control for data that's already there;
+picking only one half of that pairing is a common distractor-answer trap.
 
 ## Labs
 

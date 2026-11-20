@@ -32,6 +32,61 @@ the scenario explicitly asks for something even admins can't override, which mea
 instead of Parameter Store). Train yourself to ask "is this an identity problem, a network
 problem, or a data problem?" before looking at the answer choices.
 
+## Plain-English Analogies for Every Task Statement
+
+Before the service tables, here's the whole domain explained the way you'd explain it to someone
+who has never touched AWS — because if you can't explain *why* a control exists in plain words,
+you'll mis-recognize it in a scenario question dressed up in unfamiliar wording.
+
+- **IAM is a company's badge system.** Everyone gets a badge (identity) that opens specific doors
+  (permissions) — the mailroom intern's badge doesn't open the server room, and that's not an
+  insult, it's the design. A *role* is a visitor badge: it works for exactly as long as the visit
+  lasts and is handed back at the front desk (STS) when the visit ends, rather than being a
+  permanent badge someone keeps in a drawer forever.
+- **IAM Identity Center is the single front desk for a company with 40 buildings (AWS accounts).**
+  Instead of getting a separate badge made at each building's own desk (an IAM user per account),
+  you check in once at the company's central lobby, and the lobby system hands you a temporary,
+  building-specific badge for exactly the buildings you're cleared to enter that day.
+- **SCPs are the building's fire code, not a company policy.** A company policy (IAM) can be
+  rewritten by a department head. The fire code (SCP) is set by the city and applies to *every*
+  department head in the building, including the CEO, no matter what internal policy they'd prefer
+  — this is why SCPs can restrict even an account's own administrators.
+- **A VPC is an empty plot of land you bought inside a city AWS runs.** You decide where the
+  fences go (subnets), which gates lead to the public street (Internet Gateway), and which rooms
+  are reachable from which other rooms (security groups) — AWS supplies the land, roads, and
+  utilities, but the internal layout is entirely yours to secure or misconfigure.
+- **Security groups are a "guest list" at a locked door; NACLs are a security checkpoint at the
+  parking garage entrance.** The guest list (security group) remembers that if it let you in, it
+  automatically lets your reply out — it tracks the conversation. The parking garage checkpoint
+  (NACL) checks ID on the way in *and separately* on the way out, with no memory of who it already
+  waved through; forget to register the exit lane and cars get stuck inside, which is exactly the
+  stateless-ephemeral-port trap this domain tests relentlessly.
+- **Shield is a seawall; WAF is a bouncer checking IDs at the door.** The seawall (Shield) holds
+  back an overwhelming flood of water (a volumetric DDoS) regardless of what's in the water. The
+  bouncer (WAF) doesn't care about flood volume at all — they're reading each individual guest's ID
+  (HTTP request) for a fake name (SQL injection) or a banned-list match, one request at a time.
+- **KMS is a locked safe that a security guard opens for you only if your badge matches.** You never
+  take the safe home — you hand the guard your item, show your badge, and the guard (KMS, which
+  never exposes the raw key material) does the lock/unlock operation on your behalf, logging every
+  single time it happened.
+- **ACM is a subscription to an auto-renewing passport service.** As long as you stay subscribed
+  (DNS validation configured) the passport (TLS certificate) renews itself before it expires,
+  invisibly. An imported certificate is like a passport you photocopied from a friend — valid, but
+  nobody auto-renews a photocopy; you're on your own to notice it's expiring.
+- **GuardDuty is a security camera with AI; Macie is a camera that specifically recognizes
+  sensitive documents.** GuardDuty watches *behavior* (an unfamiliar pattern of access, traffic to
+  a known bad IP). Macie watches *content* (did a sensitive file — a passport scan, a credit card
+  number — just appear somewhere it shouldn't be).
+- **AWS Backup is hiring one facilities manager instead of five separate safe-combination
+  schedules.** Every department (EC2, RDS, DynamoDB) used to run its own backup schedule with its
+  own combination; AWS Backup is one manager who sets one combination policy across every
+  department and can produce one report proving it to an auditor.
+- **Secrets Manager vs. Parameter Store is a bank's safety-deposit box service vs. your own home
+  safe.** The home safe (Parameter Store) is free and fine for most things, but nobody automatically
+  changes its combination for you. The bank's managed box (Secrets Manager) costs a monthly fee,
+  but the bank staff swap the combination on a schedule, test the new one works, and only then
+  discard the old one — without ever locking you out mid-swap.
+
 ## Task 1.1 — Design secure access to AWS resources
 
 > IAM, IAM Identity Center/SSO, federated access, multi-account strategy, least privilege, MFA,
@@ -45,6 +100,7 @@ problem, or a data problem?" before looking at the answer choices.
 | Service Control Policies (SCPs), AWS Organizations | [`services/security-identity-compliance/organizations-and-scps.md`](../../../services/security-identity-compliance/organizations-and-scps.md) |
 | Multi-account strategy & Control Tower landing zone *(new — decision-level topic, no single-service home)* | [`multi-account-security-strategy.md`](multi-account-security-strategy.md) |
 | Control Tower (full service deep-dive) & AWS Service Catalog (self-service account/resource provisioning) | [`services/management-governance/additional-governance-services.md`](../../../services/management-governance/additional-governance-services.md) |
+| IAM policy evaluation logic — explicit deny, SCPs, boundaries, session policies, ABAC *(new — decision-level deep dive)* | [`iam-policy-evaluation-logic-deep-dive.md`](iam-policy-evaluation-logic-deep-dive.md) |
 
 Task 1.1 is really one idea repeated at three scales: **a human (or workload) should hold the
 minimum permission needed, for the minimum time needed, and prove who they are before they get
@@ -114,6 +170,8 @@ for these plus **RAM**, **Artifact**, and **Audit Manager** on the compliance si
 | S3 storage classes & lifecycle policies | [`services/storage/s3-storage-classes.md`](../../../services/storage/s3-storage-classes.md) |
 | S3 fundamentals (versioning, replication) | [`services/storage/s3.md`](../../../services/storage/s3.md) |
 | Lake Formation (row/column/tag-based access control over a data lake, on top of the Glue Data Catalog) | [`services/analytics/lake-formation.md`](../../../services/analytics/lake-formation.md) |
+| Encryption key hierarchy & rotation strategy — KMS, ACM, Secrets Manager as one system *(new — decision-level deep dive)* | [`encryption-key-hierarchy-and-rotation-strategy.md`](encryption-key-hierarchy-and-rotation-strategy.md) |
+| Data classification & governance strategy — Macie discovery feeding Lake Formation access control *(new — decision-level deep dive)* | [`data-classification-and-governance-strategy.md`](data-classification-and-governance-strategy.md) |
 
 Task 1.3 is the "data at rest vs. data in transit" split, plus the operational half of each:
 **KMS** handles at-rest encryption and (critically for the exam) *automatic annual key rotation*
@@ -283,6 +341,132 @@ must survive every hop and every copy* — the TLS certificate protects the wire
 protects the disk, and both the cross-Region backup copy and the lifecycle-tiered Glacier copy
 must remain encrypted too, or the weakest copy becomes the actual exposure.
 
+## Architecture: Envelope Encryption — What KMS Actually Does Under the Hood
+
+A question that stumps many candidates: "if KMS never releases the raw key, how does a 50 GB file
+actually get encrypted?" The answer is **envelope encryption**, and it's worth tracing step by step
+because it's the mechanism every "encrypted at rest" checkbox (S3 SSE-KMS, EBS encryption, RDS
+encryption) ultimately relies on.
+
+```mermaid
+sequenceDiagram
+    participant App as Application / AWS Encryption SDK
+    participant KMS as AWS KMS
+    participant Store as Storage (S3 / EBS / RDS)
+    App->>KMS: GenerateDataKey(KeyId=<CMK>)
+    KMS-->>App: Plaintext data key + Encrypted copy of data key
+    App->>App: Encrypt the actual data locally using the PLAINTEXT data key
+    App->>App: Discard the plaintext data key from memory immediately
+    App->>Store: Store ciphertext + the ENCRYPTED copy of the data key alongside it
+    Note over App,Store: Later, to decrypt:
+    App->>KMS: Decrypt(the encrypted data key copy)
+    KMS-->>App: Plaintext data key (temporarily, in memory only)
+    App->>App: Decrypt the data locally, then discard the plaintext key again
+```
+
+**Step by step:** (1) the application asks KMS to generate a data key tied to a specific
+Customer Master Key (CMK) it has `kms:GenerateDataKey` permission on. (2) KMS returns **two**
+things: a plaintext copy of the data key (for immediate local use) and that same key encrypted
+under the CMK (for long-term storage). (3) The application uses the plaintext data key to encrypt
+the actual bulk data **locally**, not inside KMS — this is the detail that makes KMS practical for
+large objects, since the CMK itself never touches the bulk data and KMS's own API never has to
+process gigabytes of payload. (4) The plaintext data key is discarded from memory immediately after
+use. (5) Only the **encrypted** data key is stored alongside the ciphertext. (6) To decrypt later,
+the application sends the encrypted data key back to KMS, which validates the caller's IAM
+permission and the key's policy before returning the plaintext data key just long enough to decrypt
+locally, then it's discarded again. The CMK's own raw key material is never, at any point, visible
+outside KMS's own hardware security modules — this is the specific guarantee the exam is testing
+when it asks "why can't a compromised application server exfiltrate the actual encryption key."
+
+![Envelope encryption diagram showing a root key encrypting key-encryption keys, which in turn encrypt data keys, which encrypt the actual data.](https://docs.aws.amazon.com/kms/latest/developerguide/images/key-hierarchy-root.png)
+
+*Source: [AWS Key Management Service Developer Guide](https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html), © Amazon Web Services.*
+
+**Discussion.** This diagram generalizes the sequence above into a full hierarchy: a root key
+protects key-encryption keys, which protect data keys, which protect the actual data — a layered
+structure, not a single flat key doing everything. The practical reason this matters for the exam:
+when a question describes "re-encrypting petabytes of data after a key rotation," the correct
+mental model is that **only the top-level key-encrypting layer needs to change** — the bulk data
+itself is never re-encrypted on a routine annual key rotation, because the data keys underneath
+stay the same; AWS-managed automatic rotation only rotates the backing key material one layer up,
+which is precisely why annual KMS key rotation has no noticeable performance cost at any data
+volume.
+
+## Architecture: Detection & Response Pipeline — From Raw Signal to Remediation
+
+```mermaid
+flowchart LR
+    CT["CloudTrail<br/>(every API call, every account)"] --> GD["GuardDuty<br/>(behavioral anomaly detection)"]
+    VFL["VPC Flow Logs"] --> GD
+    DNS["DNS query logs"] --> GD
+    S3Logs["S3 data-plane events"] --> Macie["Macie<br/>(sensitive data classification)"]
+    GD --> SH["Security Hub<br/>(aggregates findings, ASFF format)"]
+    Macie --> SH
+    Insp["Inspector<br/>(vulnerability/CVE scanning)"] --> SH
+    SH --> EB["EventBridge rule<br/>matches finding severity"]
+    EB --> Lambda["Auto-remediation Lambda<br/>e.g., isolate instance, revoke credential"]
+    EB --> SNS["SNS -> Security team notification"]
+    SH -.delegated admin.-> SecAcct["Centralized Security Account<br/>(org-wide view, no per-account admin needed)"]
+```
+
+**Step by step:** raw signal sources (CloudTrail API activity, VPC Flow Logs, DNS query logs, S3
+data events) feed into two different, complementary detectors: **GuardDuty** looks for *behavioral*
+anomalies (an EC2 instance suddenly calling an API it's never called before, traffic to a
+known-malicious IP), while **Macie** looks for *content* anomalies (a file that looks like it
+contains credit card numbers landing in a bucket that shouldn't have any). **Inspector** separately
+and continuously scans EC2/ECR/Lambda for known CVEs — a different question entirely ("is this
+software vulnerable") from either detector above. All three findings streams converge into
+**Security Hub**, which normalizes them into one common format (ASFF) so a single EventBridge rule
+can match "any finding above severity 7" regardless of which of the three services produced it, and
+trigger either an automated Lambda remediation (quarantine the instance's security group, revoke
+the suspicious IAM session) or a human notification via SNS. The entire pipeline runs through
+**delegated administrator** status granted to one Security account, so the security team sees every
+member account's findings without needing standing admin access inside each one — this delegated-
+admin detail is a specific, recurring exam fact distinct from the services themselves.
+
+![Diagram showing a malicious actor modifying IAM permissions on an S3 bucket, with CloudTrail intercepting the changes and GuardDuty detecting the suspicious activity and alerting administrators.](https://docs.aws.amazon.com/sap/latest/general/images/rise-security-guardduty.png)
+
+*Source: [AWS documentation — GuardDuty threat detection](https://docs.aws.amazon.com/sap/latest/general/), © Amazon Web Services.*
+
+**Discussion.** This is the concrete version of the pipeline above: an attacker who has somehow
+obtained valid credentials tries to widen an S3 bucket's permissions. CloudTrail captures the raw
+`PutBucketPolicy`/`PutBucketAcl` API call as a matter of course — it would log this even if nothing
+were wrong. GuardDuty is the layer that actually *notices* the call is anomalous (this role has
+never touched bucket permissions before, or the call originated from a geography/IP this account
+has never seen) and raises a finding. The exam's framing of GuardDuty as "intelligent threat
+detection" rather than just "another log" is exactly this distinction: CloudTrail is necessary but
+not sufficient — it records truth, but GuardDuty is the layer that interprets it.
+
+## Deeper Discussion: What Each Task Statement Is Really Testing
+
+**Task 1.1 ("Design secure access to AWS resources"), unpacked further.** This task statement is
+graded on whether you default to the *narrowest* mechanism that satisfies a stated requirement, not
+the most powerful one. A question describing "a developer needs read-only access to one S3 bucket
+for two weeks" is testing whether you reach for a scoped IAM policy + a time-boxed STS session,
+*not* a brand-new AWS account, *not* a permanent IAM user. Conversely, a question describing "no
+one, including the account's own administrators, should ever be able to do X" cannot be satisfied by
+any IAM-only answer — IAM is always editable by someone with sufficient IAM permissions inside the
+account, so the exam is specifically testing whether you recognize the sentence as an SCP signature.
+The three mechanisms (IAM, STS, SCP) aren't competing choices; they're a ladder, and the
+question is always "which rung does this specific requirement sit on."
+
+**Task 1.2 ("Design secure workloads and applications"), unpacked further.** The exam treats this
+task as "can you reconstruct a correct network diagram from a paragraph of prose." A huge share of
+Task 1.2 questions never mention the word "security group" or "NACL" directly — they describe a
+symptom ("the database is reachable from an unexpected source," "responses time out even though
+inbound rules look right") and expect you to diagnose which layer is misconfigured. The skill being
+tested isn't memorizing that security groups are stateful; it's being able to *simulate* a packet's
+journey through Shield → WAF → ALB → security group → NACL → subnet route table in your head and
+spot where the described symptom could only originate.
+
+**Task 1.3 ("Determine appropriate data security controls"), unpacked further.** This task
+statement is secretly about **lifecycle**, not just "is it encrypted right now." A question
+describing data that starts in S3 Standard, gets backed up via AWS Backup, replicates cross-Region,
+and eventually transitions to Glacier is testing whether encryption (and the KMS key policy
+permitting decrypt in the destination Region) survives *every single hop* — a backup copy encrypted
+under a key that doesn't exist in the destination Region's key policy is a real, exam-tested failure
+mode, not a hypothetical one.
+
 ## Full Worked Case Study: SecureBooks Financial — Multi-Account, Regulated Workload
 
 **Company requirements.** SecureBooks is a fintech processing customer bank-account data. Their
@@ -391,7 +575,70 @@ the exam (and real compliance frameworks) mean.
   scoped interface rather than a broad network peering, satisfying a critical-infrastructure
   security mandate that treats "no internet exposure, period" as non-negotiable.
 
-## Common exam scenarios
+## Additional Worked Exam Scenarios (Q&A Format)
+
+**Scenario A — "the response never comes back."** A company reports that inbound HTTPS requests
+reach their web tier's instances (confirmed via instance-level access logs), but clients report
+connection timeouts waiting for a response, and the security group rules look completely correct
+(inbound 443 allowed, which should auto-allow the stateful reply). What's actually wrong, and why
+doesn't the security group configuration explain it?
+
+*Answer:* a **NACL** at the subnet boundary is almost certainly missing its **outbound ephemeral
+port rule** (typically 1024–65535). NACLs are stateless — unlike the security group, which
+automatically permits the return leg of an allowed inbound connection, the NACL requires an
+*explicit* rule for the response traffic leaving the subnet. The security group being "correct" is
+a deliberate detail in the question: it's testing whether you check the *other* firewall layer
+instead of re-verifying the one that already looked fine.
+
+**Scenario B — "even the account root user shouldn't be able to do this."** A security team wants
+to guarantee that no identity in a production account — not a developer, not an admin, not even the
+account's root user — can ever disable CloudTrail logging, even temporarily. An IAM policy that
+denies `cloudtrail:StopLogging` is proposed. Why is this insufficient, and what's the correct fix?
+
+*Answer:* an **IAM deny policy can always be edited or removed by a sufficiently privileged
+principal inside that same account**, including the root user — so "even root can't do this"
+cannot be satisfied by anything that lives *inside* the account. The fix is a **Service Control
+Policy** attached at the Organization or OU level: SCPs are enforced *above* the account and
+cannot be overridden by any principal inside it, including root, which is the specific property the
+scenario is testing for.
+
+**Scenario C — "the certificate keeps expiring and breaking the site, nobody remembers to renew
+it."** A company's TLS certificate for its public-facing ALB has expired twice in the past year,
+each time causing a brief outage, because whoever manually renewed it the first time left the
+company. What's the structural fix, distinct from "remind someone to renew it"?
+
+*Answer:* issue the certificate through **ACM with DNS validation**, not an imported or
+email-validated certificate. ACM-issued, DNS-validated certificates **auto-renew** as long as the
+validation CNAME record remains in place — removing the human dependency entirely, rather than
+relying on a calendar reminder that depends on a specific person remembering (and still being
+employed).
+
+**Scenario D — "two teams need different visibility into the same shared table."** A company has
+one `customer_orders` table in its data lake. The finance team should see every column including
+payment details; the marketing team should see everything *except* payment details. Both teams
+query through Athena. What's the right mechanism, and why wouldn't two separate S3 prefixes work as
+well?
+
+*Answer:* **AWS Lake Formation column-level permissions** — grant the finance role `SELECT` on all
+columns, and the marketing role `SELECT` with payment columns explicitly excluded, both against the
+*same* underlying table. Two separate S3 prefixes (duplicating the data minus payment columns for
+marketing) would work, but creates a second copy of the data that can silently drift out of sync
+with the source — Lake Formation's column-level grant achieves the same visibility split from one
+physical copy of the data, which is both cheaper and structurally safer.
+
+**Scenario E — "developers keep accidentally committing database passwords to the Git repo."** A
+company's security review finds hardcoded database credentials in several recent commits, despite
+a policy against it. What AWS-native combination addresses both the immediate fix and reduces
+recurrence?
+
+*Answer:* move the credential into **Secrets Manager** with automatic rotation (the immediate fix —
+even if a stale copy is compromised in an old commit, a rotated credential invalidates it going
+forward), and reference the secret directly from the application's ECS task definition/Lambda
+configuration rather than application code reading it from an environment variable at all — removing
+the *opportunity* for a developer to accidentally hardcode a value they never have to see or copy in
+the first place.
+
+## More Common Exam Scenarios
 
 - *"A company wants developers to access multiple AWS accounts without creating IAM users in
   each one."* → IAM Identity Center (SSO) with permission sets, backed by STS temporary
@@ -436,6 +683,66 @@ the exam (and real compliance frameworks) mean.
 - *"A new AWS account must be provisioned for a new team, pre-configured with baseline logging,
   guardrails, and OU placement, without a manual multi-step setup each time."* → Control Tower
   Account Factory.
+- *"A company needs to prove, for PCI-DSS scope reduction, that its payment-processing network
+  segment has no rule referencing the broader corporate network's CIDR range."* → Security groups
+  and NACLs for the payment VPC should reference specific security groups, not the corporate VPC's
+  CIDR block, even if VPC peering exists between them — scope reduction depends on the absence of
+  a broad network path, not just an access-control rule that could later be loosened.
+- *"An application needs column-level and row-level access control over a shared data lake table,
+  enforced consistently whether queried through Athena, EMR, or Redshift Spectrum."* → AWS Lake
+  Formation fine-grained permissions with credential vending — not three separately-maintained
+  per-engine IAM policies.
+- *"A finance team needs database credentials to rotate automatically on a schedule with zero
+  application downtime, and a security audit needs to see evidence it's actually happening."* →
+  Secrets Manager's built-in rotation Lambda plus its version staging labels (AWSCURRENT/
+  AWSPENDING/AWSPREVIOUS), which together produce both the rotation itself and the auditable
+  evidence trail.
+- *"The security team wants certainty that even a compromised administrator credential cannot
+  delete backup recovery points before their retention period expires."* → AWS Backup Vault Lock in
+  **Compliance mode** specifically — Governance mode alone can still be overridden by an
+  authorized, sufficiently-privileged principal, which doesn't meet "even a compromised
+  administrator" bar.
+- *"A company wants a single global endpoint for an S3 bucket that's being actively written to from
+  two Regions simultaneously, with automatic routing to whichever copy is healthiest."* → S3
+  Multi-Region Access Points with bi-directional Cross-Region Replication — distinct from a simple
+  DR-oriented one-way CRR setup, because both Regions are active, not primary/standby.
+
+## Final Review Checklist — Self-Test Before the Exam
+
+Walk through these out loud; if any answer doesn't come immediately, go back to that service's
+section (or the corresponding `services/` doc, or [`MASTER-CHUNK.md`](MASTER-CHUNK.md)) before
+moving on:
+
+1. What's the structural difference between an SCP and an IAM policy, and why can't an IAM policy
+   alone stop an account's own administrator?
+2. Trace a packet from the public internet to a private RDS instance — name every layer it passes
+   through, in order, and what each layer specifically checks.
+3. Why does a NACL need an explicit outbound ephemeral-port rule but a security group doesn't?
+4. What does "11 nines of durability" actually mean, and how is it different from availability?
+5. Name the one feature that makes AWS Backup recovery points undeletable even by a compromised
+   root user, and its two modes.
+6. Why can Secrets Manager rotate a credential with zero downtime, but Parameter Store can't do
+   this natively at all?
+7. What's the exact mechanism (not just the name) that stops an analyst from bypassing a Lake
+   Formation column restriction by switching from Athena to an EMR notebook using the same IAM
+   role?
+8. Why does ACM's auto-renewal depend specifically on DNS validation, and what happens if the
+   certificate was imported instead?
+9. Trace what happens, step by step, when an application calls `GenerateDataKey` against a KMS CMK
+   — where does the plaintext key exist, and for how long?
+10. Name the three signal types that feed GuardDuty, and the one thing Macie looks for that none of
+    them do.
+
+![AWS Shared Responsibility Model — customer responsibility "in" the cloud versus AWS responsibility "of" the cloud.](https://docs.aws.amazon.com/waf/latest/developerguide/images/shared-responsibility-model.png)
+
+*Source: [AWS WAF Developer Guide — Shared Responsibility Model](https://docs.aws.amazon.com/waf/latest/developerguide/), © Amazon Web Services.*
+
+**Discussion.** This same image opened the document, and it's worth returning to at the end for a
+reason: every single checklist item above is a brick on *your* side of this line. None of them ask
+you to reason about AWS's physical security, hypervisor isolation, or hardware integrity — the exam
+never tests "did AWS do its job," only "did you do yours." If you can answer all ten questions above
+without hesitation, you've internalized the actual shape of Domain 1, not just memorized a list of
+service names.
 
 ## Hands-on Labs
 

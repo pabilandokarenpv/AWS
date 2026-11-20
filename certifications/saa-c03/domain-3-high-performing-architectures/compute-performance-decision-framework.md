@@ -169,6 +169,135 @@ idle otherwise), the team additionally considers migrating it to **AWS Batch** o
 compute environments — matching both the performance diagnosis and the workload's natural shape
 (queued, interruption-tolerant, bursty) to the right managed service.
 
+## Deeper Dive: Three Analogies for the Compute-Model Choice
+
+- **The staffing-agency analogy.** EC2 is hiring a full-time employee — you control their desk
+  setup, software, and schedule completely, but you're responsible for managing them every single
+  day. Fargate is hiring through a staffing agency that handles all the HR/payroll/onboarding
+  overhead — you still describe the work (the container spec), but someone else manages the
+  underlying "employee" (the server). Lambda is hiring a contractor who's paid per task and
+  disappears the moment the task is done — you pay for exactly the work performed, nothing more,
+  but you can't ask them to "stay logged in all day just in case."
+- **The kitchen-brigade analogy for placement groups.** A cluster placement group is seating your
+  entire relay-race team at one table so they can pass the baton (data) to each other instantly —
+  fast handoffs, but if that one table collapses (an AZ-level event), the whole team is affected
+  at once. A spread placement group is deliberately seating your most important VIPs at completely
+  different tables across the restaurant, so no single kitchen accident (hardware failure) can
+  affect more than one of them.
+- **The elevator-bank analogy for Lambda concurrency.** Reserved/Provisioned Concurrency is
+  reserving a specific elevator car to sit waiting at your floor at all times, doors open, ready
+  the instant you need it — no wait for it to travel from another floor (a cold start). Standard
+  on-demand concurrency is waiting for any available elevator to arrive, which is usually fast but
+  occasionally means a genuinely new elevator car (execution environment) has to be brought online
+  first.
+
+## Architecture: AWS Batch's Managed Job Queue and Compute Environment
+
+![AWS Batch architecture diagram showing jobs submitted to a job queue, which AWS Batch schedules onto a managed compute environment of EC2 or Fargate resources](https://docs.aws.amazon.com/batch/latest/userguide/images/batch-diagram.png)
+
+*Walkthrough:* a **job** (a containerized unit of work) is submitted to a **job queue**; AWS Batch
+evaluates the queue against one or more **compute environments** (which can be EC2 On-Demand,
+EC2 Spot, or Fargate) and provisions exactly the capacity needed to run the queued jobs, scaling
+back down to zero when the queue empties. This is the mechanism behind the video-rendering studio
+scenario above — a Batch compute environment configured to prefer Spot capacity, with a defined
+fallback to On-Demand if Spot capacity isn't available, maximizes cost savings without blocking
+jobs indefinitely waiting for Spot. Source: [AWS Batch User Guide — What Is AWS
+Batch?](https://docs.aws.amazon.com/batch/latest/userguide/what-is-batch.html).
+
+```mermaid
+flowchart LR
+    Jobs["Submitted Jobs\n(containerized units of work)"] --> Queue["Job Queue\n(priority-ordered)"]
+    Queue --> CE{"Compute Environment\nevaluates capacity"}
+    CE -->|"preferred, cheaper"| Spot["EC2 Spot"]
+    CE -->|"fallback if Spot unavailable"| OnDemand["EC2 On-Demand"]
+    CE -->|"no server management"| Fargate2["AWS Fargate"]
+    Spot --> Run["Job runs, writes output"]
+    OnDemand --> Run
+    Fargate2 --> Run
+    Run --> Scale["Compute environment scales\nback toward zero as queue empties"]
+```
+
+## Architecture: Lambda Concurrency Scaling and the Cold-Start Problem
+
+```mermaid
+sequenceDiagram
+    participant Trigger as Trigger (API Gateway/SQS/etc.)
+    participant Lambda as Lambda Service
+    participant Warm as Existing warm environment
+    participant Cold as New (cold) execution environment
+
+    Trigger->>Lambda: Invoke #1
+    Lambda->>Warm: Route to existing warm environment
+    Warm-->>Trigger: Fast response (no init overhead)
+
+    Trigger->>Lambda: Invoke #2 (burst exceeds warm capacity)
+    Lambda->>Cold: No warm environment available — provision new one
+    Cold->>Cold: Download code, init runtime, run init code (cold start)
+    Cold-->>Trigger: Slower response (includes cold-start latency)
+```
+
+*Walkthrough:* every concurrent invocation beyond what existing warm execution environments can
+handle triggers a brand-new environment to be provisioned — downloading the function's code,
+initializing the runtime, and running any module-level initialization code, all before the actual
+handler logic even starts. Provisioned Concurrency sidesteps this entirely by keeping a specified
+number of environments permanently warm and ready, which is why it's the correct answer whenever a
+scenario explicitly calls out consistent, predictable latency as a requirement — "fast most of the
+time" is a different (and lower) bar than "fast every time," and only Provisioned Concurrency
+guarantees the latter.
+
+## Real AWS Documentation Image: The EC2 Instance Lifecycle
+
+![AWS documentation diagram showing the full lifecycle of an EC2 instance through pending, running, stopping, stopped, shutting-down, and terminated states](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/images/instance_lifecycle.png)
+
+*This lifecycle matters for the Instance Store durability trap discussed throughout this
+framework: Instance Store data survives a `reboot` (the instance stays on the same physical host)
+but is wiped the moment an instance transitions through `stopping`/`stopped` or `terminated` — a
+scenario testing "does this data survive X" is really testing whether you can place X correctly on
+this exact state diagram. Source: [Amazon EC2 User Guide — Instance
+lifecycle](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html).*
+
+## Real AWS Documentation Image: A Three-Tier Architecture Across Availability Zones
+
+![AWS reference architecture diagram of a sample three-tier architecture with Auto Scaling groups distributed across multiple Availability Zones](https://docs.aws.amazon.com/autoscaling/ec2/userguide/images/sample-3-tier-architecture-with-azs-diagram.png)
+
+*This is the canonical shape nearly every Task 3.2 "design elastic compute" question is ultimately
+testing: a web tier and an application tier each run as their own Auto Scaling group, spread
+across multiple AZs behind their own load balancer tier, scaling independently based on whichever
+CloudWatch metric actually reflects that tier's bottleneck. Source: [Amazon EC2 Auto Scaling User
+Guide — Example architectures](https://docs.aws.amazon.com/autoscaling/ec2/userguide/what-is-amazon-ec2-auto-scaling.html).*
+
+## Additional Worked Exam Scenarios
+
+**Scenario A — "The Lambda function that works fine in testing but throttles in production."** A
+payment-processing Lambda function performs flawlessly in a load test with 50 concurrent
+invocations, but in production, a flash sale drives 2,000 simultaneous invocations and a large
+fraction fail with `TooManyRequestsException`. **Diagnosis:** the account (or function-level
+reserved concurrency setting) has a concurrency ceiling lower than 2,000, and invocations beyond
+that ceiling are throttled rather than queued indefinitely. **Fix:** request a service quota
+increase for the account's concurrent execution limit, and/or set a function-specific reserved
+concurrency limit calibrated to the true expected peak, rather than assuming Lambda's "serverless"
+label means infinite automatic headroom.
+
+**Scenario B — "Two 'identical' workloads, wildly different EC2 bills for the same throughput."**
+A team runs two batch workloads of similar size — one on `m5.4xlarge` instances, one migrated to
+`m7g.4xlarge` (Graviton/ARM) instances after confirming ARM compatibility — and the Graviton fleet
+costs meaningfully less for equivalent throughput. **Diagnosis/takeaway:** this isn't a performance
+bug or an error — Graviton's price-performance advantage for compatible workloads is a real,
+expected, and exam-tested fact, not an anomaly to "fix." A scenario asking "how do we improve
+price-performance without changing the architecture" for an ARM-compatible workload should point
+directly at a Graviton instance-family migration.
+
+**Scenario C — "The HPC job that got slower after 'fixing' a single slow node."** A tightly-coupled
+scientific-computing job spans 50 instances in a cluster placement group; one node is identified as
+underperforming and is manually replaced with a new instance launched *outside* the placement
+group (to "get it running again quickly"), after which overall job throughput drops further, not
+recovers. **Diagnosis:** the replacement instance, sitting outside the cluster placement group, now
+has meaningfully higher network latency to the other 49 nodes than they have to each other — a
+tightly-coupled job's overall throughput is bounded by its slowest/highest-latency link, so one
+node outside the placement group can bottleneck the entire cluster worse than one merely slow node
+inside it did. **Fix:** always replace a failed/underperforming cluster placement group member with
+another instance launched into the *same* placement group, not a quick substitute outside it.
+
 ## Why It's Important
 
 **Exam mapping:** SAA-C03 Domain 3, Task 3.2 ("design high-performing and elastic compute

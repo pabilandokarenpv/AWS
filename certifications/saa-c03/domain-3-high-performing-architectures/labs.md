@@ -150,6 +150,66 @@ query-optimized shape that a dashboard or API can read quickly and cheaply, whic
 reason the PixelForge Analytics case study in the domain README moves off scanning raw CSV
 directly.
 
+## Lab 6 — Simulating Content-Based Routing Decisions with S3 Prefixes (Task 3.4)
+
+Goal: Floci cannot emulate a real ALB's listener rules or CloudFront's edge caching, but it can
+emulate the *decision logic* those services apply, using S3 object key prefixes as a stand-in for
+HTTP paths — practicing the mental model of "route based on a pattern" without the real HTTP layer.
+
+```bash
+# 1. Create a bucket representing a combined "backend" for multiple logical services
+awslocal s3 mb s3://multi-service-backend
+
+# 2. Put objects representing different logical "paths," mirroring an ALB's listener rules
+awslocal s3 cp /etc/hostname s3://multi-service-backend/api/health
+awslocal s3 cp /etc/hostname s3://multi-service-backend/images/logo.png
+awslocal s3 cp /etc/hostname s3://multi-service-backend/web/index.html
+
+# 3. List only the "api/*" prefix, simulating a path-based routing rule matching /api/*
+awslocal s3 ls s3://multi-service-backend/api/
+
+# 4. List only the "images/*" prefix, simulating a separate rule for /images/*
+awslocal s3 ls s3://multi-service-backend/images/
+```
+
+Why this matters: an ALB's path-based routing rule and this prefix-based `ls` filter are doing
+the conceptually identical job — matching an incoming identifier against a pattern and routing
+(or, here, filtering) accordingly. Rehearsing "which requests match which rule" with prefixes
+builds the same mental muscle needed to reason about why splitting `/api/*` and `/images/*` into
+separate ALB target groups lets each scale independently, which is the actual Task 3.4 exam point
+this lab is a stand-in for.
+
+## Lab 7 — EBS Volume Type Characteristics via Local Disk Benchmarking (Task 3.1)
+
+Goal: Floci cannot emulate real EBS IOPS/throughput ceilings (that requires actual AWS hardware),
+but this lab builds the *measurement* habit — running a real local I/O benchmark and mapping the
+resulting numbers onto the gp3 vs. io2 vs. st1/sc1 decision tree in
+`storage-performance-decision-framework.md`, so the exam's IOPS/throughput numbers stop being
+abstract and start being something you've actually watched a benchmark tool report.
+
+```bash
+# 1. Check whether fio is available (a standard I/O benchmarking tool); install if needed
+which fio || sudo apt-get install -y fio
+
+# 2. Run a small random-read/write benchmark against a local scratch file,
+#    simulating the "small, random I/O" pattern that SSD-backed gp3/io2 are designed for
+fio --name=random-rw-test --rw=randrw --bs=4k --size=256M --numjobs=1 \
+    --runtime=10 --time_based --filename=/tmp/fio-test-file
+
+# 3. Run a large sequential-read benchmark, simulating the "large sequential" pattern
+#    that HDD-backed st1 is designed for (and priced for)
+fio --name=sequential-read-test --rw=read --bs=1M --size=256M --numjobs=1 \
+    --runtime=10 --time_based --filename=/tmp/fio-test-file
+```
+
+Why this matters: the random (4k block) test's reported IOPS number and the sequential (1M block)
+test's reported throughput (MB/s) number are the *exact two metrics* EBS volume types are priced
+and marketed around — a workload whose real I/O pattern looks like test #2 (large sequential) is a
+textbook st1 fit, and forcing it onto SSD-backed gp3/io2 wastes money for no benefit; a workload
+that looks like test #1 (small random) on st1/sc1 would be a measurable performance mismatch, not
+just a theoretical one, which is exactly the diagnosis this domain's storage framework expects you
+to make from a workload *description* on the exam, without a benchmark tool in the room.
+
 ## Use Cases — Real Scenarios (these labs' skills applied for real)
 
 - **IoT platform engineer sizing Kinesis shard count for a new product launch.** Lab 1's

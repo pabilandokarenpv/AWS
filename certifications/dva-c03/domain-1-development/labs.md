@@ -307,10 +307,122 @@ reject the 6th concurrent invocation with a `TooManyRequestsException` once the 
 is the exact behavior a "protect a legacy database from being overwhelmed by a serverless caller"
 exam scenario is describing.
 
+## Lab 7 — Event source mapping with partial batch response (`ReportBatchItemFailures`)
+
+**Why this lab:** this is the single most tested poll-based-trigger knob on the exam (see
+[`lambda-event-source-mapping-deep-dive.md`](lambda-event-source-mapping-deep-dive.md)) — running a
+batch with one deliberately bad record, first without and then with the feature enabled, makes the
+"whole batch retries" vs. "only the bad item retries" difference undeniable instead of abstract.
+
+```bash
+# 1. A queue and a handler that fails on exactly one "poison pill" message
+awslocal sqs create-queue --queue-name batch-demo-queue
+
+cat > batch_handler.py <<'EOF'
+import json
+
+def handler(event, context):
+    batch_item_failures = []
+    for record in event["Records"]:
+        body = json.loads(record["body"])
+        try:
+            if body.get("item") == "poison-pill":
+                raise ValueError("Simulated processing failure")
+            print("Processed:", body["item"])
+        except ValueError:
+            batch_item_failures.append({"itemIdentifier": record["messageId"]})
+    return {"batchItemFailures": batch_item_failures}
+EOF
+zip batch_function.zip batch_handler.py
+
+awslocal lambda create-function \
+  --function-name batch-processor \
+  --runtime python3.12 \
+  --handler batch_handler.handler \
+  --zip-file fileb://batch_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role
+
+# 2. Wire the event source mapping WITH partial batch response enabled
+QUEUE_ARN=$(awslocal sqs get-queue-attributes \
+  --queue-url http://localhost:4566/000000000000/batch-demo-queue \
+  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)
+
+awslocal lambda create-event-source-mapping \
+  --function-name batch-processor \
+  --event-source-arn "$QUEUE_ARN" \
+  --batch-size 5 \
+  --function-response-types ReportBatchItemFailures
+
+# 3. Send a batch: 4 good messages, 1 poison pill
+for ITEM in widget gadget poison-pill thingamajig doohickey; do
+  awslocal sqs send-message --queue-url http://localhost:4566/000000000000/batch-demo-queue \
+    --message-body "{\"item\":\"$ITEM\"}"
+done
+
+# 4. Tail the logs — expect to see only "poison-pill" retried, the other 4 processed exactly once
+awslocal logs tail /aws/lambda/batch-processor --follow
+```
+
+**What to notice:** only the `messageId` of the poison-pill record ever reappears in the logs as
+reprocessed — the four good records are never seen by the handler a second time. Remove the
+`--function-response-types ReportBatchItemFailures` flag and repeat the same test (fresh queue) to
+see the contrasting whole-batch-retries behavior described in the deep-dive doc — the difference is
+worth seeing side by side, not just reading about.
+
+## Lab 8 — AWS SDK credential resolution, made visible
+
+**Why this lab:** "where did these credentials actually come from" is invisible by default — this
+lab makes it concrete by deliberately changing which link in the chain resolves, and observing the
+effect, instead of memorizing the chain order from a diagram alone. See
+[`aws-sdk-credential-resolution-chain.md`](aws-sdk-credential-resolution-chain.md) for the full
+mechanics this lab exercises.
+
+```bash
+# 1. Baseline — see which source resolves with NOTHING overridden
+python3 - <<'EOF'
+import boto3
+session = boto3.Session()
+creds = session.get_credentials()
+print("Resolved via:", creds.method if creds else "NONE — chain exhausted")
+EOF
+
+# 2. Force environment variables to the front of the chain
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+python3 - <<'EOF'
+import boto3
+session = boto3.Session()
+creds = session.get_credentials()
+print("Resolved via:", creds.method)   # now reports "env"
+EOF
+
+# 3. Remove the env vars and force a named profile instead (requires ~/.aws/credentials to exist)
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+mkdir -p ~/.aws
+cat >> ~/.aws/credentials <<'EOF'
+[floci-demo]
+aws_access_key_id = test
+aws_secret_access_key = test
+EOF
+python3 - <<'EOF'
+import boto3
+session = boto3.Session(profile_name="floci-demo")
+creds = session.get_credentials()
+print("Resolved via:", creds.method)   # now reports "shared-credentials-file"
+EOF
+```
+
+**What to notice:** identical application code (`boto3.Session().get_credentials()`) reports a
+*different* `method` purely based on what's available in the environment it runs in — no code
+change, only environment change, flips which link in the chain wins. This is the exact mechanism
+behind "works on my machine, fails in Lambda/ECS" bugs, reproduced deliberately instead of debugged
+after the fact.
+
 ## Lab wrap-up and cross-links
 
-Each lab above maps back to a specific README section — re-run them in this order if you want the
-full Task 1.1–1.3 arc reinforced hands-on:
+Each lab above maps back to a specific README section (or a companion deep-dive doc) — re-run them
+in this order if you want the full Task 1.1–1.3 arc reinforced hands-on:
 
 | Lab | Task(s) reinforced | README section |
 |---|---|---|
@@ -320,10 +432,16 @@ full Task 1.1–1.3 arc reinforced hands-on:
 | 4 | 1.3 (conditional writes), case study | [Full worked case study](README.md#full-worked-case-study-a-flash-sale-order-api) |
 | 5 | 1.2 (layers) | [Lambda concurrency, precisely](README.md#lambda-concurrency-precisely) |
 | 6 | 1.2 (reserved concurrency) | [Lambda concurrency, precisely](README.md#lambda-concurrency-precisely) |
+| 7 | 1.2 (poll-based triggers, partial batch response) | [`lambda-event-source-mapping-deep-dive.md`](lambda-event-source-mapping-deep-dive.md) |
+| 8 | 1.1 (SDK credential resolution) | [`aws-sdk-credential-resolution-chain.md`](aws-sdk-credential-resolution-chain.md) |
 
-Once all six pass locally, you've exercised every Task 1.1/1.2/1.3 bullet point at least once with
-real (emulated) API calls — not just read about them. If you want to go further before moving to
-Domain 2, try combining Lab 2 and Lab 4: make the S3-triggered function itself perform an
+Once all eight pass locally, you've exercised every Task 1.1/1.2/1.3 bullet point at least once
+with real (emulated) API calls — not just read about them. If you want to go further before moving
+to Domain 2, try combining Lab 2 and Lab 4: make the S3-triggered function itself perform an
 idempotent conditional write, so a duplicate S3 event notification (which *can* happen on real AWS
-— S3 event delivery is at-least-once, not exactly-once) doesn't double-process the same object.
+— S3 event delivery is at-least-once, not exactly-once) doesn't double-process the same object. A
+second extension: combine Lab 7 and Lab 4 — make the poison-pill handler itself perform a
+conditional DynamoDB write keyed on `messageId`, so re-running the lab after fixing the "poison"
+condition doesn't accidentally double-process the four messages that already succeeded on a
+previous partial-failure run.
 

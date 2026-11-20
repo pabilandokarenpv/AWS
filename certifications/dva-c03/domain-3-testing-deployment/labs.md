@@ -296,6 +296,149 @@ equivalent of the "never rebuild the artifact, promote the exact tested one" dis
 Task 3.1 — a bad deploy is "point the service back at the previous task definition revision," not
 "re-run a build with the old code."
 
+## Lab 7 — `cdk diff`-style drift simulation and remediation (Task 3.2)
+
+**Why this lab:** drift detection is easy to understand in the abstract and easy to miss in
+practice — manually breaking a stack's resource out-of-band, then running drift detection yourself,
+builds the muscle memory for recognizing *why* a stack shows `DRIFTED` before the exam describes it
+in prose. Full concept background: [`iac-drift-detection-and-remediation.md`](iac-drift-detection-and-remediation.md).
+
+```bash
+# 1. Deploy a simple stack with a security group via SAM/CloudFormation
+cat > drift-template.yaml << 'EOF'
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  DemoSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Demo SG for drift lab"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+EOF
+awslocal cloudformation deploy --template-file drift-template.yaml --stack-name drift-lab-stack
+
+# 2. Simulate an out-of-band console change: someone opens port 22 "just for now"
+SG_ID=$(awslocal cloudformation describe-stack-resources --stack-name drift-lab-stack \
+  --query "StackResources[?LogicalResourceId=='DemoSecurityGroup'].PhysicalResourceId" --output text)
+awslocal ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+# 3. Detect drift — this stack should now report DRIFTED
+awslocal cloudformation detect-stack-drift --stack-name drift-lab-stack
+awslocal cloudformation describe-stack-resource-drifts --stack-name drift-lab-stack
+
+# 4. Remediate by re-applying the template (CloudFormation reasserts the declared state,
+#    removing the out-of-band port 22 rule it doesn't know about)
+awslocal cloudformation deploy --template-file drift-template.yaml --stack-name drift-lab-stack
+awslocal cloudformation detect-stack-drift --stack-name drift-lab-stack
+```
+
+**What to notice:** step 4 doesn't require you to manually find and revert the port 22 rule —
+simply re-deploying the unchanged template is enough, because CloudFormation treats the template
+as the single source of truth and reconciles any resource back to match it. This is the core
+remediation principle: **fix drift by re-applying IaC, never by manually editing the drifted
+resource a second time** (which would just be more untracked drift).
+
+## Lab 8 — Unit and integration tests for a Lambda handler with mocked AWS services (Task 3.2)
+
+**Why this lab:** the exam expects you to recognize the difference between a unit test (no AWS
+calls at all) and an integration test (talks to a real or emulated AWS service) — writing one of
+each against the same handler makes the boundary concrete instead of definitional. Full concept
+background: [`testing-strategies-for-serverless-apps.md`](testing-strategies-for-serverless-apps.md).
+
+```python
+# handler.py
+import boto3, os
+def handler(event, context):
+    table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
+    item_id = event["pathParameters"]["id"]
+    resp = table.get_item(Key={"id": item_id})
+    if "Item" not in resp:
+        return {"statusCode": 404, "body": "not found"}
+    return {"statusCode": 200, "body": str(resp["Item"])}
+```
+
+```python
+# test_unit.py — UNIT test: no AWS call at all, pure logic in isolation
+from unittest.mock import MagicMock
+import handler
+
+def test_returns_404_when_item_missing(monkeypatch):
+    fake_table = MagicMock()
+    fake_table.get_item.return_value = {}  # no "Item" key
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+    monkeypatch.setattr("boto3.resource", lambda *_: fake_resource)
+    event = {"pathParameters": {"id": "missing-id"}}
+    result = handler.handler(event, None)
+    assert result["statusCode"] == 404
+```
+
+```python
+# test_integration.py — INTEGRATION test: real DynamoDB API calls against Floci
+import boto3, os, pytest
+import handler
+
+@pytest.fixture(scope="module")
+def dynamodb_table():
+    ddb = boto3.client("dynamodb", endpoint_url="http://localhost:4566", region_name="us-east-1")
+    ddb.create_table(
+        TableName="orders-test", KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST")
+    ddb.put_item(TableName="orders-test", Item={"id": {"S": "abc"}, "item": {"S": "widget"}})
+    os.environ["TABLE_NAME"] = "orders-test"
+    yield
+    ddb.delete_table(TableName="orders-test")
+
+def test_returns_200_for_real_item(dynamodb_table):
+    event = {"pathParameters": {"id": "abc"}}
+    result = handler.handler(event, None)
+    assert result["statusCode"] == 200
+```
+
+```bash
+# Run both layers separately — this separation is itself the testable skill
+pytest test_unit.py -v          # milliseconds, no network, no Floci needed
+awslocal_endpoint=http://localhost:4566 pytest test_integration.py -v   # seconds, needs Floci running
+```
+
+**What to notice:** `test_unit.py` never imports `pytest.fixture` requiring a live endpoint and
+runs in milliseconds even with Floci stopped — this is what "many, fast, isolated" at the base of
+the testing pyramid means concretely. `test_integration.py` requires Floci running and is
+meaningfully slower, which is exactly why you want fewer of these and many more of the first kind.
+
+## Lab 9 — Comparing CodeDeploy deployment configs side by side (Task 3.3)
+
+**Why this lab:** reading the same deployment group's config swapped between all-at-once, canary,
+and linear makes the actual pacing difference concrete rather than memorized vocabulary. Full
+concept background: [`blue-green-canary-linear-deployment-strategies.md`](blue-green-canary-linear-deployment-strategies.md).
+
+```bash
+# Create the same Lambda application three times, each with a different deployment config,
+# and compare the deployment-group JSON shape side by side
+for CONFIG in LambdaAllAtOnce LambdaCanary10Percent5Minutes LambdaLinear10PercentEvery1Minute; do
+  awslocal deploy create-application --application-name "demo-$CONFIG" --compute-platform Lambda
+  awslocal deploy create-deployment-group \
+    --application-name "demo-$CONFIG" \
+    --deployment-group-name "dg-$CONFIG" \
+    --deployment-config-name "CodeDeployDefault.$CONFIG" \
+    --service-role-arn arn:aws:iam::000000000000:role/CodeDeployServiceRole
+  echo "--- $CONFIG ---"
+  awslocal deploy get-deployment-group --application-name "demo-$CONFIG" --deployment-group-name "dg-$CONFIG" \
+    --query 'deploymentGroupInfo.deploymentConfigName'
+done
+```
+
+**What to notice:** the only thing that differs across all three calls is the single
+`--deployment-config-name` string — everything else about the application/deployment-group shape
+is identical. This is precisely why the exam tests recognition of the *named config strings*
+rather than deep configuration mechanics: picking the right strategy is a one-line decision once
+you know which named config matches the scenario's described risk tolerance.
+
 ## Lab wrap-up and cross-links
 
 | Lab | Task(s) reinforced | README section |
@@ -306,10 +449,13 @@ Task 3.1 — a bad deploy is "point the service back at the previous task defini
 | 4 | 3.1 (externalized config) | [Task 3.1 in one picture](README.md#task-31-in-one-picture-what-actually-goes-into-a-deployable-artifact) |
 | 5 | 3.3 (alarm-based rollback) | [Rollback mechanics](README.md#rollback-mechanics-how-automatic-rollback-actually-triggers) |
 | 6 | 3.3 (ECS/Fargate deployment) | [Full worked case study](README.md#full-worked-case-study-cicd-for-a-containerized-checkout-microservice) |
+| 7 | 3.2 (drift detection and remediation) | [IaC drift](README.md#iac-drift-the-validation-story-doesnt-end-at-deploy-time) |
+| 8 | 3.2 (unit vs. integration testing pyramid) | [Testing pyramid](README.md#testing-pyramid-for-serverless-and-container-apps) |
+| 9 | 3.3 (CodeDeploy named deployment configs) | [Deployment strategy choice](README.md#deployment-strategy-choice-with-real-codedeploy-configuration-names) |
 
-For the fullest picture of how all six labs connect into one pipeline, re-read the
+For the fullest picture of how all nine labs connect into one pipeline, re-read the
 [case study](README.md#full-worked-case-study-cicd-for-a-containerized-checkout-microservice)
-after finishing Lab 6 — every piece of that architecture diagram has now been exercised locally at
+after finishing Lab 9 — every piece of that architecture diagram has now been exercised locally at
 least once, just not wired together into a single literal CodePipeline (which Floci doesn't fully
 emulate end to end).
 

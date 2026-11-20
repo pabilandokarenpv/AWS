@@ -128,6 +128,94 @@ This is what makes independent deployment and scaling actually safe: a schema ch
 Inventory's own database can never break Order Service, because Order Service never touched it
 directly in the first place.
 
+## Pattern: Saga (Distributed Transactions via Compensation)
+
+```mermaid
+sequenceDiagram
+    participant SF as Step Functions (Saga Orchestrator)
+    participant Inv as Inventory Service
+    participant Pay as Payment Service
+    participant Ship as Shipping Service
+
+    SF->>Inv: ReserveInventory
+    Inv-->>SF: success
+    SF->>Pay: ChargeCard
+    Pay-->>SF: FAILURE (card declined)
+    Note over SF: Catch triggers compensation,<br/>in reverse order
+    SF->>Inv: ReleaseInventory (compensating action)
+    Inv-->>SF: released
+    SF->>SF: Fail: OrderNotCompleted
+```
+
+A traditional single-database transaction can `ROLLBACK` automatically if any step fails. A
+microservices architecture has no such built-in mechanism across services with their own separate
+databases — the **saga pattern** solves this by explicitly defining a **compensating action** for
+every step that changed state, and running those compensations in reverse order the moment any
+step fails. Step Functions' Catch state is the typical AWS implementation: the state machine
+itself is the saga orchestrator, and the compensating actions are just more Task states, making
+the whole rollback sequence visible and auditable rather than buried in ad-hoc exception-handling
+code scattered across three services.
+
+## Pattern: CQRS (Command Query Responsibility Segregation)
+
+```mermaid
+flowchart LR
+    Client --> Write["Write path:<br/>Order Service"]
+    Write -->|"writes"| WriteDB[("Primary DB —<br/>optimized for writes,<br/>normalized schema")]
+    WriteDB -->|"publish change event"| Bus{{EventBridge}}
+    Bus -->|"project into"| ReadDB[("Read-optimized store —<br/>denormalized, pre-joined<br/>for fast queries")]
+    Client -->|"reads"| ReadDB
+```
+
+Most services need very different things from their write path and their read path: writes need
+strict validation and normalized data integrity; reads (especially dashboards, search, reporting)
+often need heavily denormalized, pre-joined data to be fast. CQRS splits these into genuinely
+separate models — writes go through the normal, validated write path, and every change publishes
+an event that asynchronously updates one or more purpose-built **read models** (which might live
+in a completely different database technology, like DynamoDB or OpenSearch, chosen purely for
+query speed). The tradeoff this pattern accepts explicitly: the read model is **eventually
+consistent**, lagging the write model by however long the event takes to propagate and project —
+usually milliseconds to low seconds, but never zero, which is the detail a scenario testing CQRS
+specifically probes ("can the read immediately reflect a write that just happened" → no, by
+design).
+
+## Pattern: Strangler Fig (Incrementally Replacing a Monolith)
+
+![Diagram showing a monolithic application with three services: user service, cart service, and account service, all inside one deployable monolith sharing one relational database.](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/images/guide-img/48f618e4-d8ad-490f-982b-7b304dbf76c9/images/4334547f-fd23-48fc-8dbb-acbca43b1b5b.png)
+
+*Source: [AWS Prescriptive Guidance — Cloud design patterns, Strangler fig pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/strangler-fig.html)*
+
+```mermaid
+flowchart LR
+    subgraph Before["Before: proxy routes everything to monolith"]
+        ClientB[Client] --> ProxyB[Proxy Layer] --> MonoB["Monolith:<br/>user + cart + account"]
+    end
+    subgraph During["During: proxy splits traffic"]
+        ClientD[Client] --> ProxyD[Proxy Layer]
+        ProxyD -->|"/user/*"| UserMS["User microservice<br/>(extracted)"]
+        ProxyD -->|"everything else"| MonoD["Monolith:<br/>cart + account<br/>(shrinking)"]
+        MonoD -.->|"anti-corruption layer<br/>calls new microservice<br/>when needed"| UserMS
+    end
+    subgraph After["After: monolith fully decommissioned"]
+        ClientA[Client] --> ProxyA[Proxy Layer]
+        ProxyA --> UserMS2["User microservice"]
+        ProxyA --> CartMS["Cart microservice"]
+        ProxyA --> AccountMS["Account microservice"]
+    end
+```
+
+The strangler fig pattern (named for a vine that slowly envelops and eventually replaces a host
+tree) is how monolith decomposition actually happens safely in production — never a single "big
+bang" rewrite. A proxy layer sits in front of the monolith from day one, initially routing 100% of
+traffic to it unchanged. One capability at a time is extracted into its own microservice, and the
+proxy's routing rules are updated to send just that capability's traffic to the new service — the
+monolith (and its remaining callers) often need an **anti-corruption layer** during the transition
+so code still living inside the monolith can call the newly-extracted service without the
+monolith's own internals needing to understand the new service's data model directly. This
+continues, capability by capability, until the monolith has nothing left to do and is
+decommissioned — the actual mechanism behind this domain's StreamVista and NorthPeak case studies
+in `README.md`, both of which extract one piece at a time rather than rewriting from scratch.
+
 ## Key Decision Points
 
 - **SQS vs. SNS vs. EventBridge** — SQS is point-to-point (one message, one consumer, pulled);
@@ -240,6 +328,22 @@ genuinely synchronous (steps that must complete before responding) versus which 
   withholding → run compliance checks → disburse via ACH → generate pay stubs" runs as a Step
   Functions workflow with an explicit rollback branch if the compliance-check step fails, rather
   than a monolithic payroll script that's difficult to partially retry.
+- **Multi-vendor marketplace needing an immediate refund if any step of a split payment across
+  three sellers fails.** A saga orchestrated by Step Functions charges the buyer once, then
+  disburses to three sellers independently — if the third seller's payout fails (e.g., their bank
+  account is invalid), compensating actions reverse the first two payouts and refund the buyer,
+  rather than leaving the order in a half-completed, inconsistent state across three separate
+  seller ledgers.
+- **Analytics-heavy SaaS dashboard that's slow because every query joins six normalized tables in
+  the live production database.** CQRS introduces a denormalized, pre-joined read model (updated
+  asynchronously via EventBridge off every write) specifically for the dashboard's query pattern,
+  accepting a few seconds of read staleness in exchange for dashboard queries that no longer
+  compete with the production write path's locking/contention at all.
+- **A 10-year-old monolithic insurance-quoting application needs to modernize without a risky
+  full rewrite or extended downtime.** The strangler fig pattern extracts the quoting engine first
+  (the most frequently changed, highest-value piece) behind a proxy layer, leaving policy
+  management and billing inside the shrinking monolith until each is ready for its own extraction
+  — a multi-quarter migration with a working, shippable system at every single step.
 
 ## Why It's Important
 
@@ -257,6 +361,16 @@ and read replicas as a single cohesive design philosophy, not isolated trivia.
   size" signals SQS + Auto Scaling on queue depth.
 - A workflow description with words like "steps," "retries," "wait for," or "branch depending on
   the result" signals Step Functions, not a hand-rolled chain of Lambda invocations.
+- "Roll back several completed steps across different services after a later step fails" signals
+  the saga pattern (Step Functions with Catch-triggered compensating actions), not a database
+  transaction — there is no cross-service `ROLLBACK` in a microservices architecture.
+- "Reads are slow because of complex joins, but writes are fine" signals CQRS (a separate,
+  denormalized read model), not simply "add an index" or "add a read replica" — a read replica
+  still has the same normalized schema and the same join cost; CQRS's read model is reshaped
+  specifically for the query pattern.
+- "Modernize a monolith incrementally, without a full rewrite or extended downtime" signals the
+  strangler fig pattern — a proxy layer extracting one capability at a time — not a "lift and
+  shift then rewrite everything" approach.
 
 ## Related Terms
 
@@ -267,6 +381,9 @@ and read replicas as a single cohesive design philosophy, not isolated trivia.
 - [`../../../services/application-integration/messaging-patterns-overview.md`](../../../services/application-integration/messaging-patterns-overview.md)
 - [`../../../services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md)
 - [`../../../services/containers/containers-vs-vms-vs-serverless.md`](../../../services/containers/containers-vs-vms-vs-serverless.md)
+- [`loose-coupling-patterns-deep-dive.md`](loose-coupling-patterns-deep-dive.md) — the reusable,
+  lower-level techniques (idempotency, circuit breakers, service discovery) underneath every
+  pattern in this doc
 - [`disaster-recovery-strategies.md`](disaster-recovery-strategies.md) — Warm Standby/Active-Active
   DR Regions still need this doc's decoupled service design replicated in each Region
 - [`../domain-1-secure-architectures/vpc-security-architecture-patterns.md`](../domain-1-secure-architectures/vpc-security-architecture-patterns.md) —

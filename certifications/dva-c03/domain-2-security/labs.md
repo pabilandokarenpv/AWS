@@ -275,7 +275,156 @@ without re-entering credentials). An API Gateway Cognito authorizer validates th
 not the ID token, on each request — a detail worth knowing cold for Task 2.1 questions that give
 you a JWT type and ask whether a given authorizer check would succeed.
 
-## Lab wrap-up and cross-links
+## Lab 7 — IAM policy evaluation order: permission boundary as an unbreakable ceiling (Task 2.1)
+
+**Why this lab:** `iam-policy-evaluation-logic.md` explains permission boundaries as a ceiling
+that caps a role's *effective* permissions regardless of how broad its own identity policy is —
+this lab makes that concrete by attaching a boundary narrower than the role's own policy and
+confirming (by reasoning through Floci's partial enforcement, the same way Lab 1 does) that the
+boundary, not the identity policy, determines the effective limit.
+
+```bash
+# 1. Create a broad identity-based policy — full S3 access
+cat > broad-s3-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{ "Effect": "Allow", "Action": "s3:*", "Resource": "*" }]
+}
+EOF
+awslocal iam create-policy --policy-name BroadS3Access --policy-document file://broad-s3-policy.json
+
+# 2. Create a MUCH narrower permission boundary — read-only, one bucket
+cat > boundary-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:ListBucket"],
+    "Resource": ["arn:aws:s3:::team-reports-bucket", "arn:aws:s3:::team-reports-bucket/*"]
+  }]
+}
+EOF
+awslocal iam create-policy --policy-name ReadOnlyBoundary --policy-document file://boundary-policy.json
+
+# 3. Create a role with the BROAD policy attached AND the narrow boundary set
+cat > trust-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "lambda.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+awslocal iam create-role --role-name BoundedRole \
+  --assume-role-policy-document file://trust-policy.json \
+  --permissions-boundary arn:aws:iam::000000000000:policy/ReadOnlyBoundary
+awslocal iam attach-role-policy --role-name BoundedRole \
+  --policy-arn arn:aws:iam::000000000000:policy/BroadS3Access
+
+# 4. Confirm the role's attached policy AND its boundary independently
+awslocal iam list-attached-role-policies --role-name BoundedRole
+awslocal iam get-role --role-name BoundedRole --query 'Role.PermissionsBoundary'
+```
+
+**What to notice:** the role's own attached policy grants `s3:*` on everything, but its
+permission boundary only ever allows read access to one bucket — per the evaluation algorithm in
+[`iam-policy-evaluation-logic.md`](iam-policy-evaluation-logic.md#the-full-evaluation-algorithm),
+the role's *effective* permission is the intersection of the two, meaning a real AWS account would
+reject any S3 write or any access to a different bucket, no matter how broad `BroadS3Access`
+looks. This is the single most misread line in a Domain 2 IAM scenario: a role's attached policy
+is not the same thing as its effective permission once a boundary is in play.
+
+## Lab 8 — Securing a Lambda secret end to end: env var reference + IAM/KMS scoping (Task 2.2)
+
+**Why this lab:** `securing-lambda-environment-variables-and-secrets.md` walks through why a
+secret's *value* shouldn't live in a plain environment variable, only its *reference* should —
+this lab builds that exact pattern, including the two separate IAM grants (`GetSecretValue` and
+`kms:Decrypt`) a function's execution role needs, so the two-grant requirement is something you've
+configured, not just read about.
+
+```bash
+# 1. Create a customer-managed KMS key and a secret encrypted with it
+KEY_ID=$(awslocal kms create-key --description "secrets-cmk" --query 'KeyMetadata.KeyId' --output text)
+awslocal kms create-alias --alias-name alias/secrets-cmk --target-key-id $KEY_ID
+awslocal secretsmanager create-secret --name prod/payments/db-password \
+  --secret-string 'S3cretP@ss' --kms-key-id alias/secrets-cmk
+SECRET_ARN=$(awslocal secretsmanager describe-secret --secret-id prod/payments/db-password \
+  --query 'ARN' --output text)
+
+# 2. Create an execution role with BOTH required grants — omit either one on purpose first
+cat > lambda-trust.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "lambda.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+awslocal iam create-role --role-name PaymentsFnRole --assume-role-policy-document file://lambda-trust.json
+
+cat > secret-read-only.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "secretsmanager:GetSecretValue",
+    "Resource": "$SECRET_ARN"
+  }]
+}
+EOF
+awslocal iam put-role-policy --role-name PaymentsFnRole \
+  --policy-name ReadThisSecretOnly --policy-document file://secret-read-only.json
+
+# 3. Deploy the function with ONLY the secretsmanager grant (no kms:Decrypt yet) and
+#    set the env var to the ARN, never the password itself
+cat > handler.py <<'EOF'
+import os, json, boto3
+def handler(event, context):
+    sm = boto3.client("secretsmanager", endpoint_url="http://localhost:4566")
+    secret = sm.get_secret_value(SecretId=os.environ["DB_SECRET_ARN"])
+    return {"status": "retrieved", "length": len(secret["SecretString"])}
+EOF
+zip handler.zip handler.py
+awslocal lambda create-function --function-name payments-fn \
+  --runtime python3.12 --handler handler.handler \
+  --zip-file fileb://handler.zip \
+  --role arn:aws:iam::000000000000:role/PaymentsFnRole \
+  --environment "Variables={DB_SECRET_ARN=$SECRET_ARN}"
+
+# 4. Invoke and observe the expected real-AWS behavior: GetSecretValue succeeds at the
+#    Secrets Manager layer, but decrypting a CMK-encrypted secret ALSO requires kms:Decrypt
+#    on that specific key — add the missing grant and re-invoke
+cat > kms-decrypt.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "kms:Decrypt",
+    "Resource": "arn:aws:kms:us-east-1:000000000000:key/$KEY_ID"
+  }]
+}
+EOF
+awslocal iam put-role-policy --role-name PaymentsFnRole \
+  --policy-name DecryptSecretsCMK --policy-document file://kms-decrypt.json
+
+awslocal lambda invoke --function-name payments-fn /tmp/out.json && cat /tmp/out.json
+```
+
+**What to notice:** the environment variable (`DB_SECRET_ARN`) never holds the password itself,
+only a pointer to it — and getting the real value requires **two** separate IAM grants
+(`secretsmanager:GetSecretValue` plus `kms:Decrypt` on the specific CMK), confirming the exact
+two-grant requirement from
+[`securing-lambda-environment-variables-and-secrets.md#iam-scoping--the-execution-role-needs-two-separate-grants`](securing-lambda-environment-variables-and-secrets.md#iam-scoping--the-execution-role-needs-two-separate-grants).
+Floci's IAM/KMS enforcement is partial (as noted in Lab 1), so treat a successful invoke here as
+confirmation the *configuration* is structured correctly, not as proof a real AWS account would
+behave identically without the KMS grant — reason through what a real account's enforcement would
+do at each step, which is exactly the skill the exam tests.
+
+## Lab wrap-up and cross-links, updated
 
 | Lab | Task(s) reinforced | README / topic doc section |
 |---|---|---|
@@ -285,6 +434,13 @@ you a JWT type and ask whether a given authorizer check would succeed.
 | 4 | 2.3 (AI agent security, human approval) | [`ai-service-security-risks.md`](ai-service-security-risks.md#ai-agent-security) |
 | 5 | 2.2 (envelope encryption) | [Encryption at rest](README.md#encryption-at-rest-envelope-encryption-in-one-picture) |
 | 6 | 2.1 (Cognito authentication) | [How it fits together](README.md#how-it-fits-together-authnauthz--encryption-around-a-request) |
+| 7 | 2.1 (permission boundaries as a ceiling) | [`iam-policy-evaluation-logic.md`](iam-policy-evaluation-logic.md#permission-boundaries-vs-scps-vs-rcps-vs-session-policies-four-ceilings-four-different-scopes) |
+| 8 | 2.2 (Lambda secrets, IAM+KMS scoping) | [`securing-lambda-environment-variables-and-secrets.md`](securing-lambda-environment-variables-and-secrets.md#iam-scoping--the-execution-role-needs-two-separate-grants) |
+
+Run Lab 1 and Lab 7 back to back for the clearest picture of how an SCP, a permission boundary,
+and a session policy each cap effective permissions from a *different* scope — Lab 1's trust vs.
+permissions policy distinction plus Lab 7's boundary-as-ceiling together cover the two IAM
+reasoning skills Task 2.1 tests most often outside of straightforward single-policy reads.
 
 Run Lab 1 and Lab 6 back to back for the clearest picture of Task 2.1's two separate identity
 chains (user identity via Cognito vs. AWS service identity via IAM roles) — see

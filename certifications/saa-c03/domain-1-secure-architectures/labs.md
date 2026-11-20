@@ -212,6 +212,113 @@ demonstrate that **SSE-KMS-encrypted objects require both** — a role with `s3:
 matching `kms:Decrypt` grant gets `AccessDenied` on the read, which is one of the most common
 real-world (and exam) "why can't this role read an encrypted object" debugging scenarios.
 
+## Lab 7 — Approximating an SCP ceiling with an IAM permission boundary (Task 1.1)
+
+Goal: Floci doesn't emulate AWS Organizations/SCPs (they require multi-account infrastructure a
+local single-account emulator can't model), but the underlying *concept* — "a ceiling that caps
+what even a generous policy can do" — has a close single-account cousin: **IAM permission
+boundaries**. This lab builds that cousin so you can feel the "ceiling vs. grant" distinction
+hands-on before trusting it conceptually at the SCP/Organization level.
+
+```bash
+# 1. Create a permission boundary policy that acts as the "ceiling" — allows only S3 and KMS,
+#    nothing else, no matter what a role's own policy grants
+cat > boundary.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["s3:*", "kms:Decrypt", "kms:Encrypt"], "Resource": "*" }
+  ]
+}
+EOF
+awslocal iam create-policy --policy-name DeveloperCeiling --policy-document file://boundary.json
+
+# 2. Create a role WITH a permission boundary attached, then attach an overly broad policy to it
+#    (simulating a developer who was accidentally granted AdministratorAccess)
+awslocal iam create-role --role-name BoundedDevRole \
+  --assume-role-policy-document file://trust.json \
+  --permissions-boundary arn:aws:iam::000000000000:policy/DeveloperCeiling
+awslocal iam attach-role-policy --role-name BoundedDevRole \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+# 3. Assume the role and confirm: S3/KMS calls succeed, but an EC2 call (not in the boundary)
+#    fails with AccessDenied DESPITE the role's attached policy being full AdministratorAccess
+awslocal sts assume-role --role-arn arn:aws:iam::000000000000:role/BoundedDevRole \
+  --role-session-name boundary-test
+# With the assumed credentials:
+awslocal ec2 describe-instances   # expect AccessDenied — boundary blocks it, policy doesn't matter
+awslocal s3 ls                    # expect success — inside the boundary
+```
+
+Why this matters: this is the single-account mechanical cousin of what an SCP does at the
+Organization level. A permission boundary (or an SCP) is a **ceiling evaluated independently of**
+the role's own policy — the *effective* permission is always the intersection of the two, never
+the broader one alone. Notice the role in step 2 has `AdministratorAccess` attached and *still*
+can't touch EC2, because the boundary never granted it. This is exactly the mental model tested
+when a question describes "the account administrator attached a broad policy, but a user still
+can't perform an action" — the answer is almost always a boundary or an SCP sitting above it, not
+a broken IAM policy.
+
+## Lab 8 — Cross-account-style KMS key policy, read vs. encrypt-only (Task 1.3)
+
+Goal: practice the specific KMS failure mode that trips up most candidates — a principal having
+`s3:GetObject` but still getting `AccessDenied` because the **key policy**, not the IAM policy,
+is what's actually blocking the read.
+
+```bash
+# 1. Create a key with a restrictive key policy: only the key's own account root can administer
+#    it, and only a specific role can actually use it to encrypt/decrypt
+cat > key-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "EnableRootAdmin", "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::000000000000:root" },
+      "Action": "kms:*", "Resource": "*" },
+    { "Sid": "AllowOnlyThisRoleToUse", "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::000000000000:role/BoundedDevRole" },
+      "Action": ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"], "Resource": "*" }
+  ]
+}
+EOF
+awslocal kms create-key --description "restricted-key" --policy file://key-policy.json
+
+# 2. Encrypt an object into a bucket using this key as the BoundedDevRole (should succeed)
+awslocal s3api put-object --bucket secure-app-data --key test.txt --body README.md \
+  --server-side-encryption aws:kms --ssekms-key-id <key-id>
+
+# 3. Try to read it back as a DIFFERENT role that has full s3:GetObject permission in its
+#    IAM policy, but is NOT named in the key policy above — expect AccessDenied on decrypt,
+#    even though the S3-level permission is completely fine
+```
+
+Why this matters: this is the single most common real-world "why can't my role read this
+encrypted object" debugging scenario, and it's a deliberate two-gate design: **S3 permission is
+one gate, the KMS key policy is a second, independent gate**, and a caller needs both. A question
+describing "IAM policy grants s3:GetObject, but the GetObject call still fails for a KMS-encrypted
+object" is testing whether you check the key policy, not re-check the already-correct S3 policy.
+
+## Diagram — This Domain's Labs Mapped to the Exam's Three Task Statements
+
+```mermaid
+flowchart TB
+    T11["Task 1.1 — Secure Access"] --> L1["Lab 1: Least privilege + AssumeRole"]
+    T11 --> L7["Lab 7: Permission boundary as SCP-ceiling analog"]
+    T12["Task 1.2 — Secure Workloads"] --> L3["Lab 3: Cognito user pool"]
+    T12 --> L4["Lab 4: Layered security groups"]
+    T13["Task 1.3 — Data Security Controls"] --> L2["Lab 2: KMS envelope encryption"]
+    T13 --> L5["Lab 5: Secrets Manager rotation"]
+    T13 --> L8["Lab 8: KMS key policy vs. IAM policy"]
+    L1 --> L6["Lab 6: Capstone — all three combined"]
+    L2 --> L6
+    L4 --> L6
+```
+
+Each lab deliberately targets exactly one task statement so you can self-diagnose *which* task
+statement you're weakest on by noticing which lab felt unfamiliar — Lab 6 (the capstone) is the
+only one that deliberately spans all three, because that's also how real exam scenarios are built:
+a single question usually touches identity, network, *and* data in one paragraph.
+
 ## Use Cases — Real Scenarios (these labs' skills applied for real)
 
 - **Payments startup's first SOC 2 audit.** The auditor asks to see evidence that database
@@ -242,6 +349,36 @@ real-world (and exam) "why can't this role read an encrypted object" debugging s
   key rotation is enabled (Lab 2, step 4) and that a secret's rotation history shows AWSCURRENT/
   AWSPREVIOUS staging (Lab 5) are both items a QSA (Qualified Security Assessor) will ask to see
   direct evidence of, not just a policy document claiming it.
+
+## Exam Tips for This Domain's Labs
+
+- **Lab 1's AssumeRole pattern is the mechanical foundation of IAM Identity Center** — every
+  "federated SSO hands out temporary credentials" exam answer reduces to this exact `AssumeRole`
+  call happening behind a nicer UI; know the mechanism, not just the product name.
+- **Lab 2's rotation + Lab 8's key-policy gate are the two KMS facts tested together** most often:
+  "automatic annual rotation" (a scheduling fact) and "the key policy is a second, independent
+  permission gate beyond IAM" (an access-control fact) are different questions, don't conflate them.
+- **Lab 4's security-group-ID-as-source pattern** (not a CIDR) is the single most common
+  "spot the insecure configuration" answer across every Task 1.2 scenario — if you see a CIDR block
+  where a security group ID would do, that's the thing to fix.
+- **Lab 7's permission boundary is a single-account stand-in for an SCP** — remember the real
+  exam answer for a true multi-account ceiling is an SCP attached at the Organization/OU level, not
+  a permission boundary (which is account-scoped); the lab teaches the *concept*, not the
+  production-correct mechanism for a cross-account requirement.
+
+![Sequence diagram showing a workload requesting a token from source STS, then presenting it to destination STS, which validates it against the source account's OIDC issuer and returns temporary credentials.](https://docs.aws.amazon.com/IAM/latest/UserGuide/images/outbound-cross-partition-flow.png)
+
+*Source: [AWS IAM User Guide — Cross-account roles](https://docs.aws.amazon.com/IAM/latest/UserGuide/), © Amazon Web Services.*
+
+**Discussion.** This is the real, production-grade version of what Lab 1's `assume-role` call
+approximates locally: a workload (not a human) in one account requests a token, presents it to a
+destination account's STS endpoint, which validates it against the source account's trust
+configuration before handing back temporary credentials scoped to a specific role. The exam detail
+worth internalizing from this diagram is that **trust is always two-sided** — the destination role's
+trust policy must name the source, *and* the source's own IAM policy must allow the `AssumeRole`
+call — a single missing half of that pair is the most common real-world "why can't my Lambda assume
+this cross-account role" support ticket, and it's exactly what Lab 1's locally-simulated trust
+policy is teaching you to check first.
 
 ## Honest limitation
 

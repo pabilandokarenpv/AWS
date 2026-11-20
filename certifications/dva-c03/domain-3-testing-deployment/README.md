@@ -381,7 +381,7 @@ because of `sam local`.
   infrastructure"* → CodeDeploy-via-CloudFormation support for ECS blue/green, so the deployment
   strategy itself is version-controlled IaC, not a manually-clicked console action.
 
-## Domain 3 study checklist
+## Domain 3 study checklist (core)
 
 - [ ] Explain the difference between blue/green, canary, and rolling deployments, including which
       one has a true instant-rollback property.
@@ -421,6 +421,444 @@ flowchart TD
 Both must be explicitly configured — neither is on by default, and a scenario describing "the
 rollback didn't happen even though the new version was clearly broken" is almost always testing
 whether you know an alarm wasn't associated with the deployment group at all.
+
+## Plain-English analogies for the whole domain
+
+Task statements are abstract until you can picture them. These four analogies map directly onto
+Task 3.1/3.2/3.3 and get referenced throughout the rest of this document — read them once up
+front.
+
+- **The pipeline is a restaurant kitchen, not a vending machine.** A vending machine just dispenses
+  whatever's loaded into it (manual, un-reviewed deployment). A kitchen has stations (source →
+  build → test → deploy), a head chef who tastes before anything leaves the pass (the test stage),
+  and an expediter who holds a dish back if it isn't right (a manual approval gate or a failed
+  CloudWatch alarm). CodePipeline is the kitchen's workflow; CodeBuild is the station that actually
+  cooks; CodeDeploy is the server who carries the plate out — and can take it back to the kitchen
+  (rollback) if a customer sends it back.
+- **Blue/green is a relay race with two full tracks.** Both the old runner (blue) and the new
+  runner (green) are already standing at the starting line, fully warmed up, before the race ever
+  starts. The baton (traffic) is handed to green only when green proves ready; if green trips, the
+  baton instantly goes back to blue, who never stopped being ready. This is why blue/green's
+  rollback is "instant" — the old runner was never put away.
+- **Canary deployments are a canary in a coal mine, literally.** Miners sent a canary ahead of
+  themselves into unknown tunnel air — if the canary was fine, the air was breathable, if it
+  dropped, the miners knew to turn back before anyone was in danger. A canary deployment sends 10%
+  of real traffic ahead of the other 90% for the same reason: if the small slice is unhealthy, you
+  find out before the other 90% of your "miners" (users) ever breathe the bad air.
+- **Externalized config is a hotel room key card, not a key cut into the door lock.** Rebuilding a
+  Lambda zip or Docker image for every environment is like re-carving a new lock into the door
+  every time a new guest checks in. A key card system (Parameter Store/Secrets Manager/AppConfig)
+  issues a different card (config value) to the same unchanged lock (the immutable artifact) — the
+  door itself is never rebuilt, only the card presented to it changes.
+
+## Zooming out: where Domain 3 sits in the full SDLC
+
+```mermaid
+flowchart LR
+    D1["Domain 1: Development\n(write the code)"] --> D3prep["Task 3.1\nPrepare artifacts"]
+    D3prep --> D3test["Task 3.2\nAutomate testing"]
+    D3test --> D3deploy["Task 3.3\nDeploy via CI/CD"]
+    D3deploy --> D4["Domain 4: Troubleshooting\n& Optimization\n(watch it run, fix it, tune it)"]
+    D2["Domain 2: Security\n(IAM, encryption, secrets)"] -.->|"governs every stage"| D3prep
+    D2 -.-> D3test
+    D2 -.-> D3deploy
+```
+
+Walkthrough: Domain 3 is the connective tissue between "code exists" (Domain 1) and "code is live
+and being watched" (Domain 4) — and Domain 2's security controls (least-privilege IAM for the
+pipeline's own identity, encrypted secrets, scoped roles) apply to every single stage of Domain 3,
+not as a separate concern bolted on afterward. A pipeline that builds, tests, and deploys
+flawlessly but runs under an over-permissioned IAM role has failed Domain 2 even while succeeding
+at Domain 3 — the exam tests both simultaneously in scenario questions far more often than it
+tests either domain in isolation.
+
+## CodeBuild's own "how it works" diagrams, in the CI/CD context
+
+![Diagram showing how CodeBuild works: a build project with source, build environment, buildspec, S3 output, and CloudWatch Logs](https://docs.aws.amazon.com/codebuild/latest/userguide/images/arch.png)
+
+*Source: [AWS CodeBuild User Guide — "AWS CodeBuild concepts"](https://docs.aws.amazon.com/codebuild/latest/userguide/concepts.html), © Amazon Web Services.*
+
+![Diagram showing how CodeBuild integrates as a build or test action inside an AWS CodePipeline stage](https://docs.aws.amazon.com/codebuild/latest/userguide/images/pipeline.png)
+
+*Source: [AWS CodeBuild User Guide — "What is AWS CodeBuild?"](https://docs.aws.amazon.com/codebuild/latest/userguide/welcome.html), © Amazon Web Services.*
+
+The first diagram is CodeBuild viewed in isolation: a project reads a buildspec, builds in an
+ephemeral container, and uploads an artifact while streaming logs to CloudWatch. The second
+diagram is the same CodeBuild project viewed **from CodePipeline's perspective** — just one action
+inside one stage of a larger, multi-stage pipeline. The exam-relevant point these two images make
+together: CodeBuild never orchestrates *itself* into a sequence with other stages — that's always
+CodePipeline's job. A standalone CodeBuild project with no CodePipeline in front of it is a valid,
+supported thing (you can trigger it from a webhook or the console directly), but Task 3.3's
+"deploy code via CI/CD" almost always implies the second picture, not the first.
+
+## Full multi-environment promotion pipeline, step by step
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant Src as Source (GitHub/CodeCommit)
+    participant CP as CodePipeline
+    participant CB as CodeBuild
+    participant ECRsvc as ECR
+    participant Stg as Staging (ECS Fargate)
+    participant Appr as Manual Approval
+    participant Prod as Production (ECS Fargate)
+    participant CW as CloudWatch Alarms
+
+    Dev->>Src: git push main
+    Src->>CP: Triggers pipeline execution
+    CP->>CB: Source stage artifact -> Build stage
+    CB->>CB: install / pre_build / build / post_build
+    CB->>ECRsvc: docker push <commit-sha>
+    CB-->>CP: imagedefinitions.json artifact
+    CP->>Stg: Deploy stage: update ECS service (staging)
+    Stg-->>CP: Smoke tests pass
+    CP->>Appr: Manual approval action (AI risk summary attached)
+    Appr-->>CP: Approved by human reviewer
+    CP->>Prod: Deploy stage: CodeDeploy blue/green (production)
+    Prod->>CW: Alarm watches 5xx rate during traffic shift
+    CW-->>Prod: Healthy - complete shift to 100%
+    CW-->>Prod: Unhealthy - automatic rollback to BLUE
+```
+
+Walkthrough: notice that **the exact same commit-SHA-tagged image** flows from the build stage all
+the way to production — staging and production never get separately rebuilt artifacts, satisfying
+Task 3.1's artifact-immutability discipline end to end. The manual approval sits **between**
+staging (where it already passed automated smoke tests) and production (where a human now signs
+off on the diff) — this ordering matters: approving before staging validation would mean approving
+blind, which defeats the purpose of the gate.
+
+## Worked example: a complete SAM-based pipeline — buildspec.yml + template.yaml + appspec equivalent together
+
+A common exam-adjacent task is recognizing how three different artifact types cooperate in one
+release. Here is a genuinely complete, consistent trio for a Lambda-backed orders API.
+
+**`template.yaml`** (SAM — defines the function, its API route, and its canary deployment
+preference in one place):
+```yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    AutoPublishAlias: live
+Resources:
+  OrdersApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+  GetOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/get_order/
+      Handler: app.handler
+      Events:
+        GetOrder:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /orders/{id}
+            Method: get
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+        Alarms:
+          - !Ref OrdersErrorAlarm
+  OrdersErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GetOrderFunction
+```
+
+**`buildspec.yml`** (CodeBuild — validates and packages the SAM template as a pipeline stage):
+```yaml
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install aws-sam-cli
+  build:
+    commands:
+      - sam validate --template template.yaml
+      - sam build
+      - sam package --s3-bucket $ARTIFACT_BUCKET --output-template-file packaged.yaml
+artifacts:
+  files:
+    - packaged.yaml
+```
+
+What matters here: **`sam validate` runs inside the build stage, before `sam package` ever
+touches a real deploy** — this is Task 3.2's "validate infrastructure templates" bullet happening
+literally in the pipeline, not as a separate manual step someone remembers to run. The packaged
+template (not the raw `template.yaml`) is what CodePipeline's downstream CloudFormation deploy
+action actually applies.
+
+**No separate raw AppSpec file is needed here** — this is a detail worth understanding precisely:
+because `DeploymentPreference` is declared directly inside `template.yaml`, SAM's transform
+generates the equivalent `AWS::Lambda::Alias` and `AWS::CodeDeploy::DeploymentGroup` resources
+(and the AppSpec-equivalent configuration) automatically at deploy time — you only hand-write a
+standalone AppSpec YAML file when you're calling CodeDeploy's raw API directly (as in the EC2/ECS
+worked examples elsewhere in this doc and in `labs.md`), not when going through SAM's
+`DeploymentPreference` shorthand. A question contrasting "I see an AppSpec file in this pipeline"
+versus "I see a `DeploymentPreference` block in a SAM template" is testing whether you recognize
+these as two different authoring paths to the *same* underlying CodeDeploy mechanism.
+
+## Container CI/CD deep dive: ECS blue/green with a hand-written AppSpec
+
+For a *non*-SAM, raw-CodeDeploy container pipeline (common when CloudFormation/CDK define the ECS
+service directly rather than through SAM), the AppSpec is a separate, explicit file:
+
+```yaml
+# appspec.yaml — ECS blue/green via CodeDeploy
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: "<TASK_DEFINITION>"   # CodeDeploy substitutes this at deploy time
+        LoadBalancerInfo:
+          ContainerName: "orders-api"
+          ContainerPort: 8080
+Hooks:
+  - BeforeInstall: "arn:aws:lambda:us-east-1:123456789012:function:pre-install-checks"
+  - AfterAllowTestTraffic: "arn:aws:lambda:us-east-1:123456789012:function:run-smoke-tests"
+  - AfterAllowTraffic: "arn:aws:lambda:us-east-1:123456789012:function:post-traffic-checks"
+```
+
+```yaml
+# buildspec.yml — builds the image, registers a new task definition revision,
+# and produces the two files CodePipeline's ECS-blue/green deploy action needs
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+  build:
+    commands:
+      - docker build -t orders-api:$COMMIT_HASH .
+      - docker tag orders-api:$COMMIT_HASH $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/orders-api:$COMMIT_HASH
+  post_build:
+    commands:
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/orders-api:$COMMIT_HASH
+      - printf '{"ImageURI":"%s"}' $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/orders-api:$COMMIT_HASH > imageDetail.json
+artifacts:
+  files:
+    - imageDetail.json
+    - appspec.yaml
+    - taskdef.json
+```
+
+```json
+// taskdef.json — the task definition template CodePipeline's ECS (blue/green) deploy action
+// fills in the IMAGE1_NAME placeholder for, using imageDetail.json's ImageURI
+{
+  "family": "orders-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "orders-api",
+      "image": "<IMAGE1_NAME>",
+      "portMappings": [{"containerPort": 8080, "protocol": "tcp"}]
+    }
+  ]
+}
+```
+
+Three files travel together as the build artifact — `appspec.yaml`, `taskdef.json`, and
+`imageDetail.json` — and CodePipeline's **ECS (blue/green)** deploy action (distinct from its
+plain **ECS** deploy action, which does a rolling update with no CodeDeploy involvement at all)
+consumes all three together. This exact three-file bundle, by name, is a specific, testable detail:
+a question describing "the ECS blue/green deploy action in CodePipeline isn't finding the image
+reference" is almost always pointing at a missing or malformed `imageDetail.json`.
+
+## Testing pyramid for serverless and container apps
+
+```mermaid
+flowchart TB
+    subgraph Pyramid["Testing pyramid - bottom is cheapest and fastest"]
+        direction TB
+        Unit["Unit tests\nmany, fast, no AWS calls\npytest/jest against pure functions"]
+        Integration["Integration tests\nfewer, slower\nreal or emulated AWS services (moto/Floci/LocalStack)"]
+        E2E["End-to-end / load tests\nfewest, slowest, most expensive\nagainst a real deployed staging environment"]
+    end
+    Unit --> Integration --> E2E
+```
+
+Walkthrough: this pyramid shape is the single most important testing-strategy fact for Task 3.2 —
+you want **many** fast, isolated unit tests, **some** integration tests against real or emulated
+AWS services, and only a **small number** of expensive end-to-end/load tests against a real
+environment. A question describing a test suite that's mostly end-to-end tests against a live
+staging stack, running for 40 minutes per pipeline execution, is describing an **inverted pyramid**
+— a specific anti-pattern the exam expects you to recognize and recommend fixing by pushing more
+coverage down into unit/integration tests. The full depth of this topic (including worked
+pytest/moto examples, load-testing with Locust, and exact tool selection per layer) has its own
+dedicated doc:
+
+➡️ **[`testing-strategies-for-serverless-apps.md`](testing-strategies-for-serverless-apps.md)**
+
+## IaC drift: the validation story doesn't end at deploy time
+
+Task 3.2's "validate infrastructure templates" is usually read as a pre-deploy check
+(`sam validate`, `cdk diff`) — but a template that was valid at deploy time can still **drift**
+away from what's actually running, if someone makes an out-of-band change directly in the console.
+
+![The Detect drift for current stack command selected on the Stack actions menu for the selected stack.](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/images/console-stacks-actions-detect-drift-1.png)
+
+*Source: [AWS CloudFormation User Guide — "Detect drift on an entire CloudFormation stack"](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/detect-drift-stack.html), © Amazon Web Services.*
+
+A stack that shows `DRIFTED` means at least one resource's live configuration no longer matches
+what the template says it should be — a classic cause is "someone manually changed a security
+group rule in the console to fix an urgent issue, and never updated the template to match." The
+full drift-detection and remediation workflow (detection cadence, automated multi-account
+detection via AWS Config, and the remediation decision tree) is covered in depth here:
+
+➡️ **[`iac-drift-detection-and-remediation.md`](iac-drift-detection-and-remediation.md)**
+
+## Deployment strategy choice, with real CodeDeploy configuration names
+
+The "Deployment strategies compared" table above gives the conceptual tradeoffs; the exam also
+expects you to recognize CodeDeploy's actual **named deployment configurations** by pattern:
+
+| Named config | Compute platform | Shape |
+|---|---|---|
+| `CodeDeployDefault.LambdaAllAtOnce` | Lambda | 100% traffic shifted immediately, no gradual ramp |
+| `CodeDeployDefault.LambdaCanary10Percent5Minutes` | Lambda | 10% shifted, wait 5 min, then 100% |
+| `CodeDeployDefault.LambdaLinear10PercentEvery1Minute` | Lambda | +10% every minute until 100% |
+| `CodeDeployDefault.ECSAllAtOnce` | ECS | 100% traffic shifted to the replacement task set immediately |
+| `CodeDeployDefault.ECSCanary10Percent5Minutes` | ECS | 10% shifted, wait 5 min, then 100% |
+| `CodeDeployDefault.ECSLinear10PercentEvery1Minute` | ECS | +10% every minute until 100% |
+| `CodeDeployDefault.OneAtATime` | EC2/on-premises | One instance at a time (rolling) |
+| `CodeDeployDefault.HalfAtATime` | EC2/on-premises | Half the fleet, then the other half |
+| `CodeDeployDefault.AllAtOnce` | EC2/on-premises | Every instance simultaneously — fastest, least safe |
+
+A full, dedicated comparison of blue/green vs. canary vs. linear — including the complete worked
+AppSpec/CodeDeploy YAML for all three against both Lambda and ECS, the exact bake-time tradeoffs,
+and a decision flowchart — lives in its own topic doc:
+
+➡️ **[`blue-green-canary-linear-deployment-strategies.md`](blue-green-canary-linear-deployment-strategies.md)**
+
+## The pipeline's own identity: IAM and STS in CI/CD
+
+Every stage of a pipeline runs **as some IAM identity**, and Task 3.3 expects you to reason about
+least privilege for the pipeline itself, not just for the application it deploys.
+
+```mermaid
+flowchart TD
+    CPRole["CodePipeline service role"] -->|assumes, scoped to this pipeline only| CBRole["CodeBuild project role"]
+    CBRole -->|"ecr:GetAuthorizationToken,\necr:PutImage (scoped to ONE repo)"| ECRsvc[ECR]
+    CBRole -->|"ssm:GetParameter,\nsecretsmanager:GetSecretValue\n(scoped to specific ARNs)"| Config[Parameter Store / Secrets Manager]
+    CPRole -->|"sts:AssumeRole into a\ncross-account deploy role"| ProdRole["Cross-account production\ndeploy role (separate AWS account)"]
+    ProdRole -->|"cloudformation:*,\nscoped to this stack's resources"| Prod[Production stack]
+```
+
+Walkthrough: a pipeline deploying into a **separate production AWS account** (a common
+multi-account pattern — see `glossary`/Organizations content) does so via **STS `AssumeRole`**
+into a role that exists *in* the production account, trusting only the pipeline's own account as
+principal. This is exactly the `sts-and-role-switching` pattern applied to CI/CD: the pipeline's
+own service role never holds standing production credentials — it assumes a temporary, scoped role
+only for the duration of the deploy action. A scenario describing "the pipeline account should
+never have persistent IAM users with direct production access" is testing this exact cross-account
+AssumeRole pattern, not a different cross-account sharing mechanism.
+
+## Secrets vs. config vs. feature flags in the pipeline — the three-way distinction, concretely
+
+| Need | Service | Why not the other two |
+|---|---|---|
+| A database password that must rotate automatically | Secrets Manager | Parameter Store has no built-in rotation engine; AppConfig has no concept of a rotating credential at all |
+| 2,000 non-secret environment settings at effectively zero cost | Parameter Store (Standard) | Secrets Manager's per-secret fee at that volume is a real, avoidable cost; AppConfig is overkill for values with no gradual-rollout requirement |
+| A feature flag that must roll out to 10% of users with automatic rollback on an alarm | AppConfig | Parameter Store/Secrets Manager have no deployment strategy or rollback concept at all — flipping a plain parameter is instant and all-or-nothing |
+
+This table is the fast, testable version of the full comparison in
+[`services/security-identity-compliance/secrets-manager-vs-parameter-store.md`](../../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md)
+and [`services/management-governance/appconfig.md`](../../../services/management-governance/appconfig.md)
+— a scenario naming "gradual rollout" or "automatic rollback on alarm" for a *configuration* change
+(not a deployment) is the single clearest AppConfig signal, distinguishing it from both of its
+"just store a value" siblings.
+
+## Additional worked exam scenarios
+
+- *"A pipeline builds a container image, but the ECS blue/green deploy action in CodePipeline
+  can't determine which image to deploy."* → the build stage's artifacts are missing
+  `imageDetail.json` (or it's malformed) — this is the specific file the ECS blue/green deploy
+  action consumes, distinct from `imagedefinitions.json` used by the plain (non-blue/green) ECS
+  deploy action.
+- *"A canary Lambda deployment should run an automated smoke test against the new version before
+  any of the remaining 90% of traffic shifts."* → an `AfterAllowTestTraffic`/`PostTraffic` AppSpec
+  hook (or SAM's `DeploymentPreference.Hooks.PostTraffic`) running a validation Lambda that calls
+  `PutLifecycleEventHookExecutionStatus` — not a separate, disconnected test suite run after the
+  deployment is already considered complete.
+- *"A development team wants to validate a CloudFormation template's syntax and see exactly what
+  would change before applying an update, without actually deploying anything."* → `cdk diff` (CDK
+  apps) or a CloudFormation **change set** (raw CloudFormation/SAM) — both show the pending diff
+  without mutating any live resource.
+- *"A security team discovered a resource was manually modified in the console after its stack was
+  deployed, and wants to detect this automatically going forward, across hundreds of accounts."* →
+  CloudFormation **drift detection**, automated via AWS Config rules and EventBridge across
+  accounts — not a one-off manual console check; see the drift-detection topic doc.
+- *"A CI/CD pipeline must deploy into a separate AWS account than the one the pipeline itself runs
+  in, without the pipeline account holding any standing production credentials."* → cross-account
+  **STS `AssumeRole`** into a role defined in the target account, trusting only the pipeline
+  account as principal.
+- *"A test suite takes 40 minutes per pipeline run because most of the coverage is full
+  end-to-end tests against a live staging environment."* → the test suite has an **inverted testing
+  pyramid** — the fix is pushing more coverage down into fast unit tests and a moderate layer of
+  integration tests, reserving end-to-end/load tests for a small number of critical paths.
+- *"A load test must simulate realistic, bursty user traffic against a staging API before a major
+  release, without hand-rolling a custom load generator."* → a dedicated load-testing tool (e.g.,
+  Locust, Artillery, or AWS's own Distributed Load Testing solution) run against a staging
+  environment, not folded into the same CodeBuild unit-test phase that runs on every commit — load
+  tests are expensive and slow, and belong at the top of the testing pyramid, run less frequently.
+- *"A rotating database credential must be referenced by an ECS task definition without writing
+  any code to fetch it."* → reference the Secrets Manager ARN directly in the task definition's
+  `secrets` block — both ECS and Lambda support native secret/parameter references with zero SDK
+  code needed in the application itself.
+- *"A Lambda canary deployment needs to warm up provisioned concurrency on the new version before
+  the canary traffic shift begins, so the first real users don't experience cold starts during the
+  validation window."* → configure **provisioned concurrency** on the new published version ahead
+  of the CodeDeploy canary shift — provisioned concurrency and traffic-shifting are independent
+  features that must be deliberately combined, not something CodeDeploy does automatically.
+- *"A CDK app needs to be checked for unintended infrastructure changes before every deployment, as
+  a hard pipeline gate, not just a developer's manual habit."* → `cdk diff` run as an explicit
+  CodeBuild phase that fails the build (or requires approval) on any change touching
+  security-sensitive resource types — making template validation part of the pipeline's enforced
+  behavior rather than a convention someone might skip under deadline pressure.
+
+## Domain 3 study checklist (expanded)
+
+- [ ] Explain the difference between blue/green, canary, and rolling deployments, including which
+      one has a true instant-rollback property.
+- [ ] Name the actual CodeDeploy deployment-config strings (`LambdaCanary10Percent5Minutes`,
+      `ECSLinear10PercentEvery1Minute`, `OneAtATime`, etc.) and match them to compute platform.
+- [ ] Explain why config must be externalized rather than baked into a build artifact, and when
+      that externalized config should be Parameter Store vs. Secrets Manager vs. AppConfig.
+- [ ] Name at least two things Task 3.2 expects you to validate *before* deployment (template
+      syntax, mock test events) and why each matters — plus what drift detection catches *after*.
+- [ ] Describe where in a CI/CD pipeline an AI-assisted test-generation or deployment-approval step
+      would realistically sit, and what a human still must do at that step.
+- [ ] Explain ECR lifecycle policies and image scanning, and why "just delete old images manually"
+      is the wrong exam answer.
+- [ ] Pick the right CodeDeploy compute platform (EC2/on-prem, Lambda, ECS) for a given scenario.
+- [ ] Describe the shape of the testing pyramid and recognize an inverted-pyramid anti-pattern.
+- [ ] Explain cross-account pipeline deployment via STS AssumeRole, and why a pipeline shouldn't
+      hold standing credentials in the account it deploys into.
+- [ ] Identify the three artifacts an ECS blue/green CodePipeline deploy action needs
+      (`appspec.yaml`, `taskdef.json`, `imageDetail.json`) versus the single file
+      (`imagedefinitions.json`) the plain ECS deploy action needs.
 
 ## Labs
 

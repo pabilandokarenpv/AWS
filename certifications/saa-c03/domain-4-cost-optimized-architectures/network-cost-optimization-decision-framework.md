@@ -12,6 +12,17 @@ A decision framework for minimizing network spend — on top of `data-transfer-p
 (the detailed pricing model this doc assumes), `vpc-endpoints-privatelink.md`,
 `transit-gateway-and-peering.md`, `direct-connect.md`, `vpn.md`.
 
+## Plain-English Analogy
+
+AWS network pricing is a toll-road system, and this framework is the GPS that routes around
+unnecessary tolls. Driving within your own neighborhood (same-AZ traffic) is free. Crossing into
+the next neighborhood over (cross-AZ) has a small toll both ways. Driving to a different city
+(cross-Region) costs more. Taking the public interstate out to anywhere on the internet (internet
+egress) is the priciest toll road of all — and routing a trip that only needed to go two doors
+down (traffic to S3/DynamoDB) out onto that interstate anyway, purely because nobody built the
+free back-alley shortcut (a VPC endpoint), is the single costliest unforced error this whole
+framework exists to catch.
+
 ## Purpose
 
 Network cost surprises are one of the most common sources of an unexpectedly large AWS bill,
@@ -187,6 +198,67 @@ traffic from the public-facing Internet Gateway path. The six-VPC peering mesh (
 roughly 15 individual peering connections to be fully meshed) is replaced with a single **Transit
 Gateway** hub-and-spoke, cutting both the connection-management overhead and, at that VPC count,
 the aggregate cost versus maintaining the full mesh.
+
+## Full Worked Numeric Case: Quantifying the Audit's Three Fixes
+
+Putting real illustrative numbers against the mini-case's three fixes shows the relative size of
+each lever. Assume the application generates 30 TB/month of S3 traffic and 3 TB/month of SNS
+traffic through the NAT Gateway path, plus the six-VPC peering mesh carrying 5 TB/month of
+inter-VPC traffic.
+
+- **(a) S3 Gateway Endpoint:** NAT Gateway cost for 30 TB (30,720 GB) at $0.045/GB processed plus
+  the fixed hourly charge: $0.045 × 730 + 30,720 × $0.045 ≈ $32.85 + $1,382.40 ≈ **$1,415.25/
+  month** eliminated entirely by the free endpoint.
+- **(b) SNS Interface Endpoints (2 AZs):** NAT Gateway cost for the same 3 TB (3,072 GB) of SNS
+  traffic: 3,072 × $0.045 ≈ **$138.24/month** (plus a share of the fixed NAT cost). The Interface
+  Endpoint alternative costs roughly $0.01/hour per AZ × 2 AZs × 730 + 3,072 × $0.01 ≈ $14.60 +
+  $30.72 ≈ **$45.32/month** — still a real cost, but roughly **$93/month cheaper** than the NAT
+  path it replaces.
+- **(c) Transit Gateway replacing the 6-VPC peering mesh:** peering itself has no hourly fee, so
+  this fix's saving is primarily *management overhead*, not a direct AWS bill reduction — the
+  Transit Gateway's own cost (6 attachments × ~$0.05/hour × 730 ≈ **$219/month**) can actually be
+  a net *increase* in raw AWS billing versus free peering, which is the detail that makes this
+  specific fix a complexity/scalability decision rather than a pure cost-reduction one at only 6
+  VPCs — the math only favors Transit Gateway once the VPC count (and the resulting peering
+  connection count) grows enough that the *operational* cost of managing the mesh exceeds $219/
+  month in engineering time, which is a judgment call the exam expects you to make qualitatively,
+  not purely from the AWS bill alone.
+- **Combined direct AWS-bill saving from (a) and (b) alone:** roughly $1,415.25 + $93 ≈
+  **$1,508/month ($18,096/year)** — fix (c)'s value is real but shows up as reduced management
+  overhead rather than a comparable line-item reduction at this specific VPC count.
+
+## Architecture: A Second Diagram — Same-AZ Placement as a Network Cost Lever
+
+```mermaid
+flowchart LR
+    subgraph SplitAZ["Split across AZs — unnecessary cross-AZ cost"]
+        SvcA1["Service A — AZ-1"] <-->|"$0.01/GB each<br/>direction, continuous"| SvcB1["Service B — AZ-2"]
+    end
+    subgraph SameAZ["Co-located — zero data transfer cost"]
+        SvcA2["Service A — AZ-1"] <-->|"$0.00/GB —<br/>same-AZ traffic is free"| SvcB2["Service B — AZ-1"]
+    end
+```
+
+Walkthrough: this diagram isolates the **AZ-placement lever** from everything else in this
+framework — the same two services, the same traffic volume, the only variable changed is
+which AZ each one lives in. This is deliberately drawn as its own minimal diagram because it's
+easy to overlook amid NAT Gateway and Transit Gateway discussions, even though it's a real,
+continuously recurring charge with zero availability tradeoff *when the specific pair doesn't
+need per-pair AZ redundancy* — see Section 22 of MASTER-CHUNK.md and the dedicated Data Transfer
+Cost Traps doc for the fuller numeric treatment.
+
+## Real AWS Image: Reducing Cross-AZ/Region Traffic Through Thoughtful Placement
+
+![Diagram showing a sample web application built on Amazon Route 53, AWS WAF, Amazon CloudFront, Amazon EC2, Amazon RDS, Elastic Load Balancing, Amazon S3, and Amazon EFS, with each service mapped to the Reserved Instance or Savings Plans commitment options available.](https://docs.aws.amazon.com/wellarchitected/latest/framework/images/ri-sp-services.png)
+
+*Source: [AWS Well-Architected Framework — FND06-BP06](https://docs.aws.amazon.com/wellarchitected/latest/framework/fnd06-bp06.html)*
+
+This same reference architecture (reused from the Compute framework doc, shown here for its
+*topology*, not its purchasing-model mapping) is worth a second look through the network-cost
+lens: every arrow between these services is a potential cross-AZ or cross-Region data-transfer
+charge depending on how the underlying resources are actually placed — a Well-Architected review
+walks this exact diagram twice, once for cost-of-commitment (compute/database purchasing models)
+and once for cost-of-movement (this doc's network placement question).
 
 ## Why It's Important
 

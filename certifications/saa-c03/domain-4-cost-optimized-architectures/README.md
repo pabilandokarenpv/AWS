@@ -16,6 +16,19 @@ compute, database, and network in turn — learn the move once, then recognize i
 
 *Source: [Amazon S3 User Guide — Transitioning objects using Amazon S3 Lifecycle](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html)*
 
+## Plain-English Analogy for the Whole Domain
+
+Think of running an AWS bill like running a household budget across four categories at once:
+the pantry (storage) should hold perishables up front and canned goods in the back, not
+everything at fridge temperature; staffing (compute) should flex a part-time shift for the
+predictable dinner rush instead of paying full-time wages around the clock; the grocery budget
+(database) should buy in bulk only for ingredients you use every single week, not for the one
+exotic spice you might need twice a year; and the commute (network) should take the free direct
+route home instead of paying a toll for a trip that never needed the highway. Every task
+statement below is one of these four categories, and every "unoptimized" exam answer is some
+version of paying fridge-temperature prices, full-time wages, bulk-buy money, or toll-road fees
+for something that didn't actually need them.
+
 ## Task 4.1 — Design cost-optimized storage solutions
 
 > Lifecycle policies, storage classes, backup strategy
@@ -31,6 +44,10 @@ compute, database, and network in turn — learn the move once, then recognize i
 ## Task 4.2 — Design cost-optimized compute solutions
 
 > Spot/Reserved/Savings Plans, auto scaling, serverless, containers
+
+![Lifecycle of a Spot Instance request, showing the possible status transitions from pending evaluation through to running, interrupted, or terminated states.](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/images/spot_request_states.png)
+
+*Source: [Amazon EC2 User Guide — How Spot Instances work](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/how-spot-instances-work.html)*
 
 | Concept | Doc |
 |---|---|
@@ -263,6 +280,53 @@ a Savings-Plan-covered baseline runs on Spot. This mirrors the "match the model 
 pattern" principle this whole domain is built around, rather than reaching for whichever single
 discount mechanism sounds most aggressive.
 
+## GreenLedger Logistics — The Same Case Study, With Real Numbers
+
+Turning the narrative case study above into an actual illustrative budget makes the 30%-reduction
+mandate concrete. Assume GreenLedger's starting monthly AWS bill is **$42,000**, broken down
+roughly as: $12,000 storage, $18,000 compute, $8,000 database, $4,000 network.
+
+| Area | Before | Fix | After | Monthly saving |
+|---|---|---|---|---|
+| Storage (4.1) | $12,000 | Lifecycle policy tiers delivery-photo evidence; unattached EBS volumes cleaned up | $12,000 × (1 − 0.55) ≈ **$5,400** | **$6,600** |
+| Compute (4.2) | $18,000 | 1-yr Savings Plan on the stable API baseline (≈28% off that portion); nightly batch job moves to Spot-backed Batch | $18,000 × (1 − 0.30) ≈ **$12,600** | **$5,400** |
+| Database (4.3) | $8,000 | Dev/test Multi-AZ removed + scheduled stop/start; "package scan event" table moved to DynamoDB On-Demand | $8,000 × (1 − 0.35) ≈ **$5,200** | **$2,800** |
+| Network (4.4) | $4,000 | S3/DynamoDB Gateway Endpoints replace NAT Gateway traffic; VPC peering mesh consolidated to Transit Gateway | $4,000 × (1 − 0.60) ≈ **$1,600** | **$2,400** |
+| **Total** | **$42,000** | | **$24,800** | **$17,200 (≈41%)** |
+
+**The number the CFO actually asked for:** a 30% reduction target against a $42,000 baseline is
+$42,000 × 0.70 = **$29,400** — this specific illustrative pass lands at $24,800, beating the
+mandate with room to spare, specifically because storage and network (the two categories with the
+most "pure waste" to remove — unattended lifecycle tiering and a misconfigured NAT path) delivered
+proportionally larger percentage cuts than compute and database, where real commitments and
+genuine availability tradeoffs limit how aggressively cost can be cut without risk.
+
+## Architecture: Where Trusted Advisor and Cost Explorer Sit in the GreenLedger Workflow
+
+```mermaid
+flowchart TD
+    CE["Cost Explorer — $42,000/month<br/>baseline, broken down by<br/>service and usage type"] --> Diagnose["Diagnose: where is<br/>the money actually going?"]
+    Diagnose --> StorageFind["Storage: delivery-photo<br/>lifecycle gap + orphaned EBS"]
+    Diagnose --> ComputeFind["Compute: 24/7 On-Demand<br/>API baseline, idle batch EC2"]
+    Diagnose --> DBFind["Database: dev/test Multi-AZ,<br/>mismatched 'scan event' table"]
+    Diagnose --> NetFind["Network: NAT Gateway<br/>dominated by S3/DynamoDB traffic"]
+
+    TA["Trusted Advisor —<br/>automated flags"] -.-> StorageFind
+    TA -.-> ComputeFind
+
+    StorageFind --> Fix1["Apply the Storage<br/>Cost-Optimization Framework"]
+    ComputeFind --> Fix2["Apply the Compute<br/>Cost-Optimization Framework"]
+    DBFind --> Fix3["Apply the Database<br/>Cost-Optimization Framework"]
+    NetFind --> Fix4["Apply the Network<br/>Cost-Optimization Framework"]
+```
+
+Walkthrough: this diagram makes explicit what the narrative case study implies — **Cost
+Explorer and Trusted Advisor are the diagnostic layer**, and the four per-task decision
+frameworks in this folder are the *remediation* layer applied once the diagnosis points at a
+specific category. A real cost-optimization engagement (and a well-constructed exam scenario)
+almost always follows this same two-step shape: find the specific line item first, then apply the
+matching framework, rather than guessing at a fix before confirming where the spend actually is.
+
 ## Use Cases — Real Scenarios
 
 - **Podcast hosting network tiering five years of audio archives (Task 4.1).** Episodes older
@@ -354,12 +418,42 @@ discount mechanism sounds most aggressive.
   tuning lifecycle rules risks costly early-retrieval penalties if guessed wrong."* → S3
   Intelligent-Tiering, which automates tier placement based on observed access with a small
   monitoring fee, avoiding the risk of a poorly-guessed manual lifecycle rule.
+- *"A steady Reserved Instance commitment was purchased, but the workload's traffic has since
+  become spiky and unpredictable."* → the commitment itself can't be undone mid-term, but future
+  capacity decisions should re-evaluate toward On-Demand/Spot/serverless for the new pattern,
+  and Savings Plans (unlike Reserved Instances) at least survive an instance-family change
+  without losing value.
+- *"A database cluster's read replicas have grown over time and nobody has reviewed whether all
+  of them are still needed."* → each read replica is its own billed instance; review actual
+  read-offload need before assuming more replicas are automatically beneficial.
+- *"A newly-launched DR Region's bill per byte of traffic is higher than production's for
+  identical traffic."* → check whether the DR Region's VPC Endpoints were actually replicated
+  alongside its compute/database resources, a frequently-missed step in DR Region setup.
 
 ## Hands-on Labs
 
-See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 5 labs
+See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 7 labs
 covering S3 lifecycle policies, DynamoDB billing-mode switching, VPC endpoint configuration,
-EBS volume cleanup, and a capstone cost-audit lab chaining several of these together.
+EBS volume cleanup, a mixed-instances Auto Scaling policy, an AWS Backup lifecycle plan, and a
+capstone cost-audit lab chaining all of these together.
+
+## Deeper Dives and the Master Reference
+
+Beyond the four per-task decision frameworks above, this folder also includes:
+
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — a single, standalone file covering all 29 services/
+  topics in this domain's scope (Definition, Analogy, Use Cases, a Mermaid diagram, a real AWS
+  image, and worked exam-tip math for each) — useful as a final-review, open-once-and-don't-
+  leave reference.
+- [`reserved-savings-plans-vs-spot-worked-math.md`](reserved-savings-plans-vs-spot-worked-math.md) —
+  a dedicated worked-math deep dive on the compute purchasing-model decision (On-Demand vs.
+  Reserved vs. Savings Plans vs. Spot), with real numeric crossover points.
+- [`data-transfer-cost-traps-deep-dive.md`](data-transfer-cost-traps-deep-dive.md) — six specific,
+  numerically-worked architectural patterns that silently inflate network cost beyond what the
+  core decision framework covers.
+- [`database-capacity-mode-cost-crossover.md`](database-capacity-mode-cost-crossover.md) — the
+  exact formulas and crossover points for DynamoDB On-Demand vs. Provisioned and Aurora
+  Serverless v2 vs. flat-provisioned capacity.
 
 ## Where This Domain Connects
 

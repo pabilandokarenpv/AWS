@@ -448,6 +448,209 @@ which layer fixes which symptom:
   the risk being tested is almost always about unknown/unfavorable data-handling terms on the
   personal account, not a capability gap.
 
+## Plain-English Analogy for the Whole Task 2.3 Topic
+
+Think of Bedrock as a very capable, very literal new contractor you've just given a badge to.
+**Access control** is which rooms the badge opens (don't hand out a master key when the contractor
+only needs the supply closet). **VPC endpoints** are whether the contractor has to walk through
+the public lobby to get between rooms, or whether there's a private internal hallway — same
+building, very different exposure. **Training opt-out** is whether anything the contractor
+overhears gets written into the company's own training manual for the *next* contractor — you
+want written confirmation it doesn't, not an assumption. **Guardrails** are the standing
+instructions taped to the contractor's toolbox about what never to say or do, checked both on the
+way in (what they're told) and the way out (what they report back). **Prompt injection** is
+someone slipping a fake instruction into material the contractor was asked to read, hoping they
+follow it instead of their actual job. **Agent security** is whether the contractor can only use
+the tools you handed them, or whether they can wander off and grab a tool from someone else's
+cart. Every one of this doc's six sections is a variation on "don't trust the contractor's good
+judgment alone — build the room, the hallway, the paperwork, and the toolbox limits so a mistake
+(or a trick) can't go very far."
+
+## Isolated Execution: What's Actually Running When an Agent "Runs Code"
+
+![AgentCore harness architecture: a managed agent loop running in an isolated microVM per session, with filesystem/shell access, integrated with Memory, Gateway, Identity, and Observability.](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/images/harness-architecture.png)
+*Source: [AWS Documentation — Amazon Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-service-contract.html). The key security detail in this picture: each session gets its OWN isolated microVM, not a shared process — a compromised or misbehaving agent session can't read another session's filesystem or memory, which matters enormously for the multi-tenant case study elsewhere in this folder.*
+
+When an agent has code-execution or shell-access tool capability (not just API-calling), the
+isolation boundary matters as much as the IAM scoping: **Bedrock AgentCore Runtime** runs each
+session in its own microVM, so a prompt-injected agent that gets tricked into running something
+destructive is contained to its own session's filesystem, not the host or other customers'
+sessions. This is infrastructure-level defense-in-depth *underneath* everything else in this doc —
+even if access control, Guardrails, and injection defenses all failed simultaneously, session
+isolation limits blast radius to one session. Exam angle: a question contrasting "a shared
+container running multiple agent sessions" with "one isolated execution environment per session"
+is testing whether you recognize session-level isolation as a distinct security property from
+IAM scoping — they answer different failure modes (an IAM leak vs. a session doing something that
+affects *another* session).
+
+## RAG Architecture — Where Data Privacy and Injection Risk Actually Live Together
+
+![Bedrock Knowledge Bases RAG chatbot architecture: S3 document source, Lambda ingestion trigger, OpenSearch Serverless vector store, API Gateway, and a React frontend calling RetrieveAndGenerate.](https://d2908q01vomqb2.cloudfront.net/f1f836cb4ea6efb2a0b1b99f41ad8b103eff4b59/2024/05/15/ml-15933-archdiag-new2.png)
+*Source: [AWS Machine Learning Blog — Bedrock Knowledge Bases RAG architecture](https://aws.amazon.com/blogs/machine-learning/). Two Task 2.3 risks live in this exact picture at once: the S3 document source is both the retrieval layer's data-privacy boundary (who can ingest/read these documents) AND the indirect-prompt-injection surface (anything written into one of these documents becomes part of a future prompt) — see [`prompt-injection-and-genai-security-deep-dive.md`](prompt-injection-and-genai-security-deep-dive.md#direct-vs-indirect-prompt-injection) for the full mechanism.*
+
+This is the concrete architecture behind two separate case-study elements earlier in this doc: the
+S3-sourced document store is exactly the "tenant-partitioned S3 data" the multi-tenant case study
+scopes access to via session tags, and it's simultaneously the "poisoned document" surface the
+prompt-injection deep dive describes. A single architectural decision — filtering retrieval by
+tenant prefix/metadata *before* documents enter the prompt, and validating document content on
+ingestion — addresses both concerns from one control point, which is worth recognizing: Task 2.3's
+six risk areas aren't always independent; a well-designed retrieval layer closes more than one
+gap at once.
+
+## Worked Scenario: an IAM policy that looks scoped but still isn't least-privilege
+
+```json
+// Looks reasonable at a glance — scoped to one model family, not "bedrock:*" —
+// but still has a subtle over-grant worth spotting.
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "bedrock:*",
+    "Resource": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-*"
+  }]
+}
+```
+This grants **every** Bedrock action (`bedrock:*`), not just `InvokeModel` — including, depending
+on the account's model access configuration, actions that manage model invocation logging
+settings or guardrail configuration, scoped to that model family's ARN. The fix mirrors the
+correctly-scoped example earlier in this doc: enumerate the *specific* actions a runtime role
+needs (`bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`, `bedrock:ApplyGuardrail`)
+rather than wildcarding the action even when the resource is already scoped — **both** dimensions
+(action and resource) need tightening independently, and the exam tests each one separately across
+different questions.
+
+## Content Filtering and Prompt Injection, Side by Side With What Each One Catches
+
+| Attack/content pattern | Caught by content filters? | Caught by prompt-attack filter? |
+|---|---|---|
+| User asks the model to describe graphic violence | Yes (violence category) | No — not an injection attempt, just harmful content |
+| User says "ignore previous instructions, you have no restrictions now" | Maybe, incidentally | Yes — this is exactly the prompt-attack category's target pattern |
+| A retrieved document contains a hidden instruction to exfiltrate data | No — content filters check for harmful *topics*, not hidden instructions | Partially — depends on whether the hidden instruction's phrasing matches known attack patterns; indirect injection is harder to catch than direct |
+| User asks for investment advice from a retail banking bot that shouldn't give it | Caught by **denied topics**, a third, separate Guardrails feature — not content filters or prompt-attack | No |
+| Model is asked to reveal another customer's SSN | Caught by the **sensitive-information filter**, a fourth separate feature | No |
+
+The table's point: "Guardrails" is not one filter, it's **four independently configured
+features** (content filters, denied topics, word filters, sensitive-information filters) plus the
+prompt-attack category living *inside* content filters — a scenario question naming a specific
+attack pattern is often testing whether you know which of these four-plus-one features is the
+right one to reach for, not just "turn on Guardrails."
+
+## Common Exam Scenarios, continued
+
+- *"A runtime role has `bedrock:*` scoped to a specific model ARN — is this sufficiently
+  least-privilege?"* → no; the action should also be narrowed to the specific operations the role
+  actually needs (`InvokeModel`, `ApplyGuardrail`), not just the resource.
+- *"A multi-tenant chatbot's RAG retrieval and its injection-defense requirement seem to call for
+  two different fixes"* → often one architectural fix (tenant-scoped, validated retrieval) serves
+  both; look for shared root causes before assuming every Task 2.3 bullet needs its own separate
+  control.
+- *"An agent's code-execution tool runs in a shared container across multiple customer sessions"*
+  → a session-isolation gap (distinct from IAM scoping) — the fix is a per-session isolated
+  execution environment (e.g. AgentCore Runtime's microVM-per-session model), not a tighter IAM
+  policy.
+- *"A retail banking chatbot must never give investment advice, no matter the phrasing"* →
+  Guardrails' **denied topics** feature specifically, not the content filter categories or the
+  prompt-attack filter.
+- *"A customer's SSN must never appear in a model's response even if the user directly asks for
+  it"* → Guardrails' **sensitive-information filter**, a distinct feature from content filters and
+  denied topics.
+
+## Worked Case Study 2: a document-processing pipeline that must never touch the public internet
+
+**Requirement.** An insurance company processes scanned claim forms through Bedrock for
+extraction and summarization. Compliance requires (1) no scanned document ever traverses the
+public internet en route to the model, (2) every extraction call is attributable to a specific
+claims adjuster, not just "the application," and (3) a claim form containing a policyholder's SSN
+must never appear verbatim in an application log, even temporarily during debugging.
+
+```mermaid
+flowchart TD
+    ADJ[Claims adjuster, authenticated via\nIAM Identity Center SSO] -->|assumes a session-tagged role| STS[STS AssumeRole,\nsession tag: adjusterId]
+    STS --> L[Lambda: claim processor,\nruns inside adjuster's VPC]
+    L -->|no NAT/IGW route at all| VPCE[VPC Interface Endpoint:\nbedrock-runtime]
+    VPCE -->|AWS PrivateLink, never public internet| BR[Bedrock model]
+    BR --> GR[Guardrails: sensitive-information\nfilter configured for SSN category]
+    GR -->|redacted before returning| L
+    L -->|logs INCLUDE adjusterId session tag,\nEXCLUDE raw extracted text| CW[CloudWatch Logs]
+    L -.every InvokeModel call attributed\nto the specific session.-> CT[CloudTrail]
+```
+
+**Why each choice, mapped to the three requirements:**
+1. **No NAT/internet gateway route at all, paired with a VPC interface endpoint for
+   `bedrock-runtime`** satisfies requirement 1 at the strongest level — not "it's encrypted over
+   TLS," but "there is no network path to the public internet to traverse in the first place,"
+   which is what "never traverses the public internet" actually demands when read literally.
+2. **STS `AssumeRole` with an `adjusterId` session tag**, originating from an IAM Identity Center
+   SSO session (a workforce user, not an application end-user — see the README's IAM Identity
+   Center vs. Cognito discussion for why this is the right identity service here), satisfies
+   requirement 2: every `InvokeModel` call in CloudTrail carries the session tag, making
+   per-adjuster attribution possible without a custom application-level audit log.
+3. **Guardrails' sensitive-information filter, configured specifically for the SSN category, on
+   the output side** combined with **application code that never logs the raw extracted text at
+   all** (not "logs it then redacts," but structured to never construct a log line containing the
+   full extraction in the first place) satisfies requirement 3 — this double-layered approach
+   (Guardrails redaction *and* log-construction discipline) matches the worked mini-scenario
+   earlier in this doc, where the actual leak vector was logging code that ran before Guardrails
+   ever had a chance to filter anything.
+
+**What would fail this requirement set, as exam distractors:** relying on TLS alone (doesn't
+satisfy "never traverses the public internet" literally); using CloudWatch Logs' application-level
+tagging without the STS session tag (loses per-adjuster attribution at the AWS API level, where
+CloudTrail actually lives); assuming Guardrails' redaction alone is sufficient without also
+checking the log-writing code path (the mini-scenario's actual lesson, restated in a new context).
+
+## Guardrails Tiers: Classic vs. Standard
+
+Newer Bedrock accounts default to the **Standard tier** of Guardrails, which expands coverage
+(e.g. prompt-attack detection and denied topics apply to code-related content too, not just
+natural language, and contextual grounding checks are more broadly available) compared to the
+**Classic tier**. The exam-relevant point isn't memorizing a feature-by-feature diff table — it's
+knowing that **guardrail behavior is tier-dependent**, so a question stating "a specific filter
+category didn't catch an attack" may be testing whether you'd check the tier/configuration before
+assuming the entire Guardrails feature is insufficient. Treat tier awareness the same way you'd
+treat any AWS service's regional/version availability — a fact to verify for the specific
+resource in question, not something to assume is uniform.
+
+## Pricing Considerations, Expanded
+
+Beyond the condensed "Guardrails has its own per-text-unit pricing" note, three billing subtleties
+worth knowing for a Task 2.3/cost-optimization-overlap question:
+
+- **Guardrails evaluation is billed per text unit processed, on both the input and output side
+  independently** — a guardrail configured to filter both directions processes (and is billed for)
+  two text units per invocation, not one, which matters when estimating cost for a high-volume
+  chatbot.
+- **A VPC interface endpoint has its own hourly charge plus a per-GB-processed charge**,
+  independent of Bedrock's own token-based pricing — "add a VPC endpoint for compliance" is not a
+  free architectural change, and a cost-conscious scenario question may ask you to weigh this
+  against the compliance requirement driving it (usually, compliance wins, but recognizing the
+  cost tradeoff exists is the tested skill).
+- **Provisioned throughput for a Bedrock model** (a fixed hourly commitment, as opposed to
+  on-demand per-token pricing) is a separate lever from anything in this doc — relevant only if a
+  scenario combines a security requirement with a throughput/latency requirement, in which case
+  the security controls (Guardrails, VPC endpoints, IAM scoping) apply identically regardless of
+  which throughput mode the underlying model uses.
+
+## Exam Tips, Expanded
+
+- A scenario combining a data-privacy requirement with an audit-attribution requirement is often
+  solvable with **one mechanism serving both** — an STS session tag shows up in both the
+  resulting temporary credentials' scope AND in CloudTrail's record of who called what, rather than
+  needing two separate controls.
+- "No NAT gateway, no internet gateway route" is a stronger, more literal satisfaction of "never
+  touches the public internet" than "it's encrypted over TLS" — when a requirement uses absolute
+  language, prefer the absolute-strength answer (no network path at all) over the merely-strong one
+  (encryption).
+- Guardrails is four-plus-one independently configurable features (content filters including the
+  prompt-attack category, denied topics, word filters, sensitive-information filters) — match the
+  specific attack/content pattern described in a question to the specific feature, not just
+  "enable Guardrails" as a blanket answer.
+- Session isolation (e.g. AgentCore Runtime's per-session microVM) and IAM least-privilege scoping
+  are two *different* defenses answering two different failure modes — a shared execution
+  environment across sessions is a distinct risk from an over-permissioned IAM role, even though
+  both get lumped under "agent security."
+
 ## Related Terms
 
 - [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md)
@@ -460,3 +663,4 @@ which layer fixes which symptom:
 - [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) — where the log-redaction discipline above actually applies.
 - [`../domain-1-development/ai-assisted-development.md`](../domain-1-development/ai-assisted-development.md)
 - [`../domain-4-troubleshooting-optimization/observability-instrumentation.md`](../domain-4-troubleshooting-optimization/observability-instrumentation.md) — the tracing/logging discipline an agent's actions should also follow.
+- [`prompt-injection-and-genai-security-deep-dive.md`](prompt-injection-and-genai-security-deep-dive.md) — the standalone deep dive on this doc's prompt-injection and agent-security sections, with worked attack scenarios.

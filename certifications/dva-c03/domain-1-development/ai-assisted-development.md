@@ -386,6 +386,212 @@ a specific product by name.
 - Expect at most one or two direct questions per domain on this topic; it's broad but shallow on
   this exam version — know the pattern, don't over-invest in tool-specific trivia.
 
+## Real AWS image: Amazon Q Developer's code-development workflow
+
+![Diagram showing how Amazon Q Developer accelerates code development tasks across design, writing, testing, and review stages](https://docs.aws.amazon.com/prescriptive-guidance/latest/best-practices-code-generation/images/guide-img/f65a39c3-c47d-43b6-afa3-d8124e7bbe1f/images/469a246e-ba24-49d0-adea-a43d264ced44.png)
+
+*Source: [AWS Prescriptive Guidance — Developer workflows with Amazon Q Developer](https://docs.aws.amazon.com/prescriptive-guidance/latest/best-practices-code-generation/)
+(curl-verified 200). Note that AWS's own diagram places AI assistance at every single stage —
+design, writing, testing, review — not just "writing code faster." This matches the exam's
+emphasis exactly: DVA-C03 doesn't just test code generation (Task 1.1), it tests the *same*
+AI-assisted pattern recurring at test generation (Task 3.2), deployment-risk review (Task 3.3),
+and error analysis (Task 4.1/4.3) — one underlying capability, applied at four different SDLC
+stages, which is the whole reason this doc is written as a single cross-domain reference instead
+of four separate ones.*
+
+## Plain-English analogy: a very fast, very confident junior developer
+
+The single most useful mental model for every AI coding assistant on this exam: treat it as a
+**junior developer who types faster than anyone on the team, has read an enormous amount of code,
+and will confidently hand you a first draft within seconds — but who has never actually run your
+tests, never talked to your product manager, and has no idea which shortcuts are unacceptable in
+your specific regulated industry.** You wouldn't let a junior developer's first PR merge to
+production with zero review just because they typed it fast; the same discipline applies to every
+AI-generated suggestion, regardless of how polished it looks. This is also why a *correct* review
+process (human checks the diff) doesn't change just because the "junior developer" is an AI instead
+of an actual new hire — the review discipline is the constant; only the speed of the first draft
+changed.
+
+## Worked exam scenario: code generation with a real before/after diff, mapped to IAM least privilege
+
+A developer prompts an assistant: "write a Lambda function that reads a user's order history from
+DynamoDB." The assistant's first draft, and the corrected version a developer actually ships,
+illustrate exactly what Task 1.1/2.1 overlap questions test:
+
+```python
+# AI first draft — functionally correct, but over-permissioned by default
+# (the IAM policy below is what the assistant ALSO generated alongside this handler)
+import boto3, json
+ddb = boto3.resource("dynamodb")
+
+def handler(event, context):
+    table = ddb.Table("Orders")
+    user_id = event["pathParameters"]["userId"]
+    resp = table.query(KeyConditionExpression=boto3.dynamodb.conditions.Key("userId").eq(user_id))
+    return {"statusCode": 200, "body": json.dumps(resp["Items"])}
+```
+
+```json
+// The accompanying IAM policy the assistant generated — flagged on review
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": "dynamodb:*", "Resource": "*" }
+  ]
+}
+```
+
+```json
+// What a developer actually ships after reviewing the AI's suggestion
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "dynamodb:Query",
+      "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/Orders"
+    }
+  ]
+}
+```
+
+The handler code itself was fine as generated — the IAM policy was not. `dynamodb:*` on `Resource:
+"*"` is the textbook shape of an AI assistant "making the demo just work" by requesting the
+broadest permission that guarantees no `AccessDenied` error during testing, rather than the
+narrowest permission the actual code path needs. Scoping it down to exactly `dynamodb:Query` on
+exactly the `Orders` table ARN is the human step the exam expects every time — a question
+describing "a developer merges an AI-generated IAM policy without reviewing its scope" is
+describing precisely this failure, and the correct remediation is always "scope the policy down to
+least privilege," never "trust the AI's permission choices by default."
+
+## Worked exam scenario: test generation, and the edge case a human still has to add
+
+Following up the handler above, the developer asks the assistant to generate unit tests:
+
+```python
+# AI-generated tests — covers the obvious cases fast
+import pytest
+from unittest.mock import patch, MagicMock
+
+def test_returns_orders_for_valid_user():
+    with patch("boto3.resource") as mock_resource:
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": [{"orderId": "o1"}]}
+        mock_resource.return_value.Table.return_value = mock_table
+        event = {"pathParameters": {"userId": "u1"}}
+        result = handler(event, None)
+        assert result["statusCode"] == 200
+
+def test_returns_empty_list_for_user_with_no_orders():
+    with patch("boto3.resource") as mock_resource:
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": []}
+        mock_resource.return_value.Table.return_value = mock_table
+        event = {"pathParameters": {"userId": "u2"}}
+        result = handler(event, None)
+        assert json.loads(result["body"]) == []
+```
+
+```python
+# Human-added test — the assistant had no way to know this edge case mattered to THIS business
+def test_raises_clear_error_when_path_parameter_missing():
+    # A malformed request (missing pathParameters entirely) should fail predictably,
+    # not with an unhandled KeyError that surfaces as an opaque 502 to the caller.
+    event = {}
+    with pytest.raises(KeyError):
+        handler(event, None)
+    # Business decision the team made after a past incident: this should actually be a
+    # graceful 400, not a KeyError — a test an AI tool has no way to propose on its own,
+    # because it requires knowing the team's specific incident history, not just the code.
+```
+
+The two AI-generated tests are genuinely useful and correctly cover the stated happy path and one
+obvious edge case (empty result set). The third test encodes **organizational memory** — a past
+incident, a team convention, a business rule not visible anywhere in the function's code — which is
+exactly the category of test an assistant structurally cannot generate, because it isn't derivable
+from the code alone. This is the cleanest way to internalize "AI covers the obvious cases fast,
+human adds the business-specific edge case" instead of just reciting it as a slogan.
+
+## Worked exam scenario: a deployment-risk summary, and where the approval gate actually sits
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant CP as CodePipeline
+    participant AI as AI diff-risk summarizer
+    participant Appr as Human approver
+
+    Dev->>CP: Merge PR, pipeline triggers
+    CP->>AI: Pass the planned CloudFormation/CDK diff
+    AI-->>CP: Summary: "Adds 1 Lambda function, 1 IAM role.\nNO destructive changes detected."
+    CP->>Appr: Manual approval action, AI summary attached as context
+    Appr->>Appr: Reads the summary AND spot-checks the actual diff for anything destructive
+    Appr->>CP: Approve
+    CP->>CP: Promote to production
+```
+
+The exam-relevant detail isn't that an AI summarized the diff — it's **where in the pipeline the
+human approval action still sits**. The AI summary is additional context attached to an existing
+manual approval step (see [`services/developer-tools/codepipeline.md`](../../../services/developer-tools/codepipeline.md)
+for how that manual approval action is actually configured) — it never replaces the approval step,
+and it never auto-promotes based on its own "looks safe" conclusion. A wrong-answer variant of this
+scenario removes the human approval step entirely because "the AI already said it's safe" — that's
+always the incorrect choice on this exam, regardless of how good the AI's track record has been.
+
+## Worked exam scenario: error analysis, and verifying before acting
+
+```mermaid
+flowchart TD
+    ALARM[CloudWatch Alarm fires] --> AI[AI reads recent Logs + X-Ray trace]
+    AI --> HYP["Hypothesis: 'Downstream payment API timeout\nis the root cause'"]
+    HYP --> ENG[Engineer checks the ACTUAL X-Ray trace]
+    ENG -->|Confirms cold start, not downstream timeout| CORRECT[Correct root cause:\nLambda cold start exceeded\nAPI Gateway's 29s timeout]
+    ENG -->|If engineer had trusted the AI blindly| WRONG[Wrong fix shipped:\nraise downstream timeout,\nproblem persists]
+```
+
+A concrete reason this verification step isn't paranoia: a summarizer reading a wall of logs can
+latch onto the most *frequent* error string in the window (a downstream timeout that happens on
+every request during the incident, because requests are backing up) rather than the *first*,
+causal one (a cold-start-induced delay that triggered everything downstream). Both symptoms are
+real and both appear in the logs — only one is the actual root cause, and distinguishing them
+requires looking at the X-Ray trace's timing breakdown directly, not just the AI's text summary of
+it. This is the concrete mechanism behind "don't trust AI-generated root-cause explanations as
+ground truth," not just a generic caution.
+
+## The limits, concretely: three things that look like AI mistakes but are modeling your own blind spots
+
+- **An assistant can only reason about the code/logs/context it was actually given.** If your
+  prompt doesn't mention that a downstream service has a known intermittent outage, the assistant
+  has no way to factor that in — this isn't the assistant being wrong, it's a reminder that output
+  quality is bounded by input completeness, same as it would be for a new team member missing the
+  same context.
+- **An assistant trained on general patterns will suggest the statistically common fix, not
+  necessarily your organization's specific fix.** A generically "correct-looking" retry pattern
+  might violate your team's specific idempotency convention if the assistant wasn't shown that
+  convention — review against *your* standards, not just general best practice.
+- **Confidence in tone is not evidence of correctness.** A hallucinated root cause and a correct one
+  can both be phrased with identical confidence — the exam's repeated "verify against actual data"
+  guidance exists precisely because tone gives you no signal to distinguish the two.
+
+## Exam Tips (expanded)
+
+- A scenario naming a *specific* capability (code completion, test generation, deployment-risk
+  summary, log summarization, optimization suggestion) is almost always mappable to exactly one
+  Task number (1.1, 3.2, 3.3, 4.1, or 4.3 respectively) — use that mapping to narrow down which
+  domain's rules apply to the rest of the question.
+- If an answer choice has the AI *taking an irreversible action autonomously* (auto-merge,
+  auto-deploy, auto-delete) — eliminate it immediately regardless of how plausible-sounding the
+  rest of the scenario is.
+- If a scenario's AI output disagrees with the raw data you're shown elsewhere in the question
+  (e.g., the AI says "no destructive changes" but the diff shown clearly drops a table) — trust the
+  raw data, not the AI's summary; the question is testing whether you'd actually read the diff.
+- Scrubbing secrets before sending any text to a chat-based assistant is a recurring "what's the
+  best practice here" answer — treat any mention of pasting logs/stack traces/config into a chat
+  tool as a cue to check whether the pasted content contains credentials first.
+- Kiro's spec-first flow and Q Developer's inline suggestions are the *same underlying pattern*
+  tested two different ways — don't spend study time memorizing UI differences between the two
+  products; spend it on recognizing the shared "generate, then human verifies" shape.
+
 ## Related Terms
 
 - [`../domain-2-security/ai-service-security-risks.md`](../domain-2-security/ai-service-security-risks.md) — the security-specific risks of AI *services* (Bedrock/Q), distinct from this dev-workflow pattern.

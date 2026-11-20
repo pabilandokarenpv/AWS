@@ -68,6 +68,124 @@ access to private instances goes through **Systems Manager Session Manager** (no
 port, no bastion to patch and secure) or, if a bastion is explicitly required by the scenario,
 one hardened bastion host rather than opening port 22 broadly.
 
+## Plain-English Analogies for This Domain's Network Layer
+
+- **A VPC is a plot of private land inside AWS's city.** The city (AWS Region) provides roads and
+  utilities, but the fences, buildings, and gates on your plot are entirely yours to design — and
+  entirely your responsibility if you leave a gate unlocked.
+- **Subnets are rooms within your building; the route table is what's painted on each room's exit
+  door.** Two rooms can look identical, same size, same furniture (same security group even), but
+  one door is painted "exit to the street" (routes to an Internet Gateway) and the other is painted
+  "no exit" or "exit through the loading dock only, no public street access" (routes to a NAT
+  Gateway or nowhere) — the room's *label* doesn't determine this, the paint on the door does.
+- **A security group is a guest list the bouncer remembers; a NACL is a passport check with no
+  memory.** Let someone in through the guest list, and the bouncer automatically waves them back out
+  later without re-checking — that's statefulness. The passport checkpoint at the parking garage
+  checks ID on the way in, and *separately* checks ID again on the way out, with zero memory of who
+  it already approved — forget to pre-authorize the exit lane and cars get stuck inside forever,
+  precisely mirroring the ephemeral-port NACL trap.
+- **A VPC endpoint is a private tunnel straight into a specific AWS building, bypassing the public
+  street entirely.** Without it, reaching S3 from a private subnet means walking out onto the public
+  street (even briefly, through a NAT Gateway) before reaching the S3 building's front door — with
+  an endpoint, there's a private tunnel directly from your building's basement to S3's basement,
+  never touching the street at all.
+- **A bastion host is a single, heavily-guarded front door everyone must use to enter a building.**
+  Session Manager replaces that door entirely with an ID-badge elevator system — nobody enters
+  through a physical door at all, because the building (the private subnet) simply has no exterior
+  door for people to walk through in the first place.
+
+## Architecture: VPC Endpoint Traffic Path — With and Without PrivateLink
+
+```mermaid
+flowchart TB
+    subgraph WithoutEndpoint["Without a VPC Endpoint"]
+        AppA["App — private subnet"] -.->|"route: 0.0.0.0/0 -> NAT GW"| NATA["NAT Gateway"]
+        NATA -->|"public internet path,<br/>even though destination is AWS"| IGWA["Internet Gateway"]
+        IGWA --> S3A[("Amazon S3")]
+    end
+    subgraph WithEndpoint["With a Gateway VPC Endpoint"]
+        AppB["App — private subnet"] -.->|"route table entry:<br/>pl-xxxx (S3 prefix list) -> vpce-xxxx"| EndpointB["Gateway Endpoint"]
+        EndpointB --> S3B[("Amazon S3")]
+    end
+```
+
+**Step by step:** without an endpoint, a private-subnet application reaching S3 must route through
+a NAT Gateway and (conceptually) an Internet Gateway, even though both ends of the conversation are
+AWS services — this costs NAT Gateway data-processing fees *and* is a network path that, however
+briefly, transits infrastructure associated with the public internet. With a **Gateway VPC
+Endpoint** for S3, the route table gets an additional entry pointing a special AWS-managed prefix
+list directly at the endpoint — traffic to S3 never reaches the NAT Gateway at all, costs nothing
+extra (Gateway endpoints for S3/DynamoDB are free), and never conceptually touches the public
+internet. The exam-tested distinction: a **Gateway Endpoint** (S3, DynamoDB only) works via a route
+table entry; an **Interface Endpoint** (PrivateLink, almost every other service) works via an ENI
+with a private IP inside your subnet, has a small hourly charge, and needs its own security group.
+
+![Traffic to an AWS service leaves your VPC through an internet gateway, but stays in the AWS network](https://docs.aws.amazon.com/images/vpc/latest/privatelink/images/access-with-igw.png)
+
+*Source: [Amazon VPC User Guide — Access AWS services through AWS PrivateLink](https://docs.aws.amazon.com/vpc/latest/privatelink/), © Amazon Web Services.*
+
+**Discussion.** This official AWS diagram makes an important nuance explicit: even the "without
+PrivateLink" path, while it conceptually routes through an Internet Gateway, generally **stays
+within AWS's own network backbone** for traffic destined to AWS service endpoints rather than
+actually transiting the public internet's open routing — but it still requires that IGW/NAT path to
+exist and still bills NAT Gateway data-processing charges. PrivateLink's real exam-tested value
+isn't "security that didn't exist before" in every case, it's **removing the NAT Gateway dependency
+entirely** and providing a private IP address inside your own VPC for the AWS service, which also
+matters for on-premises networks reaching an AWS service over Direct Connect/VPN without any public
+IP routing at all.
+
+## Architecture: Security Group Rule Evaluation, Visually
+
+```mermaid
+flowchart LR
+    subgraph VPCEx["One VPC, two subnets, two security groups"]
+        SubA["Subnet A"] --- SGWeb["sg-web<br/>(attached to web instances)"]
+        SubB["Subnet B"] --- SGDB["sg-db<br/>(attached to DB instances)"]
+    end
+    Internet((Internet)) -->|"443 allowed"| SGWeb
+    SGWeb -->|"sg-web referenced as SOURCE<br/>in sg-db's inbound rule,<br/>not an IP range"| SGDB
+```
+
+**Step by step:** this diagram is the single clearest way to internalize "reference a security
+group, not a CIDR" — `sg-db`'s inbound rule doesn't say "allow 3306 from 10.0.1.0/24," it says
+"allow 3306 from anything currently a member of `sg-web`." The practical consequence: when a new
+web instance launches and gets attached to `sg-web`, it is **automatically** allowed to reach the
+database on port 3306 with zero rule changes anywhere — the rule follows group *membership*, not a
+static IP range that would need updating every time the subnet's instances change.
+
+![A VPC with two subnets, each associated with a different security group](https://docs.aws.amazon.com/images/vpc/latest/userguide/images/security-group-overview.png)
+
+*Source: [Amazon VPC User Guide — Control traffic to resources using security groups](https://docs.aws.amazon.com/vpc/latest/userguide/), © Amazon Web Services.*
+
+**Discussion.** Notice both subnets in this official diagram could theoretically share the exact
+same CIDR-based rule and still be *less* secure than the group-reference pattern — if a third,
+unrelated instance later launched into Subnet A's CIDR range (outside `sg-web`'s membership), a
+CIDR-based rule would wrongly include it, while a group-reference rule correctly excludes it,
+because group membership — not subnet placement — is what the rule actually keys on.
+
+## More Worked Scenarios
+
+**Scenario — "the NAT Gateway lives in the wrong place."** A team places a NAT Gateway inside a
+*private* subnet, reasoning "it's serving private subnet traffic, so it belongs there," and then
+can't understand why instances in that private subnet still can't reach the internet. What's wrong?
+
+*Answer:* a NAT Gateway **must** live in a **public** subnet — it needs its own route to an
+Internet Gateway to do its job of translating and forwarding outbound traffic. A NAT Gateway placed
+in a private subnet has no path to the internet itself, so it cannot forward anything anywhere; the
+confusion is between "which subnet does it *serve*" (private) and "which subnet must it *live in*"
+(public) — these are different questions with different, specific answers.
+
+**Scenario — "the security group change didn't seem to apply."** An engineer tightens a security
+group rule to remove a previously-open port, expecting existing connections on that port to
+continue uninterrupted until they naturally close, the way some on-premises firewalls behave. What
+actually happens?
+
+*Answer:* security group changes apply **immediately to existing connections too** — an active
+session using a now-removed rule can be dropped the moment the rule changes, not just blocked for
+*new* connections. This is the opposite of some traditional firewall behavior the engineer may be
+used to, and it's a specific, testable AWS behavior: don't assume "tightening a security group is
+safe for already-open sessions."
+
 ## Architecture: Internet Gateway vs. No Route — Public vs. Private, Precisely
 
 ```mermaid

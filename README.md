@@ -110,11 +110,16 @@ surprise bill, same CLI commands you'd run against real AWS. See [`labs-floci/RE
 |---|---|
 | Repo structure, templates, diagram/icon conventions | ✅ Complete |
 | `00-fundamentals/` (6 docs) | ✅ Complete |
-| `services/` reference (94 docs, ~19k lines, every doc with a diagram + local icon) | ✅ Complete |
-| Cert domain docs (12 domain folders × README + topic docs + labs, 3 certs) | ✅ Complete |
-| Icons (86 service logos, vendored locally — zero broken images) | ✅ Complete |
-| `glossary/` (auto-generated from every doc's Definition section) | ✅ Complete |
-| `practice-questions/` (SAA-C03: 60, DVA-C03: 50, MLA-C02: 50 — scenario-based, fully explained) | ✅ Complete |
+| `services/` reference (113+ docs across 13 categories incl. Migration & Transfer, Front-End Web/Mobile, Media — every doc with multiple diagrams, real AWS images, 8-12 use cases, local icons) | ✅ Complete |
+| Every service doc tagged with which cert(s) it's tested in, sourced from AWS's official exam guide appendices | ✅ Complete |
+| `services-used-in-this-exam.md` per cert, organized by domain weight | ✅ Complete |
+| Cert domain docs (12 domain folders × README + topic docs + labs, 3 certs) with real-scenario walkthroughs | ✅ Complete |
+| Icons (90 service logos, vendored locally — zero broken images) | ✅ Complete |
+| `glossary/` (119 entries, auto-generated from every doc's Definition section) | ✅ Complete |
+| Domain-split practice banks (`practice-questions/`): SAA-C03 60, DVA-C03 50, MLA-C02 50 | ✅ Complete |
+| Full timed mock exams (`practice-questions/full-exams/`): 2 per cert, 65 Q each, separate answer-key files | ✅ Complete |
+| Study-mode exam banks (`exam-bank/`): 3 per cert (bank-1/2/3), 65 Q each, inline answer+explanation for every option | ✅ Complete |
+| **Total practice questions across the repo: ~1,135** (160 domain-split + 390 full-exam + 585 exam-bank) | ✅ Complete |
 | `STUDY-PLAN.md` (phased plan targeting Jan 2027 SAA-C03 start) | ✅ Complete |
 
 This repo stays living as the official MLA-C02 exam guide finalizes (GA Jan 14, 2027) and as AWS

@@ -15,6 +15,16 @@ Developer** helps people write, review, and troubleshoot code and AWS infrastruc
 internal documents and business applications. In plain terms: Q is "AWS's own chatbot product,"
 as opposed to Bedrock, which is "the raw toolkit for building your own AI features."
 
+Two terms worth being precise about before going further:
+- **Connector** — a pre-built integration Q Business uses to pull content from an existing
+  enterprise system (SharePoint, Salesforce, Slack, S3, and dozens more) into its managed index,
+  without you writing any custom ingestion code — the direct analog of building a Bedrock
+  Knowledge Base's ingestion pipeline by hand, just pre-packaged.
+- **Plugin** (Q Business) — distinct from a connector: a connector *indexes* content for
+  retrieval; a plugin lets Q Business *take an action* in a connected system (create a Jira
+  ticket, update a Salesforce record) in response to a natural-language request, the same
+  conceptual role Bedrock Action Groups play for a custom Agent.
+
 ## Purpose
 
 Bedrock gives you the building blocks (models, RAG, agents) to build a generative AI
@@ -79,6 +89,90 @@ Step by step:
    application built using the same generative AI infrastructure described in `bedrock.md`, not
    a separate model technology.
 
+### Q Business's reference architecture, from AWS's own diagram
+
+![Reference architecture for a typical Amazon Q Business implementation: users via enterprise collaboration systems or the built-in web interface, authenticated through IAM Identity Center, data sources indexed via connectors, and custom plugins calling Bedrock agents](https://d2908q01vomqb2.cloudfront.net/f1f836cb4ea6efb2a0b1b99f41ad8b103eff4b59/2025/08/13/blog1.png)
+
+*Figure: AWS's own reference architecture for deploying Amazon Q Business — users interact via an
+enterprise collaboration tool or Q's built-in web interface, authenticated through IAM Identity
+Center (optionally federated to a third-party identity provider); data sources are indexed
+through connectors; and custom plugins can call out to a Bedrock agent (via Lambda or EKS,
+potentially in another AWS account) to extend Q Business beyond simple Q&A into real actions.
+Source: AWS Machine Learning Blog, "Accelerate enterprise AI implementations with Amazon Q
+Business" — aws.amazon.com/blogs/machine-learning/accelerate-enterprise-ai-implementations-with-amazon-q-business/.*
+
+### Q Developer's code-development workflow, from AWS's own diagram
+
+![Diagram showing how Amazon Q Developer accelerates code development tasks across design, writing, testing, and review stages](https://docs.aws.amazon.com/prescriptive-guidance/latest/best-practices-code-generation/images/guide-img/f65a39c3-c47d-43b6-afa3-d8124e7bbe1f/images/469a246e-ba24-49d0-adea-a43d264ced44.png)
+
+*Figure: AWS's own diagram of where Amazon Q Developer accelerates the code-development
+lifecycle — design/planning, code writing, debugging/testing, and code review each get
+AI-assisted steps (generating outlines, inline suggestions, generating unit tests, explaining
+code during review). Source: AWS Prescriptive Guidance, "Developer workflows with Amazon Q
+Developer" — docs.aws.amazon.com/prescriptive-guidance/latest/best-practices-code-generation/.*
+
+### Worked example — Q Business answering a grounded question, end to end
+
+To make "automatic indexing" and "permissions-aware" concrete rather than abstract claims, walk
+through an actual employee question.
+
+**Step 1 — Connectors index existing content with no custom pipeline.** An admin configures a
+Q Business application with an S3 connector (pointed at the company's HR policy documents) and
+a Confluence connector (pointed at the engineering wiki). Unlike building a Bedrock Knowledge
+Base, the admin never chooses a chunking strategy, an embedding model, or a vector store — Q
+Business's managed indexing handles all of that internally, automatically, on a sync schedule.
+
+**Step 2 — An employee asks a question in Slack**, where Q Business is integrated: *"How many
+vacation days do I get, and can I carry them over to next year?"*
+
+**Step 3 — Retrieval and grounding happen exactly like a Bedrock Knowledge Base, under the
+hood.** Q Business's managed index finds the HR policy passage describing PTO accrual and
+carryover rules, and the underlying Bedrock foundation model generates an answer grounded in
+that retrieved passage — the same RAG mechanics described in `bedrock.md`, just with the
+Knowledge Base configuration entirely hidden from the admin.
+
+**Step 4 — The answer includes a citation.** The response in Slack includes a link back to the
+specific HR policy document the answer was drawn from, letting the employee verify it directly
+rather than trusting the chatbot's word alone — mirroring exactly the citation behavior Bedrock
+Knowledge Bases provide.
+
+**Step 5 — Permissions are respected automatically.** If that same HR policy document were
+restricted to HR staff only in the source system, a non-HR employee asking the identical
+question would get no answer from it at all — Q Business's permissions-awareness means the
+*connector* carries forward the source system's access control, it isn't something the admin
+has to separately configure inside Q Business.
+
+**Step 6 — A plugin extends this from Q&A into action.** If the same employee instead asked
+*"Submit a request to carry over 5 unused vacation days,"* and a Workday plugin were configured,
+Q Business could call that plugin to actually file the request — the distinction between a
+connector (step 1-4, retrieval) and a plugin (step 6, action) made concrete in one continuous
+example.
+
+### Q Developer's agentic coding flow, as a sequence
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant Q as Q Developer (agentic mode)
+    participant FS as Local filesystem
+    participant Shell as Shell commands
+
+    Dev->>Q: "Add a Lambda function triggered by new S3 uploads"
+    Q->>FS: Read existing CDK stack files for context
+    Q->>FS: Write new Lambda function file
+    Q->>FS: Edit CDK stack to add S3 trigger + Lambda resource
+    Q->>Shell: Run build/lint commands to verify changes compile
+    Shell-->>Q: Build result
+    Q-->>Dev: Diff of all changes for review, across multiple files
+    Dev->>Dev: Review and accept/reject each change
+```
+
+The important distinction from inline suggestions or one-shot chat: this mode reads and writes
+multiple real files and runs real commands across a multi-step conversation, always surfacing a
+reviewable diff rather than silently committing changes — the same "human stays in the loop"
+principle Bedrock Agents apply to calling external APIs, applied here to a developer's own
+codebase.
+
 ## Key Features / Components
 
 - **Q Developer — inline code suggestions** — real-time, context-aware code completion as you
@@ -93,14 +187,23 @@ Step by step:
   with suggested fixes.
 - **Q Developer — AWS console integration** — answers questions about your actual deployed
   resources, costs, and errors (e.g., "why did this CloudFormation stack fail").
+- **Q Developer — agentic coding in the IDE** — a newer capability letting Q Developer read and
+  write files locally, run shell commands, and build/iterate on code changes across a multi-step
+  conversation, going beyond single inline suggestions or one-shot chat answers.
 - **Q Business — connectors** — pre-built integrations into dozens of common enterprise data
   sources, no custom pipeline required.
 - **Q Business — managed retrieval/indexing** — automatic RAG setup without configuring a vector
   store or embedding model yourself.
 - **Q Business — plugins/actions** — can take actions in connected business apps (e.g., create a
-  Jira ticket, update a Salesforce record) in addition to answering questions.
+  Jira ticket, update a Salesforce record) in addition to answering questions; built-in plugins
+  cover common systems (Jira Cloud, ServiceNow, Zendesk, Confluence, Salesforce, and others) with
+  custom plugins available for anything else via OpenAPI-described endpoints.
 - **Q Business — permissions-aware answers** — respects source-system access control at query
   time.
+- **Q Apps** — a Q Business feature letting end users build lightweight, shareable mini-
+  applications from a natural-language description (e.g., "an app that summarizes meeting notes
+  into action items"), without writing code — a no-code layer on top of Q Business's core
+  capabilities.
 
 ## Use Cases — When to Use It
 
@@ -114,6 +217,10 @@ Step by step:
   workflows — **Q Developer**.
 - You want employees to be able to take simple actions (file a ticket, look up a record) via
   natural language chat, grounded in your own systems — **Q Business** with plugins/actions.
+- You want a multi-step, agentic coding workflow (plan a feature, generate files, run commands,
+  iterate) rather than single inline suggestions — **Q Developer's** agentic coding mode.
+- You want non-technical employees to build small, purpose-specific tools from a natural-
+  language description without engineering involvement — **Q Apps**.
 
 ## When NOT to Use It / Alternatives
 
@@ -129,6 +236,69 @@ Step by step:
 - **A narrower, purpose-built AI service already solves the problem** (e.g., you just need OCR,
   not a chat assistant) — don't reach for Q when `ai-services-overview.md`'s services or a
   direct Bedrock call is simpler and cheaper for a narrow task.
+- **Your organization has strict policies against AI-suggested code without heavyweight review
+  processes already in place** — adopting Q Developer without an established code-review
+  discipline risks accepting unreviewed AI-generated code into production; the tool assumes a
+  human reviewer remains firmly in the loop.
+
+## Common Architectures
+
+### Pattern 1 — Enterprise Q Business deployment with IAM Identity Center
+
+The standard production deployment shape, directly mirroring the reference architecture image
+above:
+
+```mermaid
+flowchart TD
+    IDP[Corporate Identity Provider] --> IIC[IAM Identity Center]
+    IIC --> QB[Amazon Q Business]
+    USER[Employees] --> CHAT[Slack/Teams/Web UI]
+    CHAT --> QB
+    CONN[Connectors] --> QB
+    QB --> PLUGIN[Custom Plugin]
+    PLUGIN --> LAMBDA[Lambda in another account]
+    LAMBDA --> AGENT[Bedrock Agent]
+```
+
+The key structural idea: identity flows through IAM Identity Center (federated to the
+organization's existing IdP) rather than Q Business managing its own separate user directory —
+a direct application of "don't build parallel identity systems" good practice, and the same
+reason custom plugins are architected to call out to Lambda/Bedrock Agents in potentially
+separate AWS accounts rather than embedding that logic inside Q Business itself.
+
+### Pattern 2 — Q Developer in a CI/CD pipeline
+
+Beyond interactive IDE use, Q Developer's capabilities extend into automated pipeline stages:
+
+```mermaid
+flowchart LR
+    PR[Pull request opened] --> SCAN[Q Developer:<br/>security scan]
+    SCAN --> REVIEW{Issues found?}
+    REVIEW -->|yes| FLAG[Flag in PR<br/>with suggested fix]
+    REVIEW -->|no| TESTGEN[Q Developer:<br/>generate/suggest tests]
+    TESTGEN --> CI[Standard CI/CD<br/>build, test, deploy]
+```
+
+This directly maps to DVA-C03's Domain 3 (test generation/CI-CD assistance) and Domain 4
+(error analysis) content — Q Developer isn't only an interactive, single-developer tool, it has
+a role inside the broader automated software delivery pipeline too.
+
+### Pattern 3 — Hybrid: Q Business for retrieval, Bedrock Agent for complex action
+
+For organizations that start with Q Business's packaged convenience but need a genuinely
+complex, multi-step action beyond what a simple plugin covers:
+
+```mermaid
+flowchart LR
+    USER[Employee question] --> QB[Q Business:<br/>retrieval + simple actions]
+    QB -->|simple action| PLUGIN[Built-in plugin]
+    QB -->|complex multi-step task| CUSTOM[Custom plugin] --> AGENT[Full Bedrock Agent:<br/>multi-step reasoning + tools]
+```
+
+The structural lesson: Q Business and custom Bedrock development aren't mutually exclusive —
+Q Business can be the front door for most employee interactions while routing the genuinely
+complex cases to a purpose-built Bedrock Agent behind a custom plugin, getting the convenience
+of a packaged product without being limited to only what it can do out of the box.
 
 ## Why It's Important
 
@@ -152,6 +322,24 @@ answer is smaller) before committing to a larger custom Bedrock build.
   understanding managed-RAG tradeoffs (Q Business's automatic indexing) vs. building a custom
   Knowledge Base by hand.
 
+## Limits & Quotas
+
+- **Q Business connector sync frequency and document count** are both subject to account-level
+  quotas — a very large document corpus or a need for near-real-time index freshness may require
+  planning around sync schedule limits rather than assuming instant, unlimited indexing.
+- **Q Business index storage capacity** is provisioned per application and has a configurable
+  (and billable) capacity unit model — an organization with an unusually large total document
+  volume needs to plan index capacity the same way they'd plan storage for any other managed
+  search index.
+- **Q Developer's free individual tier** has defined monthly usage limits (code suggestion
+  volume, chat interactions, security scans) distinct from the paid Pro tier's higher limits —
+  a team evaluating Q Developer at scale should expect to move to Pro once free-tier limits are
+  regularly exhausted.
+- **Custom plugin action complexity** is bounded by what a single OpenAPI-described action can
+  express — genuinely complex, multi-step business processes may be better served by a full
+  Bedrock Agent behind the plugin (Pattern 3 above) rather than trying to encode the entire
+  process into one plugin action.
+
 ## Pricing Model (summary)
 
 - **Q Developer** — offered in a free individual tier with usage limits, and a paid Pro tier
@@ -161,7 +349,41 @@ answer is smaller) before committing to a larger custom Bedrock build.
   feature access, including which actions/plugins and admin controls are available), plus
   underlying Bedrock model usage is included in the subscription rather than billed separately
   per token.
-- Full current rates: https://aws.amazon.com/q/pricing/
+
+**Worked cost sanity check:** a 300-person engineering organization adopting Q Developer Pro at
+a per-user-per-month rate, versus the same organization building and maintaining an equivalent
+in-house AI coding assistant on raw Bedrock (engineering time to build IDE integrations, prompt
+engineering, ongoing maintenance, plus the underlying per-token Bedrock costs) — the subscription
+model trades a predictable, scaling-with-headcount cost for the significant upfront and ongoing
+engineering investment a custom-built equivalent would require; this tradeoff (buy a packaged
+product vs. build on the underlying platform) is exactly the lens the exam expects for comparing
+Q against building directly on Bedrock.
+
+Full current rates: https://aws.amazon.com/q/pricing/
+
+## Troubleshooting / Common Issues
+
+- **Q Business gives an incomplete or "I don't know" answer for a document you know exists in a
+  connected source.** Check the connector's sync status and schedule — a document added or
+  changed since the last sync simply isn't in the index yet; this is a sync-timing issue, not a
+  retrieval-quality problem.
+- **An employee reports getting a different (or no) answer than a colleague for the same
+  question.** This is very often permissions-awareness working as designed, not a bug — check
+  whether the underlying source document has different access restrictions for each employee in
+  the source system itself.
+- **Q Developer's suggestions don't reflect your team's actual coding conventions.** Confirm
+  codebase context/customization is actually connected and configured — without it, Q Developer
+  falls back to generic best-practice suggestions rather than your repository's specific
+  patterns.
+- **A custom plugin fails to execute the requested action.** Check the plugin's OpenAPI schema
+  for ambiguous or missing parameter descriptions — the same root cause as a Bedrock Agent
+  Action Group failing to call the right function correctly (see `bedrock.md`'s Troubleshooting
+  section), since Q Business plugins follow the same underlying mechanism.
+- **Q Developer's security scan flags an issue the team considers a false positive.** Review the
+  specific flagged pattern against your actual threat model before dismissing it outright — but
+  also know that, like any automated scanner, some false positives are expected, and the
+  appropriate response is documented suppression with a reviewed justification, not disabling
+  scanning broadly.
 
 ## Hands-on Lab (Floci)
 
@@ -217,6 +439,27 @@ awslocal s3 cp hr-policy.pdf s3://q-business-demo-docs/
 # aws qbusiness create-data-source --application-id <id> --display-name "s3-docs" --configuration '{"type":"S3", ...}'
 ```
 
+**Option D — simulate the permissions-aware filtering Q Business applies automatically:**
+```bash
+python3 - <<'EOF'
+documents = [
+    {"title": "general-pto-policy.pdf", "content": "Standard PTO is 15 days/year.", "access": "all-employees"},
+    {"title": "exec-compensation.pdf", "content": "Executive bonus structure details...", "access": "hr-only"},
+]
+
+def answer_for(employee_role, question_keywords):
+    for doc in documents:
+        if doc["access"] == "all-employees" or doc["access"] == employee_role:
+            if any(kw in doc["content"].lower() for kw in question_keywords):
+                return f"Answer from {doc['title']}: {doc['content']}"
+    return "No accessible document answers this question."
+
+print("Regular employee asking about PTO:", answer_for("employee", ["pto"]))
+print("Regular employee asking about exec comp:", answer_for("employee", ["bonus"]))  # blocked by access control
+print("HR employee asking about exec comp:", answer_for("hr-only", ["bonus"]))
+EOF
+```
+
 See `certifications/dva-c03/domain-1-development/labs.md`.
 
 ## Exam Tips
@@ -234,6 +477,61 @@ See `certifications/dva-c03/domain-1-development/labs.md`.
   vulnerabilities before merging).
 - Permissions-aware answering (Q Business respects existing source-system access control) is a
   frequently tested security nuance — Q doesn't bypass or flatten access control.
+
+### Sample exam scenarios, worked
+
+**Scenario 1:** "A development team wants AI-generated unit tests as part of their standard pull
+request workflow, integrated with their existing CI/CD pipeline." *Answer:* Amazon Q Developer —
+specifically named DVA-C03 content under test generation/CI-CD automation assistance (Domain 3),
+distinguishing this from Q Business, which has no code-development capability at all.
+
+**Scenario 2:** "A company wants an internal assistant answering employee questions across
+Confluence, Salesforce, and S3 documents, without building a custom retrieval pipeline, while
+ensuring an employee never sees an answer sourced from a document they wouldn't normally have
+access to." *Answer:* Amazon Q Business — both the managed-connector convenience and the
+permissions-aware answering are explicit, named Q Business capabilities, not something requiring
+custom configuration on top.
+
+**Scenario 3:** "A security team is concerned that AI-suggested code from a coding assistant
+might introduce vulnerabilities that go unnoticed before merging." *Answer:* this maps to
+DVA-C03's Task 2.3 (security risks of AI service integration) — the correct answer is a process
+one (mandatory human code review plus Q Developer's own security scanning as a complementary
+check), not disabling AI assistance entirely; the exam expects you to know AI-assisted
+development requires continued human review, not blind trust.
+
+**Scenario 4:** "An organization wants to extend their Q Business deployment so employees can
+ask it to automatically file a Jira ticket from a natural-language description of a bug."
+*Answer:* a Q Business plugin (built-in Jira plugin if available, or a custom plugin otherwise)
+— distinct from a connector, which only indexes content for retrieval and cannot itself take
+an action in an external system.
+
+### Where Q sits relative to everything else in this category
+
+One final positioning worth being explicit about: Q is the only product in this entire
+machine-learning-ai category that is simultaneously relevant to *both* certifications covered by
+this repo (MLA-C02 and DVA-C03) as a named, in-scope topic, rather than belonging primarily to
+one. Bedrock is deep MLA-C02 content with shallow DVA-C03 relevance; SageMaker is MLA-C02-only;
+the pre-built AI services lean MLA-C02 with light DVA-C03 touches. Q Developer, specifically, is
+core DVA-C03 content (explicitly named across three of its four domains) while also being a
+useful MLA-C02 example of a production Bedrock-based application. Keeping this asymmetry straight
+— Q Developer matters more for the developer exam than for the ML exam, while Bedrock and
+SageMaker matter far more for the ML exam — is itself a frequently useful piece of exam-scoping
+knowledge when deciding how deeply to study each document in this folder for a specific
+certification target.
+
+## Further Reading
+
+- Amazon Q Developer: https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/what-is.html
+- Amazon Q Business: https://docs.aws.amazon.com/amazonq/latest/qbusiness-ug/what-is.html
+- Plugins for Amazon Q Business: https://docs.aws.amazon.com/amazonq/latest/qbusiness-ug/plugins.html
+- AWS ML Blog — "Accelerate enterprise AI implementations with Amazon Q Business":
+  https://aws.amazon.com/blogs/machine-learning/accelerate-enterprise-ai-implementations-with-amazon-q-business/
+- AWS ML Blog — "How Kyndryl integrated ServiceNow and Amazon Q Business":
+  https://aws.amazon.com/blogs/machine-learning/how-kyndryl-integrated-servicenow-and-amazon-q-business/
+- AWS Prescriptive Guidance — "Developer workflows with Amazon Q Developer":
+  https://docs.aws.amazon.com/prescriptive-guidance/latest/best-practices-code-generation/developer-workflows.html
+- Amazon Q pricing: https://aws.amazon.com/q/pricing/
+- AWS Skill Builder — "Exam Prep: AWS Certified Developer – Associate (DVA-C03)"
 
 ## Related Terms
 

@@ -4,9 +4,10 @@
 
 ## Definition
 
-Amazon ElastiCache is a managed, in-memory data store service — running either Redis or
-Memcached — that keeps frequently accessed data in RAM so applications can read it back in
-sub-millisecond time instead of hitting a slower disk-based database every time.
+Amazon ElastiCache is a managed, in-memory data store service — running either Redis (or the
+open-source-compatible Valkey fork) or Memcached — that keeps frequently accessed data in RAM so
+applications can read it back in sub-millisecond time instead of hitting a slower disk-based
+database every time.
 
 ## Purpose
 
@@ -17,6 +18,13 @@ trending-posts list), re-fetching it from the database on every single request w
 latency budget and database capacity. ElastiCache exists to put a thin, managed, horizontally
 scalable layer of pure RAM in front of (or beside) your database, so "hot" data can be served in
 microseconds and your primary database is freed up for the writes and queries that actually need it.
+
+The deeper tradeoff worth internalizing: every cache introduces a second copy of the truth. The
+moment you have two copies of anything, you've taken on the job of keeping them in sync — and
+that job doesn't disappear just because the cache is "managed." ElastiCache manages the
+infrastructure (nodes, replication, failover); it does not manage your invalidation logic. That
+remains entirely the application's responsibility, and it's the single biggest source of real
+production bugs attributable to caching.
 
 ## How It Works
 
@@ -49,22 +57,163 @@ For **Redis** specifically, ElastiCache also supports a **replication group** to
 node accepts writes, replica nodes serve reads and provide automatic failover if the primary
 fails — conceptually similar to RDS Multi-AZ, but entirely in-memory and far faster to fail over.
 
+### Cache-Aside vs Write-Through vs Write-Behind
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Cache
+    participant DB
+
+    Note over App,DB: Cache-Aside (lazy loading) - most common
+    App->>Cache: GET key
+    Cache-->>App: MISS
+    App->>DB: SELECT ...
+    DB-->>App: data
+    App->>Cache: SET key, data, TTL
+
+    Note over App,DB: Write-Through - cache updated on every write
+    App->>Cache: SET key, data
+    Cache->>DB: write-through to DB synchronously
+    DB-->>Cache: ack
+    Cache-->>App: ack
+
+    Note over App,DB: Write-Behind (write-back) - cache ack's first, DB catches up async
+    App->>Cache: SET key, data
+    Cache-->>App: ack (fast)
+    Cache->>DB: async write, batched/delayed
+```
+
+- **Cache-aside** is the default assumed pattern unless a question specifically describes
+  something else — reads populate the cache lazily, and the cache can legitimately be empty/cold
+  at any time without breaking correctness (just hurting performance until it warms up).
+- **Write-through** keeps the cache always consistent with the database because every write goes
+  through the cache first, but adds write latency (the write isn't "done" until both layers are
+  updated) and wastes cache space on data that's written but rarely read.
+- **Write-behind (write-back)** optimizes for write latency by acknowledging immediately and
+  flushing to the database asynchronously, at the cost of a real durability gap — if the cache
+  node fails before the async flush completes, that write is lost. This pattern needs an explicit,
+  deliberate durability-risk conversation before adopting it in production.
+
+### Redis Replication Group Failover (Sequence)
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant PriEP as Primary Endpoint (DNS)
+    participant Pri as Primary Node
+    participant Rep as Replica Node
+
+    App->>PriEP: resolve
+    PriEP-->>App: IP of Primary
+    App->>Pri: SET key value
+    Pri->>Rep: async replication
+    Note over Pri: Primary node fails
+    Rep->>Rep: Detected via health check
+    Rep->>Rep: Promoted to new primary
+    PriEP->>PriEP: DNS updated to new primary IP
+    App->>PriEP: re-resolve on next connection
+    PriEP-->>App: IP of (formerly replica) new Primary
+```
+
+Because Redis replication is asynchronous, a failover during a write burst can lose the most
+recent, not-yet-replicated writes — this is the one meaningful durability tradeoff versus a true
+database, and it's why ElastiCache should never be treated as your system of record.
+
+### Sharding / Cluster Mode for Horizontal Scale
+
+```mermaid
+flowchart TB
+    App[Application] --> Router[Client-side hash slot<br/>routing]
+    Router --> Shard1[Shard 1<br/>primary + replicas<br/>slots 0-5460]
+    Router --> Shard2[Shard 2<br/>primary + replicas<br/>slots 5461-10922]
+    Router --> Shard3[Shard 3<br/>primary + replicas<br/>slots 10923-16383]
+```
+
+Redis Cluster Mode partitions the full 16,384 hash-slot keyspace across shards (node groups),
+each with its own primary + replicas — this is how ElastiCache for Redis scales beyond a single
+node's memory/throughput ceiling, conceptually parallel to DynamoDB's partitioning, but entirely
+in-memory and with a fixed, known slot count rather than dynamic partition splitting.
+
+### Data Modeling / Key Design Patterns
+
+- **Key naming conventions matter at scale.** A consistent pattern like `product:{id}` or
+  `session:{userId}` makes cache invalidation logic predictable and lets you use `SCAN` with a
+  pattern match for bulk operations (carefully — `KEYS *` on a large production cache blocks the
+  single-threaded Redis event loop and is a well-known way to cause a self-inflicted outage).
+- **Use Redis's richer data structures deliberately, not just strings.** A leaderboard stored as
+  a Sorted Set (`ZADD`/`ZRANGE`) gets ranking "for free" from Redis's own data structure, instead
+  of fetching all scores into the application and sorting them yourself — this is the actual
+  reason Redis is chosen over Memcached far more often than "it has persistence."
+  - Hashes (`HSET`/`HGETALL`) model a single object's fields efficiently, letting you update one
+    field without rewriting the whole serialized blob.
+  - Lists (`LPUSH`/`RPOP`) model queues/recent-activity feeds with native, atomic operations.
+- **TTL discipline**: almost every cached key should have an explicit TTL, even a long one — an
+  unbounded cache with no eviction policy for keys that are never explicitly deleted will
+  eventually consume all available memory, at which point behavior depends on the configured
+  eviction policy (`maxmemory-policy`), which is itself a decision worth making deliberately
+  (e.g., `allkeys-lru` vs `volatile-ttl`) rather than leaving at the default.
+
 ## Key Features / Components
 
-- **Redis engine** — supports rich data structures (lists, sets, sorted sets, hashes, streams,
-  pub/sub), persistence (snapshot + append-only file), replication, Multi-AZ automatic failover,
-  and cluster mode for sharding across multiple nodes.
+- **Redis/Valkey engine** — supports rich data structures (lists, sets, sorted sets, hashes,
+  streams, pub/sub), persistence (snapshot + append-only file), replication, Multi-AZ automatic
+  failover, and cluster mode for sharding across multiple nodes.
 - **Memcached engine** — simpler, purely in-memory key-value store, multi-threaded, no
   persistence/replication built in — chosen when you need raw simplicity and horizontal sharding
   without Redis's extra features.
 - **ElastiCache Serverless** — on-demand, auto-scaling cache capacity with no node/shard
   management, billed by actual usage.
-- **Cluster Mode (Redis)** — shards data across multiple node groups for horizontal write/read
-  scaling beyond a single node's memory/throughput limit.
-- **Global Datastore (Redis)** — cross-Region replication for globally distributed reads and
-  disaster recovery.
+- **Cluster Mode (Redis/Valkey)** — shards data across multiple node groups for horizontal write/
+  read scaling beyond a single node's memory/throughput limit.
+- **Global Datastore (Redis/Valkey)** — cross-Region replication for globally distributed reads
+  and disaster recovery.
 - **Encryption** — at-rest and in-transit (TLS), plus Redis AUTH/ACLs for access control.
 - **TTL (expiration)** — keys can auto-expire, keeping the cache from growing stale or unbounded.
+- **Eviction policies** — `maxmemory-policy` options (LRU, LFU, random, TTL-based) decide what
+  happens when the cache is full — a deliberate operational choice, not a default to ignore.
+- **Semantic caching for generative AI workloads** — a newer pattern where ElastiCache caches
+  vector-similarity-matched LLM responses (not exact-key matches), reducing redundant model
+  inference calls for semantically similar prompts.
+
+## Common Architectures
+
+**1. Classic web app cache-aside tier.** EC2/ECS/Lambda app instances behind a load balancer each
+check ElastiCache before falling through to RDS/Aurora — the textbook deployment, and still the
+most common real-world shape.
+
+```mermaid
+flowchart LR
+    ALB[Load Balancer] --> App[App tier, Auto Scaling]
+    App -->|cache-aside| Cache[(ElastiCache Redis<br/>Replication Group)]
+    App -->|on cache miss| DB[(RDS / Aurora)]
+```
+
+**2. Session store with Multi-AZ Redis.** User sessions live in Redis with a TTL matching the
+session timeout; Multi-AZ failover means a node failure doesn't force every logged-in user to
+re-authenticate.
+
+**3. Real-time leaderboard using Sorted Sets.** Game servers `ZINCRBY` a player's score on every
+event; leaderboard reads are `ZREVRANGE` calls against the same sorted set — no application-side
+sorting logic needed, and updates/reads are both O(log N).
+
+**4. Rate limiting / API throttling.** A sliding-window or token-bucket rate limiter implemented
+with Redis atomic counters (`INCR` + `EXPIRE`) — the atomicity guarantee is what makes this safe
+under concurrent requests without a separate locking mechanism.
+
+**5. Semantic cache in front of an LLM inference endpoint.** Prompts are embedded, and
+ElastiCache is queried for a semantically similar cached prior prompt/response pair before
+calling the (expensive, slower) model endpoint — cutting both latency and inference cost for
+repeated or similar questions.
+
+```mermaid
+flowchart LR
+    User[User prompt] --> Embed[Embedding model]
+    Embed --> VSearch{Semantically similar<br/>cached response exists?}
+    VSearch -->|yes| Cache[(ElastiCache<br/>vector-indexed cache)]
+    VSearch -->|no| LLM[LLM inference endpoint]
+    LLM --> Cache
+```
 
 ## Use Cases — When to Use It
 
@@ -76,6 +225,7 @@ fails — conceptually similar to RDS Multi-AZ, but entirely in-memory and far f
   updates matter.
 - Pub/Sub messaging for lightweight real-time features (chat presence, live notifications) via Redis.
 - Rate limiting and throttling logic that needs atomic, extremely fast counters.
+- Semantic caching for generative AI applications to reduce redundant model inference cost.
 
 ## When NOT to Use It / Alternatives
 
@@ -91,6 +241,68 @@ fails — conceptually similar to RDS Multi-AZ, but entirely in-memory and far f
 - **Budget is tight and the read load isn't actually a bottleneck yet** → don't add a cache layer
   speculatively; it's extra infrastructure, extra invalidation complexity, and extra cost for a
   problem you may not have. Measure first.
+
+## Real-World Pricing Examples
+
+**Example 1 — small Redis replication group for session storage:**
+- Primary + 1 replica, both `cache.t3.micro` at roughly $0.017/hr each ≈
+  **$0.034/hr → ~$25/month** combined — genuinely cheap at small scale, which is part of why
+  caching is so easy to over-adopt without measuring need first.
+
+**Example 2 — production-scale Redis cluster mode, 3 shards with 1 replica each:**
+- 6 total nodes (3 primary + 3 replica) at `cache.r6g.large` (~$0.151/hr each) ≈
+  **$0.906/hr → ~$661/month** — a real, meaningful line item once you're sharding for scale, which
+  is the concrete reason "don't add caching speculatively" is practical advice, not just caution.
+
+**Example 3 — ElastiCache Serverless for a spiky workload:**
+- Billed by GB-hours of data stored plus ECPUs (ElastiCache Processing Units) consumed, with no
+  minimum node to provision — for a workload with highly variable cache usage (e.g., a seasonal
+  retail site), this avoids paying for a fixed-size cluster sized for peak traffic that then sits
+  mostly idle 10 months of the year.
+
+- Exact current rates: https://aws.amazon.com/elasticache/pricing/
+
+## Limits & Quotas (Real, Current — Verify Before Relying On Them)
+
+- **Max value size (Redis/Valkey string)**: **512 MB** per value, though in practice values this
+  large are almost always a design smell — most production workloads should keep individual
+  cached values well under 1 MB for latency reasons alone.
+- **Redis Cluster Mode hash slots**: a fixed **16,384** slots, distributed across shards — this
+  number is architectural, not configurable.
+- **Max shards per Redis (cluster mode enabled) replication group**: up to **500** shards (raised
+  over time from an original lower limit — verify the current ceiling before relying on it).
+- **Max replicas per shard**: up to **5** read replicas per primary in a shard.
+- **Max nodes per cluster (cluster mode disabled)**: up to **6** (1 primary + 5 replicas).
+- **Memcached nodes per cluster**: 1–60 nodes.
+- **Global Datastore secondary Regions**: multiple secondary Regions supported for cross-Region
+  replication — verify the current maximum before architecting around a specific count.
+- **TLS and AUTH**: both optional but strongly recommended; enabling in-transit encryption after
+  cluster creation on some older configurations may require a new cluster — check current
+  engine-version-specific behavior.
+
+## Troubleshooting / Common Issues
+
+- **Application reads stale data after an update** → classic cache-invalidation bug: the write
+  path updated the database but not the cache (or vice versa) — audit every write path for
+  symmetric cache invalidation, not just the "happy path" write.
+- **`KEYS *` or a large `SCAN` call causes a latency spike cluster-wide** → Redis is
+  single-threaded for command execution; an expensive blocking command on one node stalls every
+  other command queued behind it — use `SCAN` with a small `COUNT` and never run `KEYS *` against
+  a production-sized dataset.
+- **Memory usage grows until eviction/OOM** → check `maxmemory-policy`; if it's set to a
+  non-eviction policy (or left at a default that doesn't suit the workload) and keys lack TTLs,
+  the cache will fill up and either evict unpredictably or reject new writes with an
+  out-of-memory error.
+- **Failover caused a burst of cache misses and briefly hammered the database** → expected
+  behavior: a promoted replica starts with whatever data it already had, but a full primary
+  replacement (not a promotion) starts cold — size the database tier to survive a cold-cache
+  burst, don't assume the cache will always be warm.
+- **Read replica lag causes read-your-own-write inconsistency** → Redis replication is
+  asynchronous; an application that writes then immediately reads from a replica can see stale
+  data for a brief window — read-after-write-critical paths should read from the primary.
+- **Pub/Sub messages "lost" during a node failure** → Redis Pub/Sub is fire-and-forget, not
+  persisted or replayable — if message durability matters, Pub/Sub is the wrong tool; consider
+  Redis Streams (which do persist) or a dedicated messaging service instead.
 
 ## Why It's Important
 
@@ -110,6 +322,24 @@ tradeoff (speed for staleness-risk and added complexity) is worth it.
 - **MLA-C02** — Domain 3 (Deployment & Orchestration): caching for low-latency real-time
   inference results, and Domain 4 (Operating/Monitoring): feature store read latency optimization.
 
+**Expanded exam scenarios:**
+- *"A database is experiencing high read load from repeatedly fetching the same slow-changing
+  product catalog data."* → ElastiCache cache-aside, not a read replica (replicas still run the
+  full query against disk-backed storage; a cache serves from memory with no query processing
+  at all — meaningfully faster).
+- *"User sessions must survive a single cache node failure without forcing logout."* → Redis
+  with Multi-AZ automatic failover, not Memcached (no replication/persistence) and not a single
+  unreplicated Redis node.
+- *"An application needs atomic, real-time leaderboard ranking updates under high write
+  concurrency."* → Redis Sorted Sets — the exam increasingly expects you to know the *specific
+  data structure*, not just "use Redis."
+- *"A workload needs horizontal cache scaling beyond a single node's memory capacity."* → Redis
+  Cluster Mode (sharding across node groups), not simply a bigger single node — there's a ceiling
+  on vertical scaling that cluster mode exists specifically to break through.
+- *"A team wants DynamoDB read latency reduced to microseconds without writing custom cache
+  invalidation code."* → DAX, not ElastiCache — recognize when the question explicitly steers
+  toward the DynamoDB-specific purpose-built tool instead of the general-purpose one.
+
 ## Pricing Model (summary)
 
 - **Node-based** — billed per hour per node type (memory size + vCPU), similar structure to EC2;
@@ -120,6 +350,7 @@ tradeoff (speed for staleness-risk and added complexity) is worth it.
   app servers typically isn't.
 - **Reserved Nodes** — 1 or 3-year commitment for steady workloads, meaningful savings over
   On-Demand node pricing.
+- See the worked examples above for how node count and type drive real monthly cost.
 - Exact current rates: https://aws.amazon.com/elasticache/pricing/
 
 ## Hands-on Lab (Floci)
@@ -150,6 +381,10 @@ redis-cli -p 6379 GET product:123
 redis-cli -p 6379 TTL product:123     # confirm the TTL is counting down
 redis-cli -p 6379 DEL product:123     # simulate invalidation on a product update
 
+# Practice a Sorted Set leaderboard
+redis-cli -p 6379 ZADD leaderboard 100 player1 250 player2 90 player3
+redis-cli -p 6379 ZREVRANGE leaderboard 0 2 WITHSCORES   # top 3, descending
+
 # Clean up
 docker rm -f study-redis
 ```
@@ -173,6 +408,23 @@ cache-aside reads/writes/TTL/invalidation.
   question describes write-through caching specifically.
 - Don't confuse ElastiCache (cache layer) with Aurora/RDS read replicas (still full database
   reads, just offloaded) — caches serve from memory with no query processing at all.
+- **Sorted Sets for leaderboards/rankings** is a specific, recognizable Redis data-structure
+  trigger — don't default to "just use Redis" without matching the data structure to the pattern.
+- **Write-behind caching trades durability for write latency** — a question emphasizing "fastest
+  possible write acknowledgment, some data loss on failure acceptable" points here; "every write
+  must be durable immediately" points away from it.
+
+## Further Reading
+
+- [What is Amazon ElastiCache?](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/WhatIs.html) —
+  official service overview.
+- [High availability using replication groups](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Replication.html) —
+  the failover mechanics referenced above, straight from AWS.
+- [ElastiCache components and features](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/WhatIs.Components.html) —
+  shards, clusters, and node groups explained.
+- [Performance at Scale with Amazon ElastiCache](https://docs.aws.amazon.com/whitepapers/latest/scale-performance-elasticache/welcome.html) —
+  AWS's own whitepaper on caching strategy and architecture patterns.
+- [Amazon ElastiCache pricing](https://aws.amazon.com/elasticache/pricing/) — current, authoritative rates.
 
 ## Related Terms
 
@@ -180,4 +432,18 @@ cache-aside reads/writes/TTL/invalidation.
 - [`rds.md`](rds.md) / [`aurora.md`](aurora.md) — the typical "source of truth" databases ElastiCache
   sits in front of.
 - [`database-selection-guide.md`](database-selection-guide.md) — full decision tree.
-- Glossary: Cache-Aside, Write-Through, TTL, Cache Invalidation, Hot Key.
+- Glossary: Cache-Aside, Write-Through, Write-Behind, TTL, Cache Invalidation, Hot Key, Eviction Policy.
+
+---
+
+**Image credit:** "Typical Valkey and Redis OSS Clusters" and "Valkey or Redis OSS (cluster mode
+disabled) cluster has one shard and 0 to 5 replica nodes" — official diagrams from the AWS
+ElastiCache Developer/User Guide, Amazon Web Services, Inc. Source:
+https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/images/ElastiCache-Cluster-Redis.png and
+https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/images/ElastiCacheClusters-CSN-Redis-Replicas.png
+
+![Typical Valkey and Redis OSS cluster diagram showing nodes grouped into a cluster.](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/images/ElastiCache-Cluster-Redis.png)
+*Figure: A typical Redis/Valkey cluster — one or more shards, each potentially containing a primary and replica nodes. Source: AWS ElastiCache Developer Guide (docs.aws.amazon.com).*
+
+![Diagram showing a Valkey or Redis OSS (cluster mode disabled) cluster with one shard and 0 to 5 replica nodes.](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/images/ElastiCacheClusters-CSN-Redis-Replicas.png)
+*Figure: Replication group topology — a single primary with up to 5 read replicas, the basis for Multi-AZ automatic failover. Source: AWS ElastiCache Developer Guide (docs.aws.amazon.com).*

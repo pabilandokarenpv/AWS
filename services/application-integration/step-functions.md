@@ -63,6 +63,268 @@ Step by step:
    history (every state entered, every input/output, every retry) is visible afterward in the
    console or via API, which is the core debugging value proposition.
 
+### Official AWS reference: workflow diagram and error handling
+
+![Illustrative example of a Step Functions workflow diagram showing states and transitions, as rendered in the Step Functions console.](https://docs.aws.amazon.com/step-functions/latest/dg/images/step-functions-example.png)
+*Source: AWS Documentation — [What is Step Functions?](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html), AWS Step Functions Developer Guide. © Amazon Web Services.*
+
+![Illustrative screenshot of a Step Functions workflow in the console catching a custom error and transitioning to a fallback state after retries.](https://docs.aws.amazon.com/step-functions/latest/dg/images/tutorial-console-retry-state-machine-error-output.png)
+*Source: AWS Documentation — [Handling error conditions in a Step Functions state machine](https://docs.aws.amazon.com/step-functions/latest/dg/tutorial-handling-error-conditions.html), AWS Step Functions Developer Guide. © Amazon Web Services.*
+
+## ASL Worked Examples — Amazon States Language In Depth
+
+ASL is just JSON with a small, fixed vocabulary of fields. The examples below build up from a
+single retrying task to a full order-processing saga with parallel branches and compensation.
+
+### 1. A minimal Task state with Retry and Catch
+
+```json
+{
+  "Comment": "Charge a customer's card, retry on transient errors, fall back on permanent failure",
+  "StartAt": "ChargeCard",
+  "States": {
+    "ChargeCard": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ChargeCard",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "States.Timeout"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["CardDeclinedError"],
+          "ResultPath": "$.error",
+          "Next": "NotifyCustomerDeclined"
+        },
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "UnexpectedFailure"
+        }
+      ],
+      "Next": "ReserveInventory"
+    },
+    "NotifyCustomerDeclined": { "Type": "Fail", "Error": "CardDeclined", "Cause": "Payment was declined by the processor" },
+    "UnexpectedFailure": { "Type": "Fail", "Error": "UnhandledException" },
+    "ReserveInventory": { "Type": "Succeed" }
+  }
+}
+```
+
+Key mechanics made explicit by this example:
+- **`Retry` is tried first.** Each retrier (`ErrorEquals` + interval/backoff/max attempts) is
+  scanned in array order; the first one whose `ErrorEquals` matches the thrown error name is
+  used. `IntervalSeconds: 2, BackoffRate: 2.0, MaxAttempts: 3` means retries happen at
+  roughly 2s, 4s, 8s after each failure — exponential backoff, not fixed-interval.
+- **`JitterStrategy: "FULL"`** randomizes the actual wait within the computed interval, which
+  prevents many parallel executions from retrying in lockstep and hammering a downstream service
+  simultaneously (the "thundering herd" problem).
+- **`Catch` only runs once `Retry` is exhausted** (or if there's no matching retrier at all) —
+  Step Functions always tries every applicable retrier before ever falling through to a catcher.
+- **`ErrorEquals: ["States.ALL"]`** is a catch-all that matches any error not already handled by
+  an earlier, more specific catcher — order matters, since catchers (like retriers) are scanned
+  top to bottom and the first match wins.
+- **`ResultPath: "$.error"`** controls *where* the error information is merged into the state's
+  output, so downstream states can inspect what went wrong without losing the original input.
+
+### 2. Choice state — branching on data
+
+```json
+{
+  "StartAt": "IsInventoryAvailable",
+  "States": {
+    "IsInventoryAvailable": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            { "Variable": "$.inventory.available", "BooleanEquals": true },
+            { "Variable": "$.order.total", "NumericGreaterThan": 0 }
+          ],
+          "Next": "ProcessOrder"
+        },
+        { "Variable": "$.inventory.available", "BooleanEquals": false, "Next": "OutOfStock" }
+      ],
+      "Default": "UnexpectedInventoryState"
+    },
+    "ProcessOrder": { "Type": "Succeed" },
+    "OutOfStock": { "Type": "Fail", "Error": "OutOfStock" },
+    "UnexpectedInventoryState": { "Type": "Fail", "Error": "UnexpectedState" }
+  }
+}
+```
+`Choice` states have **no retry/catch of their own** (there's nothing to retry — it's pure
+branching logic); error handling belongs on the `Task` states that produce the data being
+branched on. A `Default` is required unless every realistic input is covered by an explicit
+`Choice` rule, or the execution fails with a `States.NoChoiceMatched` error.
+
+### 3. Parallel state — concurrent branches that must all succeed
+
+```json
+{
+  "StartAt": "FulfillOrder",
+  "States": {
+    "FulfillOrder": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "ReserveInventory",
+          "States": {
+            "ReserveInventory": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ReserveInventory",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "NotifyWarehouse",
+          "States": {
+            "NotifyWarehouse": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:123456789012:function:NotifyWarehouse",
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "CompensateReservation" }
+      ],
+      "Next": "ScheduleShipping"
+    },
+    "CompensateReservation": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ReleaseInventoryHold",
+      "End": true
+    },
+    "ScheduleShipping": { "Type": "Succeed" }
+  }
+}
+```
+If **either** branch fails (after its own internal retries, if any are defined inside the
+branch), the entire `Parallel` state fails and the outer `Catch` fires — this is the basis of
+the **saga/compensation pattern**: a failure partway through concurrent work routes to a
+dedicated compensating action (here, releasing the inventory hold) instead of leaving the system
+in an inconsistent state.
+
+### 4. Map state — fan-out over a dataset (and distributed mode)
+
+```json
+{
+  "StartAt": "ProcessLineItems",
+  "States": {
+    "ProcessLineItems": {
+      "Type": "Map",
+      "ItemsPath": "$.order.lineItems",
+      "MaxConcurrency": 10,
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "ValidateLineItem",
+        "States": {
+          "ValidateLineItem": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ValidateLineItem",
+            "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 2 }],
+            "End": true
+          }
+        }
+      },
+      "Next": "AllItemsValidated"
+    },
+    "AllItemsValidated": { "Type": "Succeed" }
+  }
+}
+```
+`MaxConcurrency: 10` caps how many line items are processed in parallel at once (0 means
+unbounded, limited only by the account's Lambda concurrency). For truly massive datasets
+(millions of items — e.g., reprocessing every row in an S3-based manifest), switching
+`ProcessorConfig.Mode` to `DISTRIBUTED` runs each item as its own **child execution**, scaling
+far beyond what `INLINE` mode's state-transition accounting can handle economically.
+
+### 5. Full worked saga: order processing with retries, parallel branches, and compensation
+
+```json
+{
+  "Comment": "Order processing saga with retry, parallel fulfillment, and compensating rollback",
+  "StartAt": "ValidatePayment",
+  "States": {
+    "ValidatePayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ValidatePayment",
+      "Retry": [
+        { "ErrorEquals": ["States.Timeout", "Lambda.ServiceException"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["CardDeclinedError"], "Next": "PaymentDeclined" }
+      ],
+      "Next": "CheckInventory"
+    },
+    "CheckInventory": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:CheckInventory",
+      "Next": "IsInventoryAvailable"
+    },
+    "IsInventoryAvailable": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.inventory.available", "BooleanEquals": true, "Next": "FulfillOrder" }],
+      "Default": "OutOfStock"
+    },
+    "FulfillOrder": {
+      "Type": "Parallel",
+      "Branches": [
+        { "StartAt": "ReserveInventory", "States": {
+            "ReserveInventory": { "Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ReserveInventory", "End": true } } },
+        { "StartAt": "NotifyWarehouse", "States": {
+            "NotifyWarehouse": { "Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:NotifyWarehouse", "End": true } } }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "RefundPayment" }],
+      "Next": "ScheduleShipping"
+    },
+    "ScheduleShipping": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:ScheduleShipping",
+      "Next": "OrderComplete"
+    },
+    "RefundPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:RefundPayment",
+      "Next": "FulfillmentFailed"
+    },
+    "FulfillmentFailed": { "Type": "Fail", "Error": "FulfillmentFailed", "Cause": "Inventory reservation or warehouse notification failed; payment refunded" },
+    "PaymentDeclined": { "Type": "Fail", "Error": "PaymentDeclined" },
+    "OutOfStock": { "Type": "Fail", "Error": "OutOfStock" },
+    "OrderComplete": { "Type": "Succeed" }
+  }
+}
+```
+This definition is directly traceable against the "How It Works" diagram above: `ValidatePayment`
+retries transient Lambda errors before giving up, a declined card routes straight to a `Fail`
+state (no retry makes sense for a hard business rejection), inventory availability branches via
+`Choice`, fulfillment runs two tasks in `Parallel`, and — critically — a failure in *either*
+parallel branch triggers `RefundPayment` as a compensating transaction before the execution
+ends in failure. This compensation step is the saga pattern in action: Step Functions has no
+built-in "rollback," so compensation is always an explicit state you design into the machine.
+
+## Error Handling Flow, Visually
+
+```mermaid
+flowchart TD
+    TASK[Task executes] -->|success| NEXT[Next state]
+    TASK -->|error thrown| RETRYCHK{Matching Retry<br/>retrier configured?}
+    RETRYCHK -->|Yes, attempts remain| WAIT[Wait IntervalSeconds * BackoffRate^n]
+    WAIT --> TASK
+    RETRYCHK -->|No match, or attempts exhausted| CATCHCHK{Matching Catch<br/>catcher configured?}
+    CATCHCHK -->|Yes| FALLBACK[Transition to catcher's Next state]
+    CATCHCHK -->|No match| EXECFAIL[Execution fails - States.ALL propagates up]
+    FALLBACK --> COMP[Compensating state, e.g. Refund/Rollback]
+```
+
 ## Key Features / Components
 
 - **State machine** — the ASL JSON definition of states and transitions; the unit you deploy
@@ -78,10 +340,16 @@ Step by step:
   (like Lambda), history goes to CloudWatch Logs instead of being retained natively.
 - **Native service integrations** — many AWS services (DynamoDB, SNS, SQS, ECS, Glue, SageMaker,
   and more) can be called directly from a Task state without a Lambda in between.
-- **Error handling** — `Retry` (with interval, backoff rate, max attempts) and `Catch` (route
-  to a fallback state) can be attached per state, declaratively.
+- **Error handling** — `Retry` (with interval, backoff rate, max attempts, jitter) and `Catch`
+  (route to a fallback state) can be attached per state, declaratively.
 - **Map state "distributed mode"** — process large datasets (millions of items) with massive
   concurrency, each item run as its own sub-execution.
+- **Task Token (`waitForTaskToken`)** — pauses a Task state until an external system calls
+  `SendTaskSuccess`/`SendTaskFailure` with the token, the mechanism behind human-approval and
+  long-running external-callback workflows.
+- **Variables and JSONata (newer ASL features)** — in addition to classic JSONPath-based
+  input/output processing, newer state machines can use named variables and JSONata expressions
+  for more flexible data transformation between states.
 
 ## Use Cases — When to Use It
 
@@ -123,6 +391,55 @@ Step by step:
 | Throughput | Lower (built for durability, not raw speed) | Very high (built for event-heavy, high-volume workloads) |
 | Best for | Long-running, auditable business processes | High-volume, short, frequent event processing |
 
+## Common Architectures
+
+### 1. EventBridge-triggered saga with compensation
+
+```mermaid
+flowchart LR
+    EB{{EventBridge Rule: OrderPlaced}} -->|StartExecution| SF[[Step Functions: Order Saga]]
+    SF -->|Task: native integration| DDB[(DynamoDB - Order State)]
+    SF -->|Task: native integration| SNS{{SNS - Status Updates}}
+    SF -->|on failure after Catch| COMP[Compensating Lambda: Refund]
+```
+
+### 2. Human-in-the-loop approval via task token
+
+```mermaid
+sequenceDiagram
+    participant SF as Step Functions Execution
+    participant L as Lambda (sends approval request)
+    participant H as Human Approver (via Slack/Email link)
+    participant API as Callback API (API Gateway)
+    SF->>L: Task with waitForTaskToken
+    L->>H: Send approval link containing task token
+    Note over SF: Execution paused, waiting for callback
+    H->>API: Clicks "Approve"
+    API->>SF: SendTaskSuccess(taskToken, output)
+    SF->>SF: Resume execution at next state
+```
+
+### 3. Distributed Map for large-scale batch processing
+
+```mermaid
+flowchart TD
+    SF[[Step Functions: Reprocess Pipeline]] -->|Map state, DISTRIBUTED mode| MANIFEST[(S3 Manifest - 2M rows)]
+    MANIFEST --> CHILD1[Child Execution 1..N]
+    MANIFEST --> CHILD2[Child Execution N+1..2N]
+    CHILD1 --> RESULTS[(S3 - Results)]
+    CHILD2 --> RESULTS
+```
+
+### 4. Express Workflow for high-volume IoT telemetry
+
+```mermaid
+flowchart LR
+    IOT[IoT Devices] -->|millions/day| EB{{EventBridge}}
+    EB -->|rule match| EXP[[Express Workflow: Validate + Route]]
+    EXP --> TS[(Timestream / S3 - Telemetry Store)]
+    EXP -.->|logs, not full history| CW[(CloudWatch Logs)]
+```
+
 ## Why It's Important
 
 **Real-world**: Step Functions turns "a bunch of Lambdas calling each other with custom retry
@@ -135,11 +452,15 @@ what input).
 - **SAA-C03 Domain 2 (Design Resilient Architectures), Task 2.1** — orchestrating multi-step,
   loosely coupled serverless architectures resiliently; Step Functions is the named answer
   whenever a scenario needs coordinated retries/rollback across multiple services rather than
-  one Lambda doing everything.
+  one Lambda doing everything. Expect scenario variants: "a multi-step process needs to roll
+  back cleanly if a later step fails" (Parallel/Task + Catch routing to a compensating state —
+  the saga pattern), "an approval step by a human must pause the workflow for hours or days"
+  (task token / `waitForTaskToken`, which only Standard Workflows support given Express's 5-minute cap).
 - **DVA-C03 Domain 1 (Development with AWS Services), Task 1.1** — building event-driven
   applications with proper orchestration; expect direct questions on choosing Standard vs
-  Express based on duration/volume/exactly-once requirements, and on Task/Choice/Parallel/Map
-  state semantics.
+  Express based on duration/volume/exactly-once requirements, on Task/Choice/Parallel/Map
+  state semantics, and on reading/writing actual ASL `Retry`/`Catch` blocks (order of
+  evaluation, `ErrorEquals` matching, `BackoffRate` math).
 
 ## Pricing Model (summary)
 
@@ -149,6 +470,52 @@ as one transition); no charge for idle/waiting states beyond the transition into
 consumed, similar to Lambda billing. Both have a monthly free tier allotment. See the
 [official Step Functions pricing page](https://aws.amazon.com/step-functions/pricing/) for
 current numbers.
+
+## Limits & Quotas
+
+| Limit | Value | Notes |
+|---|---|---|
+| Max execution duration (Standard) | 1 year | No practical ceiling for long-running sagas/approvals |
+| Max execution duration (Express) | 5 minutes | Hard cap — not configurable |
+| Max execution history size (Standard) | 25,000 events | Very large/looping workflows can hit this; redesign with Map/sub-workflows if so |
+| Max input/output payload size per state | 256 KB | Pass references (e.g., S3 keys), not large blobs, through state data |
+| Max state machine definition size | 1 MB (ASL JSON) | Rarely a practical constraint |
+| Max open executions (Standard, account-level, soft) | Very high, raisable | Relevant at extreme multi-tenant scale |
+| Max `MaxAttempts` per retrier | 99,999 (practically unbounded) | Combine with sane `BackoffRate`/`MaxDelaySeconds` |
+| Max branches in a Parallel state | 20 | Use Map for larger fan-out over a dataset |
+| Max concurrency, Map state (INLINE) | Bounded by account Lambda concurrency | Distributed Map scales far beyond this |
+| Task token validity (`waitForTaskToken`) | Up to 1 year (Standard only) | Matches Standard Workflow's max duration |
+
+Always confirm current figures on the
+[AWS Step Functions quotas page](https://docs.aws.amazon.com/step-functions/latest/dg/limits.html).
+
+## Troubleshooting / Common Issues
+
+- **"My workflow retries forever and never reaches the Catch block."** Check that `MaxAttempts`
+  is actually set — without it, a `Retry` entry with no `MaxAttempts` defaults to a small finite
+  number (not infinite), but a misconfigured very-high `MaxAttempts` combined with a tight
+  `BackoffRate` can make an execution appear stuck for a long time before Catch ever triggers.
+- **"An error is reaching `States.ALL` when I expected a more specific catcher to fire."**
+  Catchers (and retriers) are evaluated **top to bottom, first match wins** — if a broader
+  `States.ALL` entry appears before a more specific `ErrorEquals` entry in the array, the
+  specific one may never be reached; order matters.
+- **"A Parallel branch failure isn't triggering my compensation logic."** Confirm the `Catch` is
+  attached to the `Parallel` state itself (catching failures from *any* branch), not nested
+  incorrectly inside just one branch's own states.
+- **"Execution history hit a size limit on a long-running loop."** Standard Workflow executions
+  cap at 25,000 history events; a `Map`/retry loop that iterates far more than expected can hit
+  this — consider Distributed Map mode or breaking the workflow into smaller nested state
+  machines (`Start Execution` as a Task) instead of one monolithic loop.
+- **"My human-approval step is timing out unexpectedly."** `waitForTaskToken` only makes sense
+  on Standard Workflows (Express's 5-minute execution cap makes a multi-hour approval wait
+  infeasible) — verify the workflow type matches the actual wait duration needed.
+- **"Data passed between states is being silently truncated or rejected."** Each state's
+  input/output payload is capped at 256 KB — pass a reference (an S3 object key, a DynamoDB
+  item ID) through the state machine instead of embedding large blobs directly.
+- **"I need to call a service Step Functions doesn't have a direct native integration for."**
+  Fall back to a `Task` state invoking a Lambda function as a thin wrapper around that service's
+  API — native integrations cover the vast majority of common AWS services but not literally all
+  SDK operations on every service.
 
 ## Hands-on Lab (Floci)
 
@@ -196,6 +563,33 @@ awslocal stepfunctions list-executions \
 
 # Describe one execution to see its final output/history
 awslocal stepfunctions describe-execution --execution-arn "<execution-arn-from-above>"
+
+# Fetch the full execution history (every state entered, retries, catches)
+awslocal stepfunctions get-execution-history --execution-arn "<execution-arn-from-above>"
+
+# --- Retry/Catch example: deploy the ChargeCard-with-retry state machine from this doc ---
+cat <<'EOF' > /tmp/retry-catch-machine.json
+{
+  "Comment": "Retry/Catch demo",
+  "StartAt": "ChargeCard",
+  "States": {
+    "ChargeCard": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:000000000000:function:ChargeCard",
+      "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Fallback"}],
+      "Next": "Done"
+    },
+    "Fallback": {"Type": "Fail", "Error": "ChargeFailed"},
+    "Done": {"Type": "Succeed"}
+  }
+}
+EOF
+awslocal stepfunctions create-state-machine \
+  --name retry-catch-demo \
+  --definition file:///tmp/retry-catch-machine.json \
+  --role-arn arn:aws:iam::000000000000:role/floci-stepfunctions-role \
+  --type STANDARD
 ```
 Full walkthrough (Task states invoking Lambda, Parallel/Map, Express vs Standard side by side):
 `labs-floci/README.md` lab index → application-integration section.
@@ -213,7 +607,30 @@ Full walkthrough (Task states invoking Lambda, Parallel/Map, Express vs Standard
   to make one API call" often wants a native integration, not an unnecessary Lambda wrapper.
 - **Map state (distributed mode)** is the answer for "process millions of files/records with
   high concurrency without managing your own fleet of workers."
+- **Retry vs Catch, precisely**: `Retry` always runs first and re-attempts the *same* state;
+  `Catch` only engages once retries are exhausted (or none apply) and transitions to a
+  *different* state. A question describing "the workflow should attempt the operation a few
+  times before giving up and doing something else" wants both configured together, not one
+  instead of the other.
+- **Task token (`waitForTaskToken`)** is the specific, nameable mechanism for human-in-the-loop
+  or long external-callback waits — remember it effectively requires Standard Workflows given
+  Express's 5-minute execution ceiling.
+- **The saga/compensation pattern** (explicit rollback states reached via Catch after a
+  Parallel or Task failure) is how Step Functions achieves "all-or-nothing" business outcomes
+  without native transactions across multiple services — recognize this pattern in prose
+  scenarios about rolling back partially-completed multi-service operations.
 - Exam domains: **SAA-C03 Domain 2 Task 2.1**, **DVA-C03 Domain 1 Task 1.1**.
+
+## Further Reading
+
+- [What is Step Functions?](https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html)
+- [Amazon States Language specification](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-amazon-states-language.html)
+- [Handling errors in Step Functions workflows (Retry/Catch)](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html)
+- [Handling error conditions in a Step Functions state machine (tutorial)](https://docs.aws.amazon.com/step-functions/latest/dg/tutorial-handling-error-conditions.html)
+- [Map state and the Distributed Map mode](https://docs.aws.amazon.com/step-functions/latest/dg/state-map.html)
+- [Standard vs. Express Workflows](https://docs.aws.amazon.com/step-functions/latest/dg/concepts-standard-vs-express.html)
+- [Step Functions quotas](https://docs.aws.amazon.com/step-functions/latest/dg/limits.html)
+- [AWS Step Functions pricing](https://aws.amazon.com/step-functions/pricing/)
 
 ## Related Terms
 

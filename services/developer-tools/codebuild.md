@@ -17,6 +17,11 @@ pure overhead unrelated to actually shipping software. CodeBuild exists to make 
 commands" a pay-per-build-minute API call instead of a piece of infrastructure you own, while
 staying flexible enough to run arbitrary shell commands via a simple YAML spec.
 
+CodeBuild's design deliberately mirrors the shape of a Jenkins/Travis/CircleCI build job (phases of
+shell commands against a checked-out source tree) rather than inventing a new programming model —
+the learning curve for a team already familiar with any CI tool is mostly "learn the buildspec
+syntax," not "rethink how CI works."
+
 ## How It Works
 
 Plain explanation: CodeBuild reads a `buildspec.yml` file (checked into your repo, or defined
@@ -28,11 +33,17 @@ artifact — then tears the container down. You're billed only for the build's a
 flowchart TD
     Src[Source: CodeCommit/GitHub/S3] --> Proj[CodeBuild Project]
     Proj -->|reads| Spec[buildspec.yml]
-    Spec --> Install[install phase\ninstall deps/runtime]
-    Install --> PreBuild[pre_build phase\nlogin to ECR, env setup]
-    PreBuild --> Build[build phase\ncompile, run tests,\ndocker build]
-    Build --> PostBuild[post_build phase\ndocker push, package artifact]
-    PostBuild --> Art[(Artifact: S3 zip\nor ECR image)]
+    Spec --> Install[install phase
+install deps/runtime]
+    Install --> PreBuild[pre_build phase
+login to ECR, env setup]
+    PreBuild --> Build[build phase
+compile, run tests,
+docker build]
+    Build --> PostBuild[post_build phase
+docker push, package artifact]
+    PostBuild --> Art[(Artifact: S3 zip
+or ECR image)]
     Build -. test results .-> Reports[CodeBuild Test Reports]
     Proj -. logs .-> CW[CloudWatch Logs]
 ```
@@ -51,6 +62,167 @@ Step by step:
    directly, or as the input to the next stage of a **CodePipeline**.
 6. All build output streams to **CloudWatch Logs** for debugging failed builds.
 
+### Real-World Reference Architecture
+
+![Diagram showing how CodeBuild works: a build project with source, build environment, buildspec, S3 output, and CloudWatch Logs](https://docs.aws.amazon.com/codebuild/latest/userguide/images/arch.png)
+
+*Figure: The official "how CodeBuild works" diagram — a build project supplies source location,
+build environment, and commands; CodeBuild creates the build environment, pulls source, runs the
+buildspec, uploads output to S3, and streams status/logs to CodeBuild and CloudWatch Logs
+throughout. Source:
+[AWS CodeBuild User Guide — "AWS CodeBuild concepts"](https://docs.aws.amazon.com/codebuild/latest/userguide/concepts.html), © Amazon Web Services.*
+
+![Diagram showing how CodeBuild integrates as a build or test action inside an AWS CodePipeline stage](https://docs.aws.amazon.com/codebuild/latest/userguide/images/pipeline.png)
+
+*Figure: CodeBuild added as a build/test action within a CodePipeline stage — illustrating that
+CodeBuild is usually not invoked standalone in production, but as one action inside a larger
+pipeline that CodePipeline orchestrates end-to-end. Source:
+[AWS CodeBuild User Guide — "What is AWS CodeBuild?"](https://docs.aws.amazon.com/codebuild/latest/userguide/welcome.html), © Amazon Web Services.*
+
+## Worked Example: A Production buildspec.yml (Build and Push a Container Image)
+
+```yaml
+version: 0.2
+
+env:
+  variables:
+    IMAGE_REPO_NAME: "orders-api"
+  parameter-store:
+    DB_URL: "/orders-api/db-url"
+  secrets-manager:
+    NPM_TOKEN: "ci/npm-token:token"
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - echo "Installing dependencies"
+      - npm ci
+
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR"
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:-latest}
+
+  build:
+    commands:
+      - echo "Running unit tests"
+      - npm test -- --ci --reporters=default --reporters=jest-junit
+      - echo "Building Docker image"
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+
+  post_build:
+    commands:
+      - echo "Pushing image to ECR"
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - printf '[{"name":"orders-api","imageUri":"%s"}]' $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG > imagedefinitions.json
+
+reports:
+  jest-reports:
+    files:
+      - "junit.xml"
+    file-format: "JUNITXML"
+
+artifacts:
+  files:
+    - imagedefinitions.json
+  discard-paths: yes
+
+cache:
+  paths:
+    - "node_modules/**/*"
+```
+
+What matters here for both the exam and real debugging:
+- **`env.parameter-store` and `env.secrets-manager`** inject values from SSM Parameter Store and
+  Secrets Manager directly as environment variables at build start — this is the correct,
+  exam-tested way to keep secrets out of the buildspec file itself (which is often checked into
+  source control and therefore not a safe place for literal secret values).
+- **`CODEBUILD_RESOLVED_SOURCE_VERSION`** is one of several CodeBuild-provided built-in environment
+  variables (others include `CODEBUILD_BUILD_ID`, `AWS_DEFAULT_REGION`); using the resolved commit
+  hash as an image tag (rather than `:latest`) gives every build a unique, traceable artifact tag.
+- **`reports`** publishes structured test results (JUnit XML here) to the CodeBuild console's Test
+  Reports feature — distinct from `artifacts`, which is the actual deployable output.
+- **`imagedefinitions.json`** is the specific file format the **ECS deploy action in CodePipeline**
+  expects when it needs to know which container/image pair to update in a task definition — this
+  exact filename and structure is a commonly tested, easy-to-miss detail.
+- **`cache.paths`** caches `node_modules` across builds in S3, meaningfully speeding up repeat
+  builds — a direct, practical cost/time optimization most buildspecs in production actually use.
+
+## Full Build Lifecycle with Failure and Retry
+
+```mermaid
+flowchart TD
+    Trigger[CodePipeline or EventBridge\ntriggers build] --> Provision[CodeBuild provisions\nephemeral build container]
+    Provision --> Install[install phase]
+    Install --> IFail{Phase fails?}
+    IFail -->|yes| Abort[Build: FAILED\nlogs to CloudWatch]
+    IFail -->|no| PreBuild[pre_build phase]
+    PreBuild --> PFail{Phase fails?}
+    PFail -->|yes| Abort
+    PFail -->|no| Build[build phase]
+    Build --> BFail{Tests/compile fail?}
+    BFail -->|yes| Abort
+    BFail -->|no| PostBuild[post_build phase]
+    PostBuild --> Upload[Upload artifact to S3\nor push image to ECR]
+    Upload --> Reports[Publish test reports]
+    Reports --> Teardown[Tear down build container\nbilling stops]
+    Teardown --> Done([Build: SUCCEEDED])
+    Abort --> Teardown2[Tear down build container\nbilling stops]
+    Teardown2 --> Notify[CodePipeline marks stage Failed\nSNS/EventBridge notification]
+```
+
+Walkthrough: any phase failing (a non-zero exit code from any command, unless explicitly marked
+with `|| true`) stops the build immediately — later phases never run, and no artifact is uploaded.
+This is a frequent source of confusion: a `post_build` command failing *after* tests already
+passed still marks the overall build as `FAILED`, and CodePipeline (if this build is a pipeline
+stage) will show that stage as failed even though the actual compile/test work succeeded. The fix
+pattern commonly tested: isolate risky post-build steps, or use `finally` blocks within a phase to
+ensure cleanup commands run even if an earlier command in the same phase fails.
+
+## Build Compute Scaling and Batch Builds
+
+```mermaid
+flowchart TD
+    Trigger[CodePipeline or webhook\ntriggers build] --> Batch{Batch build\nconfigured?}
+    Batch -->|no| Single[Single build container\nruns all phases sequentially]
+    Batch -->|yes| Fanout[Multiple build configurations\nrun in parallel]
+    Fanout --> B1[Build: linux/amd64]
+    Fanout --> B2[Build: linux/arm64]
+    Fanout --> B3[Build: run full test suite]
+    B1 --> Combine[Combine stage:\nmerge into multi-arch manifest]
+    B2 --> Combine
+    B3 --> Combine
+    Combine --> Push[Push combined artifact to ECR]
+```
+
+Walkthrough: CodeBuild provisions a brand-new, isolated build container for every single build
+(no shared state between builds except what you explicitly cache to S3) — this is what makes
+batch builds safe to run in parallel with no cross-contamination, and is also why a build that
+"worked yesterday" can fail today if an upstream dependency changed, since nothing is implicitly
+cached unless you configure it.
+
+## Secrets and Environment Variable Resolution Order
+
+```mermaid
+flowchart LR
+    Start([Build starts]) --> PlainEnv[Plain env.variables\nresolved first, literal values]
+    PlainEnv --> ParamStore[env.parameter-store\nfetched from SSM at build start]
+    ParamStore --> SecretsMgr[env.secrets-manager\nfetched from Secrets Manager at build start]
+    SecretsMgr --> Exported[All available as environment\nvariables to every build phase]
+    Exported --> Commands[install/pre_build/build/post_build\ncommands can reference $VAR_NAME]
+```
+
+Walkthrough: all three environment variable sources are resolved **before any phase runs** and
+are then available identically to every phase — there's no "only available in pre_build" scoping;
+once resolved, a secret pulled via `env.secrets-manager` is just as visible to the `build` phase
+as to `pre_build`, which is precisely why accidentally `echo`-ing one anywhere in the buildspec
+leaks it to CloudWatch Logs regardless of which phase the stray command sits in.
+
 ## Key Features / Components
 
 - **buildspec.yml** — the YAML file defining build phases (install/pre_build/build/post_build)
@@ -65,6 +237,10 @@ Step by step:
   artifact repo, a private database for integration tests).
 - **Batch builds** — run multiple build configurations (matrix builds) from one trigger.
 - **Test Reports** — structured surfacing of JUnit/Cucumber/etc. test results in the console.
+- **`env.parameter-store` / `env.secrets-manager`** — native, secretless injection of
+  configuration/secrets as build-time environment variables.
+- **Build badges** — a status badge (passing/failing) embeddable in a repo README, reflecting the
+  latest build result for a branch.
 
 ## Use Cases — When to Use It
 
@@ -75,6 +251,8 @@ Step by step:
 - Building and pushing Docker images to ECR as part of a container deployment pipeline (DVA-C03
   Domain 3's "ECR image build/tag/lifecycle" is literally this).
 - ML pipelines that need to build a custom training/inference container (MLA-C02 Domain 3).
+- Running security/static-analysis scans (SAST tools, dependency vulnerability checks) as a
+  dedicated buildspec phase before an image is even pushed to ECR.
 
 ## When NOT to Use It / Alternatives
 
@@ -89,6 +267,37 @@ Step by step:
   self-managed build fleet (e.g., self-hosted GitHub Actions runners on EC2) might be cheaper at
   very large constant scale, though CodeBuild has removed most practical duration limits for
   typical use.
+
+## Common Architectures
+
+**1. Build-once, deploy-many promotion pipeline**
+A single CodeBuild project builds and pushes one immutable, commit-hash-tagged image; subsequent
+pipeline stages (dev → staging → prod) only ever *deploy* that same image reference, never
+rebuilding it — avoiding "works in staging, broke in prod" bugs introduced by rebuilding at each
+stage.
+
+**2. Matrix/batch builds for multi-platform artifacts**
+A single CodeBuild trigger fans out into parallel batch builds (e.g., one per target architecture:
+amd64 and arm64), each producing its own artifact, which are then combined into a multi-arch
+manifest pushed to ECR — common for teams supporting both standard and Graviton-based Fargate/EC2
+deployments.
+
+**3. Security-gated build with SAST and dependency scanning**
+The `build` phase runs unit tests, then a dedicated phase runs a static application security
+testing (SAST) tool and a dependency vulnerability scanner; the buildspec explicitly fails (exit
+non-zero) if findings exceed a severity threshold, blocking the pipeline before an image is ever
+pushed to ECR — "shift left" security enforced at the build layer.
+
+**4. VPC-connected integration test builds**
+A buildspec's `build` phase runs integration tests against a private RDS instance or internal
+service, requiring the CodeBuild project to be configured with VPC connectivity (subnets, security
+groups) — a frequently tested detail, since CodeBuild projects are *not* VPC-connected by default.
+
+**5. Self-hosted alternative using GitHub Actions + CodeBuild hybrid**
+A GitHub Actions workflow handles lightweight linting/formatting checks (fast feedback, free tier),
+while a CodeBuild project (triggered via CodeConnections/webhook) handles the heavier
+compile/test/container-build work — splitting CI load between a free, fast tool and a managed,
+AWS-integrated one based on what each step actually needs.
 
 ## Why It's Important
 
@@ -107,6 +316,70 @@ Manager/Parameter Store.
   architecture pattern.
 - **MLA-C02 Domain 3, Task 3.3** — "CI/CD for ML (CodePipeline/CodeBuild/CodeDeploy...)" is
   explicitly named for building custom training/inference containers and running pipeline tests.
+
+### Expanded Exam Scenarios
+
+**DVA-C03 Domain 3 scenario:** "A buildspec needs to authenticate to a third-party npm registry
+during the install phase, without the token ever appearing in the buildspec.yml file checked into
+source control." → Answer: `env.secrets-manager` mapping, pulling the token from Secrets Manager
+at build start — never a hardcoded value, even a "temporary" one for testing.
+
+**DVA-C03 Domain 3 scenario:** "A CodeBuild project needs to run integration tests against a
+private RDS instance that has no public endpoint." → Answer: configure the CodeBuild project with
+**VPC connectivity** (subnet IDs, security groups) — CodeBuild projects run outside any customer
+VPC by default and need this explicit configuration to reach private resources at all.
+
+**DVA-C03 Domain 3 scenario:** "A CodePipeline ECS deploy action needs to know which container
+image was just built." → Answer: the buildspec's `post_build` phase must produce an
+**`imagedefinitions.json`** file listing container name/image URI pairs, included in the
+`artifacts` section — this exact file format is what the ECS deploy action consumes.
+
+**MLA-C02 Domain 3 scenario:** "A CI pipeline needs to build a custom Docker image containing a
+specific ML framework version, with build caching to avoid re-downloading large dependencies on
+every build." → Answer: a CodeBuild project with a `cache.paths` configuration (or Docker layer
+caching) pointed at the dependency directory, paired with a `pre_build` ECR login and `build`
+phase `docker build`/`docker push`.
+
+## Limits & Quotas
+
+Current defaults (verify against the
+[official CodeBuild quotas page](https://docs.aws.amazon.com/codebuild/latest/userguide/limits.html)):
+
+| Quota | Default | Adjustable? |
+|---|---|---|
+| Concurrently running builds per account (per Region) | 60 (varies by compute type) | Yes |
+| Build timeout (max) | 8 hours | Configurable up to this ceiling |
+| buildspec file size | 100 KB (inline) / larger via file reference | — |
+| Environment variables per build | 100 | — |
+| Cache size (S3-backed) | No hard cap (billed as S3 storage) | — |
+| Build projects per account | 5,000 | Yes |
+
+**Exam-relevant takeaway:** the 8-hour build timeout ceiling is occasionally used to distinguish
+CodeBuild from "unbounded duration" claims — a question describing a multi-day build process is
+signaling a design problem (the build should be decomposed), not a CodeBuild configuration fix.
+
+## Troubleshooting / Common Issues
+
+- **Build fails at `pre_build` with an ECR authentication error** — the CodeBuild service role
+  lacks `ecr:GetAuthorizationToken`, or the account/region in the login command doesn't match the
+  actual ECR repository's account/region.
+- **Build succeeds locally but fails in CodeBuild** — almost always an environment difference:
+  missing `runtime-versions` pinning (CodeBuild's managed images update over time), or a
+  dependency that assumes network access CodeBuild's build environment doesn't have (e.g., no VPC
+  connectivity configured for a private resource).
+- **Cache doesn't seem to speed up subsequent builds** — confirm the `cache` type is set correctly
+  in the CodeBuild project configuration (`LOCAL` vs `S3`), not just declared in the buildspec;
+  both the project-level setting and the buildspec's `cache.paths` must agree.
+- **Secrets appear in plaintext in build logs** — a command that echoes an environment variable
+  containing a secret (e.g., `echo $NPM_TOKEN` for debugging) will leak it into CloudWatch Logs;
+  CodeBuild does not automatically redact secret values from arbitrary command output, only from
+  specific known patterns.
+- **`imagedefinitions.json` not found by the downstream ECS deploy action** — check the `artifacts`
+  section explicitly lists the file and that `post_build` actually created it at the project's
+  working directory root (a nested subdirectory path mismatch is a frequent cause).
+- **Build hangs and eventually times out** — check for a command waiting on interactive input
+  (CodeBuild has no interactive terminal) or a network call to an unreachable private resource
+  because VPC connectivity wasn't configured.
 
 ## Pricing Model (summary)
 
@@ -144,8 +417,17 @@ jobs:
 ```
 
 You can still use Floci + `awslocal` *inside* a GitHub Actions job to practice pushing a built
-image to a local ECR-equivalent as a combined exercise — just don't expect to spin up a
-CodeBuild Project against `localhost:4566` directly.
+image to a local ECR-equivalent as a combined exercise:
+
+```bash
+# Inside the post_build-equivalent step, push to a local Floci ECR endpoint
+awslocal ecr create-repository --repository-name demo-app || true
+awslocal ecr get-login-password | docker login --username AWS --password-stdin localhost:4566
+docker build -t localhost:4566/demo-app:$GITHUB_SHA .
+docker push localhost:4566/demo-app:$GITHUB_SHA
+```
+
+Just don't expect to spin up a real CodeBuild Project against `localhost:4566` directly.
 
 ## Exam Tips
 
@@ -156,8 +438,20 @@ CodeBuild Project against `localhost:4566` directly.
 - A buildspec with a `docker build` + `docker push` in the `build`/`post_build` phases, paired
   with an ECR login in `pre_build`, is the textbook pattern for "build and publish a container
   image" questions.
+- `imagedefinitions.json` is a specific, named artifact format the ECS CodePipeline deploy action
+  expects — a question about "pipeline doesn't know which image to deploy" often hinges on this
+  file being missing or malformed.
+- CodeBuild projects are **not VPC-connected by default** — a question about reaching a private
+  database during tests requires explicitly configuring VPC settings on the project.
 - Appears heavily in DVA-C03 Domain 3, and is named directly in MLA-C02 Domain 3's CI/CD-for-ML
   task.
+
+## Further Reading
+
+- [What is AWS CodeBuild?](https://docs.aws.amazon.com/codebuild/latest/userguide/welcome.html) — official overview and architecture diagrams used above
+- [Buildspec reference](https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html) — the complete buildspec.yml syntax reference
+- [Build environment reference](https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref.html) — managed image list and compute type options
+- [CodeBuild VPC support](https://docs.aws.amazon.com/codebuild/latest/userguide/vpc-support.html) — official guide to connecting builds to private resources
 
 ## Related Terms
 

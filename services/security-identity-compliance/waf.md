@@ -60,6 +60,42 @@ Step by step:
    evaluated request (matched or not) can be logged to CloudWatch Logs, S3, or Kinesis Data
    Firehose for visibility, auditing, and rule tuning.
 
+### Official AWS reference architecture: WAF Web ACL as the central inspection point
+
+![Diagram showing a WAF Web ACL, CloudFront distribution, CloudWatch log group, and IAM role created by a solutions construct, with the Web ACL positioned as the inspection layer in front of CloudFront.](https://docs.aws.amazon.com/solutions/latest/constructs/images/aws-wafwebacl-cloudfront.png)
+
+*Source: AWS Solutions Constructs, "aws-wafwebacl-cloudfront"
+(docs.aws.amazon.com/solutions/latest/constructs/aws_wafwebacl_cloudfront.html)*
+
+### Full rule evaluation order within a Web ACL, with priority and labels
+
+```mermaid
+flowchart TD
+    Req[Request arrives] --> P1[Priority 1: AWS Managed Rule Group\nCore Rule Set]
+    P1 -->|Adds labels e.g. awswaf:managed:aws:core-rule-set:SQLi| P2[Priority 2: IP reputation list]
+    P2 --> P3[Priority 3: Custom rate-based rule\non login endpoint path]
+    P3 --> P4[Priority 4: Custom rule matching\nprevious rule's LABEL]
+    P4 --> Default[Default action]
+```
+
+**Labels** are an underused but testable WAF capability: a managed rule group can be configured
+in **Count** mode specifically so it *labels* matching requests without blocking them, and a
+later custom rule in the same Web ACL can then make the actual block/allow decision based on
+that label — letting you build conditional logic across multiple rule evaluations rather than
+each rule acting in total isolation.
+
+### Bot Control and CAPTCHA/Challenge decision flow
+
+```mermaid
+flowchart TD
+    Req[Incoming request] --> BotCheck{AWS WAF Bot Control:\nclassify traffic source}
+    BotCheck -->|Known-good bot, e.g. search crawler| Allow[Allow through]
+    BotCheck -->|Known-bad bot/scraper| Block[Block]
+    BotCheck -->|Ambiguous / suspicious| Challenge[CAPTCHA or silent\nJavaScript Challenge]
+    Challenge -->|Passes challenge\nreal browser confirmed| Allow
+    Challenge -->|Fails| Block
+```
+
 ## Key Features / Components
 
 - **Web ACLs** — the top-level container of ordered rules, attached to one or more protected
@@ -77,10 +113,16 @@ Step by step:
   bots (search engine crawlers) through.
 - **CAPTCHA and Challenge actions** — instead of a flat block, WAF can present a CAPTCHA or a
   silent JavaScript challenge to verify a request is coming from a real browser, not a script.
+- **Labels** — rules can tag matching requests with labels (without necessarily blocking them),
+  which subsequent rules in the same Web ACL can then key their own decisions off of, enabling
+  multi-stage conditional logic within one Web ACL.
 - **Logging** — full request logging to CloudWatch Logs, S3, or Kinesis Data Firehose for
   analysis and rule tuning.
 - **Firewall Manager integration** — deploy and enforce a consistent WAF Web ACL baseline
   across every account/resource in an Organization centrally.
+- **Protection packs (newer console concept)** — a guided setup flow that recommends a bundle
+  of rules/rule groups tailored to your described scenario, simplifying initial Web ACL
+  configuration while still producing a standard underlying Web ACL you can further customize.
 
 ## Use Cases — When to Use It
 
@@ -94,6 +136,8 @@ Step by step:
   legitimate search engine crawlers.
 - Testing a new security rule safely in **Count** mode in production before switching it to
   **Block**, to confirm it doesn't accidentally reject legitimate traffic.
+- Using labels to build layered logic: tag suspicious-but-not-definitive traffic in one rule,
+  then make a final decision in a later rule that considers multiple signals together.
 
 ## When NOT to Use It / Alternatives
 
@@ -112,6 +156,39 @@ Step by step:
   — WAF has a real per-rule, per-request cost; weigh it against actual risk for low-value
   internal-only endpoints.
 
+## Common Architectures
+
+### 1. Layered rule groups for a public API
+
+```mermaid
+flowchart TD
+    WebACL[Web ACL] --> G1[AWS Managed: Core Rule Set]
+    WebACL --> G2[AWS Managed: Known Bad Inputs]
+    WebACL --> G3[AWS Managed: IP Reputation List]
+    WebACL --> G4[Custom: Rate-based rule on /login]
+    WebACL --> G5[Custom: Geo-block unsupported countries]
+```
+
+### 2. Count-then-Block safe rollout pipeline
+
+```mermaid
+flowchart LR
+    Deploy[Deploy new rule in Count mode] --> Monitor[Monitor CloudWatch metrics\nfor N days]
+    Monitor --> Confirm{False positives\nobserved?}
+    Confirm -- Yes --> Tune[Tune rule scope/exceptions]
+    Tune --> Monitor
+    Confirm -- No --> Switch[Switch rule action to Block]
+```
+
+### 3. Centralized WAF baseline across an Organization via Firewall Manager
+
+```mermaid
+flowchart TD
+    FM[Firewall Manager policy] --> A1[Account 1: baseline Web ACL\nauto-applied to all ALBs/CloudFront]
+    FM --> A2[Account 2: same baseline,\nteams can add MORE rules but not remove baseline]
+    FM --> AN[Account N: consistent enforcement]
+```
+
 ## Why It's Important
 
 **Real-world weight:** SQL injection and cross-site scripting remain perennial entries in the
@@ -129,14 +206,29 @@ even well-written application code sometimes misses.
 - **MLA-C02 — Domain 4** references protecting public-facing inference endpoints, where WAF in
   front of an API Gateway/ALB fronting a SageMaker/Bedrock endpoint is a relevant control.
 
+## Limits & Quotas
+
+| Item | Default / Notes |
+|---|---|
+| Rules per Web ACL | 1,500 WCUs (Web ACL Capacity Units) worth of rules by default (soft, requestable) | Complexity-weighted, not a simple rule count — a regex-heavy rule costs more WCUs than a simple IP match |
+| Web ACLs per account per Region/scope | 100 (soft) |
+| Rate-based rule evaluation window | Fixed rolling windows (e.g., 5 minutes) with a configurable request-count threshold | |
+| Managed Rule Group updates | Automatic, no action required | AWS/Marketplace vendors push updates; your Web ACL picks them up without redeployment |
+| Request body inspection size | Limited (a few tens of KB by default, configurable higher for some resource types) | A question about "large POST bodies bypassing inspection" points to this size-limit nuance |
+
+**Web ACL Capacity Units (WCUs)** are the real governing constraint, not a flat rule count —
+simple rules (an IP match) cost very few WCUs; complex rules (nested logical statements, large
+regex patterns) cost significantly more, so a Web ACL can hit its capacity ceiling with far
+fewer than 1,500 "rules" if those rules are individually expensive.
+
 ## Pricing Model
 
 - Billed per **Web ACL** (fixed monthly fee), per **rule** within that Web ACL (fixed monthly
   fee each), and per **million requests** processed.
 - **Managed Rule Groups from AWS Marketplace vendors** may carry additional subscription costs
   beyond AWS's own managed groups.
-- No free tier for WAF itself — cost scales with both configuration complexity (rule count) and
-  traffic volume.
+- No free tier for WAF itself — cost scales with both configuration complexity (rule count/WCUs)
+  and traffic volume.
 - See: https://aws.amazon.com/waf/pricing/ for current numbers.
 
 ## Hands-on Lab (Floci)
@@ -172,6 +264,62 @@ awslocal wafv2 associate-web-acl \
   --web-acl-arn <web-acl-arn> --resource-arn <alb-arn>
 ```
 
+### Extended lab: Count-mode rollout and a labeled two-stage rule
+
+```bash
+# Deploy a new custom rule in COUNT mode first — standard safe rollout practice
+cat > count-mode-rule.json << 'EOF'
+[
+  {
+    "Name": "SuspiciousUserAgent",
+    "Priority": 3,
+    "Action": {"Count": {}},
+    "Statement": {
+      "ByteMatchStatement": {
+        "SearchString": "curl",
+        "FieldToMatch": {"SingleHeader": {"Name": "user-agent"}},
+        "TextTransformations": [{"Priority": 0, "Type": "LOWERCASE"}],
+        "PositionalConstraint": "CONTAINS"
+      }
+    },
+    "VisibilityConfig": {"SampledRequestsEnabled": true, "CloudWatchMetricsEnabled": true, "MetricName": "suspiciousUA"}
+  }
+]
+EOF
+
+# Attach AWS Managed Rule Group for SQL injection protection
+awslocal wafv2 update-web-acl --name study-web-acl --scope REGIONAL --id <id> \
+  --default-action Allow={} \
+  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=studyWebAcl \
+  --rules "$(cat count-mode-rule.json)"
+```
+
+## Troubleshooting / Common Issues
+
+**"New rule is blocking legitimate traffic unexpectedly":**
+1. Check whether the rule was deployed directly in **Block** mode instead of **Count** mode
+   first — this is the textbook rollout mistake WAF's Count action specifically exists to
+   prevent.
+2. Review CloudWatch sampled requests for the rule to see exactly which legitimate requests
+   matched, and refine the rule's scope (narrower string match, more specific IP set) rather
+   than disabling it entirely.
+
+**"A managed rule group update suddenly started blocking previously-allowed traffic":** this is
+expected behavior when AWS updates a managed rule group's patterns in response to new threat
+intelligence — if business-critical, consider pinning to a specific managed rule group *version*
+(where supported) rather than always tracking the latest, or run a parallel Count-mode copy of
+updated groups before fully trusting auto-updates in a highly sensitive environment.
+
+**"Web ACL seems to not be inspecting large POST request bodies":** check the configured
+request body inspection size limit for the resource type — bodies beyond the configured
+threshold may not be fully inspected by content-matching rules, a specific and testable gap
+distinct from "the rule itself is broken."
+
+**"Hit the WCU capacity ceiling while adding more rules":** request a capacity increase, or
+audit existing rules for unnecessarily expensive constructs (overly broad regex, unnecessarily
+nested logical statements) — WCU cost is about rule complexity, not just rule count, so
+simplifying existing rules can free capacity without reducing coverage.
+
 ## Exam Tips
 
 - **WAF vs. Shield — same recurring pairing** — WAF = content inspection (Layer 7: SQLi, XSS,
@@ -186,9 +334,102 @@ awslocal wafv2 associate-web-acl \
   application layer — distinguish this from Shield's broader volumetric DDoS mitigation.
 - **Managed Rule Groups update automatically** — you don't maintain SQL injection/XSS pattern
   lists yourself; AWS (and optional Marketplace vendors) keep them current.
+- **Web ACL Capacity Units (WCUs), not a flat rule count**, govern Web ACL complexity limits —
+  a question about hitting a capacity ceiling with "few" rules is testing whether you know
+  complex rules (regex, nested logic) cost disproportionately more capacity.
+- **Labels enable multi-stage rule logic** within one Web ACL — a question about combining
+  signals from multiple rules before a final block/allow decision points to this capability.
 - **Firewall Manager** deploys consistent WAF Web ACLs across many accounts — same
   multi-account governance pattern as Shield Advanced.
 - Tested in **SAA-C03 Domain 1 (30%)** and touched in **DVA-C03 Domain 2 (26%)**.
+
+## Worked exam scenario: API Gateway protecting a public ML inference endpoint
+
+A company exposes a SageMaker model through API Gateway for public inference requests and wants
+to prevent both scraping (competitors harvesting model behavior via automated queries) and
+malicious payloads crafted to probe the underlying infrastructure. The correct design layers
+three WAF capabilities together: an **AWS Managed Rule Group** (Core Rule Set + Known Bad
+Inputs) for payload-level protection, **Bot Control** to identify and block automated scraping
+traffic while allowing legitimate API clients, and a **rate-based rule** scoped to the specific
+inference endpoint path to cap how many inference calls any single API key/IP can make per
+window — directly limiting both cost exposure (inference calls aren't free) and model-extraction
+risk from high-volume automated querying.
+
+```mermaid
+flowchart TD
+    Client[API client] --> APIGW[API Gateway]
+    APIGW --> WebACL[WAF Web ACL]
+    WebACL --> CoreRules[Managed: Core Rule Set + Known Bad Inputs]
+    WebACL --> BotControl[Managed: Bot Control]
+    WebACL --> RateLimit[Custom: Rate-based rule\nscoped to /invoke path]
+    WebACL --> SageMaker[SageMaker Inference Endpoint]
+```
+
+## Worked example: a complete multi-rule-group Web ACL as real JSON
+
+```json
+{
+  "Name": "ProductionWebACL",
+  "Scope": "CLOUDFRONT",
+  "DefaultAction": { "Allow": {} },
+  "Rules": [
+    {
+      "Name": "AWS-AWSManagedRulesCommonRuleSet",
+      "Priority": 0,
+      "OverrideAction": { "None": {} },
+      "Statement": {
+        "ManagedRuleGroupStatement": { "VendorName": "AWS", "Name": "AWSManagedRulesCommonRuleSet" }
+      },
+      "VisibilityConfig": { "SampledRequestsEnabled": true, "CloudWatchMetricsEnabled": true, "MetricName": "commonRuleSet" }
+    },
+    {
+      "Name": "LoginEndpointRateLimit",
+      "Priority": 1,
+      "Action": { "Block": {} },
+      "Statement": {
+        "RateBasedStatement": {
+          "Limit": 300,
+          "AggregateKeyType": "IP",
+          "ScopeDownStatement": { "ByteMatchStatement": { "SearchString": "/login", "FieldToMatch": { "UriPath": {} }, "TextTransformations": [{ "Priority": 0, "Type": "NONE" }], "PositionalConstraint": "STARTS_WITH" } }
+        }
+      },
+      "VisibilityConfig": { "SampledRequestsEnabled": true, "CloudWatchMetricsEnabled": true, "MetricName": "loginRateLimit" }
+    }
+  ]
+}
+```
+
+The `ScopeDownStatement` nested inside the rate-based rule is a frequently-missed but
+important capability: it narrows the rate limit to apply **only** to requests matching the
+inner statement (here, the `/login` path specifically), rather than rate-limiting every request
+to the entire site uniformly — letting you set an aggressive threshold on a sensitive endpoint
+without affecting normal browsing traffic elsewhere on the same site.
+
+## WAF Classic vs. WAFv2 — A Legacy Distinction Still Worth Recognizing
+
+| | WAF Classic (legacy) | WAFv2 (current) |
+|---|---|---|
+| API/CLI prefix | `waf`/`waf-regional` | `wafv2` |
+| Rule groups | Limited, less composable | Full managed + custom rule group support |
+| CloudFront + regional in one API | No — separate APIs | Yes — unified `wafv2` API with a `Scope` parameter |
+| Labels | Not supported | Supported |
+| Bot Control, CAPTCHA | Not supported | Supported |
+
+Seeing `wafv2` in a CLI command or API reference (as used throughout this doc's lab sections)
+confirms you're working with the current generation; `waf`/`waf-regional` prefixes belong to
+the legacy Classic API that AWS documentation increasingly treats as superseded.
+
+## Further Reading
+
+- AWS WAF Developer Guide — How AWS WAF works:
+  https://docs.aws.amazon.com/waf/latest/developerguide/how-aws-waf-works.html
+- AWS WAF Developer Guide — Configuring protection in AWS WAF (Web ACLs):
+  https://docs.aws.amazon.com/waf/latest/developerguide/web-acl.html
+- AWS Solutions Constructs — aws-wafwebacl-cloudfront:
+  https://docs.aws.amazon.com/solutions/latest/constructs/aws_wafwebacl_cloudfront.html
+- AWS Solutions Library — Security Automations for AWS WAF:
+  https://docs.aws.amazon.com/solutions/latest/security-automations-for-aws-waf/architecture-overview.html
+- AWS WAF pricing: https://aws.amazon.com/waf/pricing/
 
 ## Related Terms
 

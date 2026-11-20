@@ -18,6 +18,12 @@ any of that flexibility — AWS bundles compute + a fixed amount of storage + a 
 allowance into one simple, predictable price, with a simplified console that hides VPC/networking
 complexity by default.
 
+AWS Principal Technologist Massimo Re Ferre wrote an influential internal/public framing of this
+exact idea — that AWS offers compute at several distinct "abstraction levels" (instances,
+containers, functions), each trading flexibility for AWS taking on more of the undifferentiated
+operational work. Lightsail sits at the instance abstraction level, like EC2, but deliberately
+narrows the *decisions* you have to make at that level, not the underlying technology.
+
 ## How It Works
 
 In plain terms: you pick a **blueprint** (an OS image, or a pre-configured app stack like
@@ -51,6 +57,64 @@ add-ons (a load balancer, a managed database, a CDN distribution) at their own f
 notably — a **VPC peering/export path** that lets you connect a Lightsail instance into a full VPC
 or even migrate it to a regular EC2 instance once you've outgrown the simplified model.
 
+### CDN distribution architecture
+
+![Lightsail distribution diagram.](https://docs.aws.amazon.com/lightsail/latest/userguide/images/distribution-diagram.png)
+
+*This official AWS diagram shows a Lightsail distribution's three parts: the **origin** (your
+Lightsail instance, container service, load balancer, or bucket — the definitive source of
+content), the **distribution** itself (the globally distributed edge locations that cache and
+serve that content, built on the same underlying infrastructure as CloudFront), and the **users**
+being served from whichever edge location is closest to them. The practical takeaway: a Lightsail
+distribution is CloudFront, repackaged with Lightsail's simplified setup flow and flat pricing —
+you get the real global CDN technology without configuring CloudFront's fuller (and more complex)
+configuration surface directly.*
+**Source:** AWS Documentation — [Serve web content globally with Lightsail content delivery distributions](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-content-delivery-network-distributions.html), Amazon Lightsail User Guide.
+
+### Container service architecture
+
+```mermaid
+flowchart TD
+    DEV[Push container image] --> LCS[Lightsail Container Service]
+    subgraph LCS[Lightsail Container Service]
+        N1[Compute Node 1]
+        N2[Compute Node 2]
+    end
+    LB2[Built-in Load Balancing] --> N1
+    LB2 --> N2
+    USERS((Users)) --> LB2
+```
+
+![Lightsail container service diagram.](https://docs.aws.amazon.com/lightsail/latest/userguide/images/amazon-lightsail-container-service-diagram.png)
+
+*Lightsail's container service abstracts away ECS/EKS/Fargate's full configuration surface into a
+"scale" (number of compute nodes, up to 20) and "power" (CPU/memory per node) picker, with traffic
+automatically load-balanced across all nodes. This diagram shows that simplification visually: no
+task definitions, no cluster management, no capacity providers — just "how many nodes, how
+powerful," which is the Lightsail philosophy applied to containers specifically.*
+**Source:** AWS Documentation — [Deploy and manage containers on Amazon Lightsail](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-container-services.html), Amazon Lightsail User Guide.
+
+### High-availability pattern: load balancer + multiple instances
+
+```mermaid
+flowchart LR
+    USERS((Users)) --> LLB[Lightsail Load Balancer]
+    LLB --> I1[Instance 1 - AZ-a]
+    LLB --> I2[Instance 2 - AZ-b]
+    I1 --> DB[(Lightsail Managed Database)]
+    I2 --> DB
+```
+
+### Growing beyond Lightsail: VPC peering export path
+
+```mermaid
+flowchart LR
+    LS[Lightsail Instance/Resources] -->|VPC peering enabled| MAINVPC[Main AWS Account VPC]
+    MAINVPC --> RDS[(Full RDS instance)]
+    MAINVPC --> EC2F[Full EC2 fleet]
+    LS -.outgrows simplified model.-> MIGRATE[Snapshot & migrate to full EC2]
+```
+
 ## Key Features / Components
 
 - **Blueprints** — pre-built OS images or application stacks (WordPress, LAMP, Node.js, Django,
@@ -63,15 +127,56 @@ or even migrate it to a regular EC2 instance once you've outgrown the simplified
 - **Simplified firewall** — a basic allow-list UI for ports/protocols, instead of writing security
   group rules directly.
 - **Lightsail Load Balancer** — a simplified, flat-rate load balancer for spreading traffic across
-  multiple Lightsail instances.
+  multiple Lightsail instances; includes a free SSL/TLS certificate provisioned and renewed
+  automatically, removing a step that's manual (via ACM) on the full EC2/ALB path.
 - **Lightsail Managed Database** — a simplified, flat-rate managed MySQL/PostgreSQL database,
-  analogous to a stripped-down RDS.
+  analogous to a stripped-down RDS, with automated backups included in the flat price.
 - **Lightsail Container Service** — a simplified way to run containers without the full
-  ECS/EKS/Fargate configuration surface.
+  ECS/EKS/Fargate configuration surface — pick a scale (node count) and power (CPU/memory per
+  node), push an image, done.
 - **Snapshots** — manual or automatic backups of an instance you can restore from or use to create
-  new instances.
+  new instances; automatic daily snapshots are a toggle, not something you need to script yourself.
 - **VPC peering** — connect Lightsail resources to resources in your main AWS account's VPC (e.g.,
   to reach an RDS database there), bridging the simplified and full AWS worlds when needed.
+- **CDN distributions** — built on CloudFront's underlying global edge network, but configured
+  through Lightsail's simplified setup flow (see diagram above), including a free HTTPS address
+  without needing to register your own domain.
+
+## Worked Cost Example: Comparing Lightsail vs. itemized EC2 for a Small Site
+
+A small WordPress site needs roughly 1 vCPU, 2 GB RAM, 60 GB SSD storage, and expects to transfer
+about 3 TB of data per month (a busier-than-typical small site, chosen deliberately to show where
+the bundled pricing is most favorable).
+
+**Lightsail** (illustrative current pricing): a mid-tier plan bundling 2 GB RAM, 1 vCPU, 60 GB SSD,
+and 3 TB data transfer costs a flat **~$10/month** — one line item, no surprises.
+
+**Equivalent itemized EC2 path**: `t3.small` On-Demand ($0.0208/hr × 730 ≈ $15.18/month) + 60 GB
+`gp3` EBS (≈ $4.80/month) + 3 TB data transfer out (tiered pricing, roughly the first 100 GB free
+then ~$0.09/GB for the rest ≈ 2,900 GB × $0.09 ≈ **$261/month** in data transfer alone) ≈
+**~$281/month total**.
+
+This is a deliberately chosen example to make a specific point: **Lightsail's bundled data
+transfer allowance is the single biggest source of its cost advantage** for any workload with
+meaningful outbound data transfer — EC2's itemized, uncapped data-transfer-out billing can
+dwarf the compute cost entirely for data-heavy small sites, while Lightsail simply includes a
+generous allowance in the flat price. For a *low-traffic* site (say, 50 GB/month transfer), the
+gap narrows substantially, since EC2's transfer cost would be near-zero too — the bundling
+advantage scales with how much data transfer you actually use.
+
+## Common Architectures
+
+1. **Single instance + CDN distribution** — the simplest real production pattern: one Lightsail
+   instance running a blueprint (WordPress, a Node.js app), fronted by a Lightsail distribution for
+   global caching and free HTTPS — covers the large majority of small business/personal site needs
+   with zero separate CDN configuration.
+2. **Load-balanced multi-instance + managed database** — two or more instances behind a Lightsail
+   Load Balancer, backed by a Lightsail Managed Database, for sites that have outgrown a single
+   instance but don't yet need full EC2/RDS flexibility — shown in the HA diagram above.
+3. **Lightsail-to-VPC bridge** — a Lightsail instance (e.g., a lightweight application front end)
+   peered via VPC peering to reach a resource in the main AWS account (e.g., a production RDS
+   database or an internal API) that can't be re-architected onto Lightsail itself — a common
+   "started simple, needs one more connection" real-world pattern.
 
 ## Use Cases — When to Use It
 
@@ -85,6 +190,8 @@ or even migrate it to a regular EC2 instance once you've outgrown the simplified
   reason about than EC2+EBS+data-transfer itemized billing.
 - **Small agencies/freelancers hosting multiple simple client sites**, each on its own small,
   cheap, isolated instance.
+- **Simple containerized apps** that don't need a full orchestrator — Lightsail Container Service
+  covers "I have a container, I want it running and load-balanced" without ECS/EKS configuration.
 
 ## When NOT to Use It / Alternatives
 
@@ -123,13 +230,51 @@ plenty of small production websites run entirely on Lightsail.
 - **MLA-C02** — not relevant; ML workloads are covered by SageMaker and the compute services
   above it, not Lightsail.
 
+## Limits & Quotas
+
+| Quota | Default | Adjustable? |
+|---|---|---|
+| Instances per Region | 20 | Yes, via support request |
+| Static IPs per Region | 5 unattached (attached ones don't count against this) | Yes |
+| Load balancers per Region | 5 | Yes |
+| Container services per Region | 3 | Yes |
+| Container service nodes (scale) | Up to 20 per container service | Hard limit |
+| Databases per Region | 5 | Yes |
+| Manual snapshots retained | No fixed cap, billed per-GB of snapshot storage | N/A |
+| Block storage disks per instance | 15 | Yes |
+
+These limits are deliberately much lower than EC2's own quotas, consistent with Lightsail's
+target audience of small/simple workloads rather than large fleets — a workload that needs more
+than 20 instances in a Region is, almost by definition, a workload that has outgrown Lightsail and
+should migrate to EC2 directly.
+
+## Troubleshooting / Common Issues
+
+- **Can't reach a newly launched instance on a specific port** — check the Lightsail instance's
+  simplified firewall rules (Networking tab) first; unlike EC2, there's no separate NACL layer to
+  also check, which simplifies this diagnostic step considerably compared to full EC2.
+- **Site works over HTTP but not HTTPS** — if using a Lightsail distribution, confirm the free
+  HTTPS certificate has finished provisioning (can take several minutes after creation) and that
+  your DNS is actually pointed at the distribution, not directly at the instance.
+- **Outgrown the bundled data transfer allowance** — check the instance's metrics/billing page for
+  data transfer usage; exceeding the plan's included allowance bills the overage at a published
+  per-GB rate, which is the main variable cost Lightsail's otherwise-flat pricing can still
+  surprise you with at high, unexpected traffic spikes.
+- **Need to reach a resource in the main AWS account's VPC** — this requires explicitly enabling
+  VPC peering (it is not on by default); a Lightsail instance with no peering configured simply
+  cannot resolve/reach private resources in your main account's VPC at all.
+- **Snapshot restore creates an instance that can't be reached** — restoring from a snapshot
+  creates a *new* instance with a new static IP by default (unless you explicitly reassign the
+  original static IP to it); update DNS records pointing at the old IP after any restore.
+
 ## Pricing Model (summary)
 
 **Flat monthly bundles** — each plan tier has one fixed price covering vCPU, RAM, SSD storage, and
 a data transfer allowance; exceeding the data transfer allowance bills extra at a published
 per-GB rate. This is the key pricing difference from EC2: EC2 itemizes compute, EBS storage, and
 data transfer separately (and data transfer OUT can be a genuine surprise cost); Lightsail bundles
-them so the entry-level cost is predictable and often cheaper for small, simple workloads.
+them so the entry-level cost is predictable and often cheaper for small, simple workloads (see the
+Worked Cost Example above for a concrete comparison).
 Optional add-ons (load balancer, managed database, CDN, container service) are each their own flat
 monthly rate. Official pricing: https://aws.amazon.com/lightsail/pricing/
 
@@ -177,6 +322,16 @@ try it against real AWS within the entry-level plan's cost (typically a few doll
 often covered by promotional credits for new accounts) — it's cheap enough that a short real trial
 is reasonable even outside Floci.
 
+### Extra practice: what a Lightsail distribution maps to conceptually
+
+```bash
+# Lightsail distributions are CloudFront under the hood - while Floci/LocalStack
+# support varies by edition, the conceptual CLI equivalent on real AWS is:
+aws cloudfront create-distribution \
+  --origin-domain-name my-lightsail-instance-public-dns \
+  --default-root-object index.html
+```
+
 ## Exam Tips
 
 - **Lightsail vs. EC2** is a cost/simplicity tradeoff question, not a feature-parity one — if a
@@ -188,10 +343,96 @@ is reasonable even outside Floci.
   billing model over the same infrastructure.
 - Know that Lightsail **bundles data transfer** into the plan price — this is the detail that
   makes it cheaper and more predictable than itemized EC2+EBS+data-transfer billing for small,
-  low-traffic workloads, and is the usual "why" behind a correct cost-optimization answer.
+  low-traffic (or even moderately data-heavy) workloads, and is the usual "why" behind a correct
+  cost-optimization answer.
 - Lightsail **can connect into a full VPC via peering** — if a question describes "started
   simple on Lightsail, now needs to talk to resources in the main VPC," the answer is enabling
   VPC peering, not re-launching everything from scratch on EC2.
+- **Lightsail distributions are CloudFront underneath** — a question contrasting Lightsail's CDN
+  option against "set up CloudFront separately" is really asking whether you recognize they're the
+  same underlying technology with a different setup experience, not two different CDNs.
+- **Lightsail Container Service vs. ECS/EKS/Fargate** — "simple container app, minimal
+  configuration, don't need a full orchestrator" → Lightsail Container Service. "Complex
+  multi-service orchestration, fine-grained scaling control" → ECS/EKS/Fargate.
+
+## Security Considerations
+
+- **Simplified firewall is still a real firewall** — don't mistake Lightsail's easier UI for a
+  weaker security boundary; the same principle of only opening the ports you actually need applies
+  exactly as it would for an EC2 security group, and `0.0.0.0/0` on an administrative port (SSH/
+  RDP) is just as real a risk here as on EC2.
+- **No IAM-level resource policies on instances themselves** — Lightsail's simplified model trades
+  away IAM's fine-grained resource policy surface; account-level IAM still governs who can manage
+  Lightsail resources via the API/console, but there's no equivalent to an EC2 instance profile for
+  granting the instance itself scoped AWS permissions without the VPC peering bridge.
+- **HTTPS is effectively free and automatic** via a Lightsail distribution or the load balancer's
+  built-in certificate, removing the excuse of "TLS setup was too much effort" for small sites —
+  worth defaulting to enabling it even on the simplest Lightsail deployment.
+- **Blueprint defaults aren't automatically hardened** — a WordPress or CMS blueprint still needs
+  the same ongoing security hygiene (plugin updates, strong admin credentials, disabling unused
+  default accounts) as a self-managed install on EC2; Lightsail manages the underlying
+  infrastructure, not your application-layer security posture.
+
+## Monitoring & Observability
+
+- **Built-in instance metrics** (CPU utilization, network in/out, status checks) are available
+  directly in the simplified Lightsail console without any separate CloudWatch configuration,
+  though the same data is, under the hood, backed by CloudWatch.
+- **Alarms** can be configured directly from the Lightsail console (e.g., "notify me if CPU stays
+  above 90% for 5 minutes") using a simplified subset of CloudWatch alarm configuration, trading
+  some flexibility for a much faster setup path than configuring CloudWatch alarms manually.
+- **Lightsail does not include a built-in log aggregation service** comparable to CloudWatch Logs
+  for application-level logs — for anything beyond basic instance metrics, you'd still SSH in and
+  manage application logs yourself, or peer into the main VPC to forward logs to CloudWatch Logs
+  directly.
+
+## Migration Path: Growing Beyond Lightsail
+
+A recurring real-world lifecycle: a project starts on Lightsail for simplicity, grows, and
+eventually needs full EC2/VPC flexibility. The supported migration path, in order of increasing
+effort:
+
+1. **VPC peering first** (least disruptive) — if the only need is reaching one additional
+   resource (a production database, an internal API) in the main account's VPC, peering alone
+   solves it without touching the Lightsail instance itself at all.
+2. **Snapshot and manual EC2 recreation** — take a Lightsail snapshot, export it, and launch an
+   equivalent EC2 instance from it, then re-point DNS; this is the standard path when the workload
+   has genuinely outgrown Lightsail's plan sizes, firewall simplicity, or per-Region instance
+   quota (20 by default).
+3. **Full re-architecture** — for workloads that have grown enough to need Auto Scaling, Multi-AZ
+   RDS, or a proper multi-tier VPC design, the Lightsail version becomes a reference for behavior/
+   configuration rather than something to lift-and-shift directly; teams typically rebuild on EC2 +
+   RDS + ALB from scratch at this point, informed by what the Lightsail version already proved
+   about the application's requirements.
+
+This progression — "start simple, graduate to full control only when you actually need it" — is
+exactly the kind of pragmatic, cost-aware decision-making the SAA-C03 cost-optimization domain
+rewards, and it's worth recognizing Lightsail-to-EC2 migration as a legitimate, non-wasteful
+engineering path rather than "starting over because Lightsail was the wrong choice."
+
+## Worked Example: Lightsail Container Service Pricing
+
+A small container service running a single Node.js API, sized at "Micro" power (0.25 vCPU, 0.5 GB
+RAM per node) with a scale of 2 nodes for basic redundancy, costs a flat rate per node — illustrative
+current pricing puts a Micro-power, 2-node container service at roughly **$20/month total**
+(node price varies by power tier; higher power tiers and larger scale cost proportionally more).
+Compare this to the equivalent Fargate cost for the same aggregate resources (0.5 vCPU, 1 GB total
+across 2 tasks) at standard Fargate rates: 0.5 vCPU × $0.04048/vCPU-hr × 730 ≈ $14.78, plus 1 GB ×
+$0.004445/GB-hr × 730 ≈ $3.24, totaling **~$18.02/month** in raw Fargate compute — slightly
+cheaper than the Lightsail bundle in this specific sizing, but Fargate requires configuring an ECS
+cluster, task definitions, a load balancer, and networking separately, while Lightsail's price
+already includes load balancing and a simplified deploy flow with zero additional setup. This is
+the recurring Lightsail theme: **slightly higher raw unit cost, in exchange for meaningfully less
+setup and operational complexity** — the right tradeoff for a workload whose main scarce resource
+is engineering time, not raw infrastructure dollars.
+
+## Further Reading
+
+- [Amazon Lightsail Documentation](https://docs.aws.amazon.com/lightsail/)
+- [What is Amazon Lightsail?](https://docs.aws.amazon.com/lightsail/latest/userguide/what-is-amazon-lightsail.html)
+- [Amazon Lightsail pricing](https://aws.amazon.com/lightsail/pricing/)
+- [Deploy and manage containers on Amazon Lightsail](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-container-services.html)
+- [Serve web content globally with Lightsail content delivery distributions](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-content-delivery-network-distributions.html)
 
 ## Related Terms
 

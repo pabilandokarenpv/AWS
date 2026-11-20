@@ -19,6 +19,14 @@ use" is one of the most common real architecture questions *and* one of the most
 exam skills across SAA-C03, DVA-C03, and MLA-C02 — getting it right is less about memorizing
 features and more about correctly identifying the **shape of the workload** first.
 
+This is sometimes called "polyglot persistence" — using multiple purpose-built databases within
+one system, each handling the part of the workload it's actually good at, rather than forcing
+every workload through a single general-purpose database. A single real-world application
+commonly uses three or four of these services simultaneously (e.g., Aurora for transactional
+data, ElastiCache for session storage, Redshift for analytics, and S3 for file storage) — the
+skill being tested is routing each *piece* of the workload to its right home, not picking one
+winner for the whole system.
+
 ## How It Works — The Decision Tree
 
 The fastest way to narrow down the right database is to ask, in order: (1) is this data mostly
@@ -72,6 +80,27 @@ Step by step through the tree:
    **ElastiCache** (or **DAX** specifically for DynamoDB) sits in front of it when read latency or
    database load becomes the bottleneck — it's never the *primary* store of truth.
 
+### A Second Lens: Decision by Consistency and Durability Requirement
+
+The workload-shape tree above is the primary lens, but a second, complementary lens — "how much
+consistency/durability does this specific piece of data genuinely need" — resolves cases where
+the first tree still leaves two plausible answers.
+
+```mermaid
+flowchart TD
+    D1{Is this the authoritative<br/>system of record?} -->|No, it's a derived/<br/>disposable copy| Cache[ElastiCache / DAX]
+    D1 -->|Yes| D2{Does losing the most<br/>recent few seconds of<br/>writes on failure matter?}
+    D2 -->|Cannot tolerate any loss| D3{Need multi-table<br/>atomicity?}
+    D3 -->|Yes, as the default mode| Relational[RDS / Aurora]
+    D3 -->|No, single-item atomicity<br/>is enough| NoSQL[DynamoDB / DocumentDB]
+    D2 -->|Can tolerate brief staleness<br/>for availability/speed| Replica[Read Replica or<br/>Global Table / Global Database]
+```
+
+This lens is especially useful for Domain 2 (resilient architectures) scenarios where the
+question is really about RPO/RTO tradeoffs rather than data shape — e.g., "can this read be a few
+seconds stale in exchange for lower latency and higher availability" is a different question than
+"is this data relational," and exam scenarios sometimes test both simultaneously.
+
 ## Key Features / Components — Quick Comparison Table
 
 | Database | Data Model | Scaling | Consistency | Query Style | Best For |
@@ -83,6 +112,147 @@ Step by step through the tree:
 | **Redshift** | Columnar / relational (OLAP) | MPP across compute nodes | Strong, but not transactional workload | SQL, heavy aggregation | BI dashboards, historical analytics, data warehousing |
 | **DocumentDB** | Document (BSON) | Vertical + up to 15 replicas | Strong (ACID within doc) | MongoDB query/aggregation API | Existing MongoDB workloads, flexible nested schema |
 | **Neptune** | Graph (property graph / RDF) | Vertical + up to 15 replicas | Strong | Gremlin / openCypher / SPARQL traversal | Relationship-heavy data: social, fraud, recommendations |
+
+### Worked Decision Scenarios
+
+The quick-reference table above is a lookup aid, not a substitute for actually reasoning through
+a scenario. These worked examples show the full reasoning path, not just the answer:
+
+**Scenario A — "An e-commerce platform needs a shopping cart that scales to millions of
+concurrent users during a flash sale, with sub-10ms response times."**
+Reasoning: operational (not analytical) → not strictly relational (a cart doesn't need
+multi-table JOINs, mostly key-based get/update) → not a graph/traversal problem → no existing
+MongoDB dependency mentioned → access pattern (get/update cart by user ID) is simple and known.
+**Answer: DynamoDB**, likely with On-Demand mode given the unpredictable flash-sale spike.
+
+**Scenario B — "A bank's core ledger system needs to debit one account and credit another
+atomically, with strict multi-table consistency, moderate and predictable transaction volume."**
+Reasoning: operational → strictly relational, multi-table ACID as the *default* mode of
+operation (not an occasional exception) → moderate/predictable scale doesn't obviously require
+Aurora's extra throughput. **Answer: RDS** (or Aurora if the organization specifically also wants
+faster failover/read-scaling headroom — the "moderate and predictable" framing leans RDS, but
+either is defensible with the right additional detail).
+
+**Scenario C — "A gaming company wants a global, real-time 'friends who are also playing right
+now' feature, and separately, a leaderboard with microsecond read latency."**
+Reasoning: two distinct needs bundled in one scenario — (1) "friends who are playing" is a
+relationship-traversal problem → **Neptune**; (2) "leaderboard with microsecond reads" is cache-
+shaped, specifically a sorted/ranked read pattern → **ElastiCache (Redis Sorted Sets)**, not
+Neptune. Recognize when a scenario is actually two separate database decisions, not one.
+
+**Scenario D — "A content platform already runs on MongoDB and wants to migrate to AWS with
+minimal application rewrite, keeping its existing aggregation pipeline queries."**
+Reasoning: operational, document-shaped, and critically, *existing MongoDB investment* is
+explicitly named. **Answer: DocumentDB** — DynamoDB would require redesigning access patterns and
+abandoning the aggregation pipeline, which directly contradicts "minimal application rewrite."
+
+**Scenario E — "A retailer wants a single quarterly report showing total revenue by region,
+category, and month across three years of sales history, pulled from five different regional
+RDS databases."**
+Reasoning: explicitly analytical, explicitly historical aggregation, explicitly multi-source
+consolidation. **Answer: Redshift**, fed by either scheduled ETL (Glue) or zero-ETL integrations
+from the regional RDS/Aurora sources if they were Aurora instead of plain RDS.
+
+**Scenario F — "A fraud team currently models account relationships as a DynamoDB adjacency list,
+but traversal queries beyond 2 hops have become impossible to express efficiently."**
+Reasoning: this is explicitly a case where the *current* tool has hit its structural limit — the
+access pattern genuinely outgrew DynamoDB's 1-2 hop comfort zone. **Answer: migrate the
+relationship-traversal portion specifically to Neptune**, while potentially leaving simple
+account-attribute lookups in DynamoDB — a polyglot-persistence answer, not an all-or-nothing
+migration.
+
+**Scenario G — "A SaaS company's traffic is extremely spiky (10x spikes during customer-specific
+business hours across many time zones), relational data, team doesn't want to manage capacity."**
+Reasoning: relational + explicitly spiky/unpredictable + explicit aversion to capacity management.
+**Answer: Aurora Serverless v2** — the specific feature name the scenario is testing, not just
+"Aurora" generically.
+
+**Scenario H — "A startup's early-stage MVP has completely unknown, likely-to-change access
+patterns, moderate but growing data volume, and a small team that wants to move fast without
+redesigning the database every sprint."**
+Reasoning: "unknown, likely-to-change access patterns" is the specific, deliberate tie-breaker
+phrase pointing *away* from DynamoDB (which punishes late access-pattern changes) and *toward*
+relational, where SQL's ad-hoc query flexibility accommodates evolving requirements cheaply.
+**Answer: RDS or Aurora**, with a note that the team should revisit DynamoDB once access patterns
+stabilize and scale genuinely demands it — a frequent real-world trajectory, not a mistake to
+avoid making early.
+
+**Scenario I — "A media company stores both structured metadata (title, duration, release date)
+and large video files for its catalog, and needs to query the metadata flexibly while serving
+the files efficiently."**
+Reasoning: this is a trap that tests whether you'll force everything into one database. The
+metadata is a straightforward relational or document modeling problem (RDS/Aurora or DynamoDB
+depending on query flexibility needs); the video files themselves do not belong in *any* of
+these databases at all — they belong in S3, with the database holding only a reference/URL.
+**Answer: split the workload** — metadata in RDS/DynamoDB, binary assets in S3, referenced by
+key/URL from the metadata record. Recognize when a scenario is quietly testing whether you'd put
+large binary blobs directly into a database (a real, common anti-pattern) rather than which
+specific database to use.
+
+**Scenario J — "An insurance company needs to detect potentially fraudulent claims by identifying
+clusters of claims sharing unusual combinations of claimants, repair shops, and addresses, often
+discovered several relationship-hops apart, and separately wants a fast dashboard showing claims
+volume by region and month for the last five years."**
+Reasoning: two distinct needs again, like Scenario C — (1) multi-hop entity-relationship
+clustering is a graph-traversal problem → **Neptune**; (2) a historical, aggregate-heavy
+dashboard spanning years of data → **Redshift**. The claims data itself likely still lives in an
+operational store (RDS/Aurora) as the system of record, with both Neptune and Redshift fed from
+it — three services collaborating on one business problem, each handling the piece it's actually
+suited for.
+
+## Migration Paths Between Database Families
+
+Database choice isn't always a one-time, permanent decision — real systems migrate between
+families as they grow or as requirements clarify. Knowing the realistic migration paths (and
+their actual cost in effort) is itself a planning skill:
+
+- **RDS → Aurora**: typically the cheapest migration on this list — usually a snapshot-and-restore
+  into an Aurora cluster of the same engine, since both speak the same SQL dialect and wire
+  protocol. Application code rarely needs to change at all.
+- **RDS/Aurora → DynamoDB**: typically the most expensive migration on this list — it requires
+  redesigning the data model around known access patterns from scratch (see `dynamodb.md`'s
+  single-table design section), not just moving data. Budget for this as a genuine redesign
+  project, not a data-transfer task.
+- **Self-managed MongoDB → DocumentDB**: usually a low-effort migration if the application
+  already uses standard MongoDB driver operations — the main risk is discovering a specific
+  MongoDB feature in use that DocumentDB doesn't support, which should be audited *before*
+  committing to a migration date, not discovered during cutover.
+- **DynamoDB adjacency list → Neptune**: happens when relationship-traversal needs outgrow
+  DynamoDB's practical 1-2 hop comfort zone (see Scenario F above) — usually a partial migration,
+  moving only the relationship-traversal portion of the data model to Neptune while other
+  entity-attribute data stays where it was.
+- **RDS/Aurora → Redshift (for analytics, not a replacement)**: not really a migration in the
+  usual sense — it's an *addition*, typically via zero-ETL integration (Aurora) or scheduled
+  Glue/DMS jobs (RDS), with the operational database continuing to serve live traffic
+  unchanged. This is the most common "migration" on this list, precisely because it isn't
+  destructive to the source system.
+- **Oracle/SQL Server → Aurora PostgreSQL/MySQL**: a licensing-cost-driven migration using the
+  AWS Schema Conversion Tool (SCT) to translate schema/stored procedures and DMS for data/ongoing
+  replication during cutover — genuinely significant effort (stored procedure conversion is
+  rarely 100% automatic), but a common and well-supported migration path AWS invests heavily in
+  tooling for.
+
+## Checklist for New Projects
+
+A compact, practical checklist for approaching a brand-new system's database decision, pulling
+together everything above into an actionable order of operations:
+
+1. **List the distinct data needs separately** — don't assume one database must serve the whole
+   system; most real systems have 2-4 genuinely different data shapes (transactional, cache,
+   analytical, relationship-heavy) even if it's tempting to reach for one tool.
+2. **For each data need, run the decision tree above** — operational vs analytical first, then
+   relational vs key-value vs graph vs document.
+3. **For anything still ambiguous, ask about access-pattern stability** — if requirements are
+   still shifting, default toward relational (RDS/Aurora) for the flexibility to adapt via SQL,
+   and defer committing to DynamoDB/Neptune's upfront-design-heavy models until patterns settle.
+4. **Only add a cache (ElastiCache/DAX) after measuring an actual bottleneck** — never
+   speculatively, per the anti-pattern list above.
+5. **Separate binary/large-object storage (S3) from every database decision** — none of these
+   seven services should be storing large files directly; they should hold references to S3
+   instead (see Worked Scenario I above).
+6. **Revisit the decision at real inflection points** (10x traffic growth, a newly stable access
+   pattern, a newly required multi-Region story) rather than either over-engineering for scale
+   you don't have yet, or ignoring genuine signals that the current choice has hit its ceiling.
 
 ## Use Cases — When to Use Each (At a Glance)
 
@@ -108,6 +278,14 @@ Step by step through the tree:
   "free" performance.
 - **Don't pick DocumentDB just because data is JSON-shaped** — if you have no existing MongoDB
   investment, DynamoDB is usually cheaper and scales further for the same "flexible schema" need.
+- **Don't assume "NoSQL" is a single category with one right tool** — DynamoDB (key-value),
+  DocumentDB (document/MongoDB-API), and Neptune (graph) are all "NoSQL" by the loose popular
+  definition but solve entirely different problems; treating "NoSQL" as a single decision
+  collapses three genuinely different tools into one, which is itself a modeling mistake.
+- **Don't split a single logical transaction across two different database services** just
+  because each service is individually a good fit for part of the data — cross-service atomicity
+  is hard to get right (no native two-phase commit across RDS and DynamoDB, for example); keep
+  transactional boundaries within one system of record.
 
 ## Why It's Important
 
@@ -144,7 +322,69 @@ service) is the most common real cost mistake:
   *more* expensive than provisioned at sustained high, predictable load.
 - **Storage is (almost) always billed separately from compute** across every one of these
   services — don't forget to budget for it when estimating cost.
-- See each service's own doc for exact billing dimensions and the official pricing page.
+- **I/O-request billing** (Aurora, DocumentDB, Neptune, DynamoDB's request-unit model) is a
+  separate, often-underestimated line item distinct from both compute and storage — a
+  write-heavy workload on any of these services should model this explicitly, not as an
+  afterthought.
+- See each service's own doc for exact billing dimensions, worked numeric examples, and the
+  official pricing page.
+
+## Limits & Quotas — Cross-Service Quick Reference
+
+A single-glance comparison of the headline numbers that most often distinguish services in exam
+scenarios (see each service's own doc for the full, authoritative limit list):
+
+| Limit | RDS | Aurora | DynamoDB | DocumentDB | Neptune | Redshift |
+|---|---|---|---|---|---|---|
+| Max read replicas | 5 | 15 | N/A (horizontal partitions instead) | 15 | 15 | N/A (MPP nodes instead) |
+| Typical failover time | 60-120s | <30s | N/A (no single point of failure) | <30s (per instance) | <30s (per instance) | N/A |
+| Max item/row/document size | Engine-dependent, generally large | Engine-dependent | 400 KB | 16 MB | ~55,000 chars/property | N/A (columnar) |
+| Backup/PITR window | 1-35 days | 1-35 days | up to 35 days | up to 35 days | N/A (snapshot-based) | N/A (snapshot-based) |
+| Max storage | up to 64 TiB | up to 128 TiB+ | effectively unlimited | up to 128 TiB+ | up to 128 TiB | effectively unlimited (RA3 managed storage) |
+
+## Further Decision Factors: Compliance, Residency, and Team Skillset
+
+Beyond workload shape, a few additional factors legitimately change the answer even when the
+data-shape reasoning points one direction:
+
+- **Data residency requirements** (e.g., a regulation requiring certain data never leave a
+  specific country/Region) can rule out Global Tables, Aurora Global Database, or Neptune Global
+  Database replication to other Regions entirely, regardless of how well they'd otherwise fit —
+  always check this constraint before recommending a cross-Region feature.
+- **Existing team skillset is a real, legitimate input, not just inertia.** A team with deep
+  MongoDB expertise and shallow DynamoDB experience may genuinely ship a more reliable system on
+  DocumentDB even where DynamoDB would theoretically scale further — "the team already knows this
+  tool well" is a defensible factor in a real architecture decision, distinct from the exam's
+  usually skillset-agnostic framing.
+- **Vendor/engine-specific compliance certifications** (e.g., a specific regulatory framework
+  that has only been validated against a named database engine) occasionally constrain the choice
+  independent of workload shape — this shows up more in real RFP/compliance processes than in
+  exam questions, but it's a genuine real-world consideration worth remembering outside the test.
+- **Total cost of ownership over the multi-year lifetime**, not just month-one pricing — a
+  cheaper-today choice that requires a disruptive migration in 18 months once scale forces the
+  issue may cost more in aggregate than starting with the right-sized tool, even at a higher
+  initial sticker price.
+
+## Troubleshooting / Common Issues (Cross-Service)
+
+- **"We picked the wrong database and now access patterns don't fit"** → the single most
+  expensive real-world database mistake; the fix is almost never a quick migration — budget for
+  a genuine redesign of the data access layer, and treat early-stage database choice as a
+  deliberately reversible decision (favor RDS/Aurora when requirements are still unstable) rather
+  than over-committing to a more specialized tool too early.
+- **"Our analytical queries are slowing down production"** → the OLTP/OLAP separation wasn't
+  made early enough; introduce Redshift (or Athena for lower volume) and migrate reporting
+  traffic off the live database, rather than trying to tune the OLTP database into tolerating
+  OLAP-shaped queries.
+- **"We're paying for multiple databases and it feels redundant"** → this is often not actually
+  a problem — polyglot persistence (RDS + ElastiCache + Redshift, for example) is the expected,
+  recommended pattern, not redundancy; the real question is whether each piece of data is in the
+  *right* store for its own access pattern, not whether the count of services is minimized.
+- **"A feature needs data that spans two different database services and we can't keep them in
+  sync"** → this usually signals the data was split across services at the wrong boundary;
+  revisit whether the two pieces of data are actually independent enough to live in separate
+  systems, or whether they belong in one system of record with the other service only holding a
+  derived/cached copy.
 
 ## Hands-on Lab (Floci)
 
@@ -194,10 +434,63 @@ Gremlin containers) — this guide's job is the decision, not re-running every l
 - **Don't overthink graph questions** — if Neptune isn't explicitly named or strongly implied
   (multi-hop relationship traversal is the literal query), it's probably not the answer; it's a
   less common but very recognizable pattern once you've seen it.
+- **Watch for scenarios bundling two separate decisions into one question** — see Worked Scenario
+  C above; don't force a single-service answer onto a question that's actually describing two
+  distinct data needs.
+- **"Unknown or evolving access patterns" is a deliberate anti-DynamoDB signal** — don't default
+  to DynamoDB just because a question mentions scale; re-read for whether access patterns are
+  actually described as stable and known.
+- **Polyglot persistence is an expected, correct answer**, not a hedge — a scenario describing a
+  system with multiple distinct data needs often has the correct answer be "two or three of these
+  services together," not a single winner.
+
+## Quick Self-Test (Rapid-Fire Recognition)
+
+A fast drill for pattern-matching trigger phrases to services — cover the right-hand column and
+check yourself:
+
+1. "Need Oracle licensing with minimal rewrite" → **RDS**
+2. "MySQL-compatible, need 15 read replicas added in minutes" → **Aurora**
+3. "New product launch, no historical traffic data, must not throttle" → **DynamoDB (On-Demand)**
+4. "Sub-millisecond leaderboard, atomic rank updates" → **ElastiCache (Redis Sorted Sets)**
+5. "Five years of sales history, BI dashboard, columnar" → **Redshift**
+6. "Existing MongoDB driver code, minimal rewrite" → **DocumentDB**
+7. "Fraud ring, four hops of shared devices/payment methods" → **Neptune**
+8. "Spiky SaaS traffic, relational data, no capacity management desired" → **Aurora Serverless v2**
+9. "Microsecond DynamoDB reads, no custom invalidation code" → **DAX**
+10. "Multi-Region active-active writes, automatic conflict resolution, key-value" → **DynamoDB Global Tables**
+
+If any of these took more than a few seconds to answer, revisit that service's own doc's
+"Exam Tips" section before moving on.
+
+## Further Reading
+
+- [AWS Databases — Cloud Databases on AWS](https://aws.amazon.com/products/databases/) — AWS's
+  own current categorization of purpose-built database types and example use cases.
+- [AWS Cloud Databases (Overview Whitepaper)](https://docs.aws.amazon.com/whitepapers/latest/aws-overview/database.html) —
+  a single-document overview of the full database portfolio.
+- Each individual service's own "Further Reading" section — [`rds.md`](rds.md),
+  [`aurora.md`](aurora.md), [`dynamodb.md`](dynamodb.md), [`elasticache.md`](elasticache.md),
+  [`redshift.md`](redshift.md), [`documentdb.md`](documentdb.md), [`neptune.md`](neptune.md) —
+  links to the authoritative AWS documentation for each service's architecture and limits.
 
 ## Related Terms
 
 - [`rds.md`](rds.md), [`aurora.md`](aurora.md), [`dynamodb.md`](dynamodb.md),
   [`elasticache.md`](elasticache.md), [`redshift.md`](redshift.md), [`documentdb.md`](documentdb.md),
   [`neptune.md`](neptune.md) — full detail on each service referenced above.
-- Glossary: OLTP, OLAP, ACID, Eventual Consistency, Horizontal vs Vertical Scaling, Data Warehouse.
+- Glossary: OLTP, OLAP, ACID, Eventual Consistency, Horizontal vs Vertical Scaling, Data Warehouse,
+  Polyglot Persistence.
+
+---
+
+**Image credit:** This guide illustrates the OLTP/OLAP architectural split using two of the
+official AWS diagrams also referenced in the individual service docs — a Multi-AZ RDS instance
+(representing the operational/OLTP shape) and the Redshift data processing flow (representing the
+analytical/OLAP shape) — both from Amazon Web Services, Inc. official documentation.
+
+![High availability scenario for a Multi-AZ RDS instance deployment, representative of the operational/OLTP workload shape.](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/images/con-multi-AZ.png)
+*Figure: The operational (OLTP) shape — fast, small, individual-record reads/writes against a transactional database. Source: AWS RDS User Guide (docs.aws.amazon.com); see `rds.md` for full detail.*
+
+![Diagram showing the flow of data in Amazon Redshift, representative of the analytical/OLAP workload shape.](https://docs.aws.amazon.com/redshift/latest/gsg/images/architecture.png)
+*Figure: The analytical (OLAP) shape — bulk ingestion, columnar storage, and massively parallel aggregation across historical data. Source: AWS Redshift Getting Started Guide (docs.aws.amazon.com); see `redshift.md` for full detail.*

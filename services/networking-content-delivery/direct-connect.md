@@ -27,6 +27,12 @@ connection, you configure one or more **Virtual Interfaces (VIFs)**: a **private
 resources inside a VPC, a **public VIF** to reach AWS public services (S3, DynamoDB) over the
 dedicated link instead of the internet, or a **transit VIF** to reach a Transit Gateway.
 
+![Diagram showing how Direct Connect interfaces with your network, including VIF types](https://docs.aws.amazon.com/images/directconnect/latest/UserGuide/images/dx-vifs.png)
+*Figure: AWS's reference diagram showing the three virtual interface types — private VIF to a
+VPC, public VIF to AWS public services, and transit VIF to a Transit Gateway — all riding over
+one physical Direct Connect connection. Source: AWS documentation, "What is Direct Connect?" —
+https://docs.aws.amazon.com/directconnect/latest/UserGuide/Welcome.html*
+
 ```mermaid
 flowchart LR
     subgraph OnPrem["Your Data Center"]
@@ -56,6 +62,39 @@ A **Direct Connect Gateway** then lets a single Direct Connect connection reach 
 across multiple Regions** (without it, a private VIF connects to just one VPC in one Region),
 which is why most real deployments use a DX Gateway rather than a bare private VIF.
 
+### Direct Connect Gateway reaching multiple Regions
+
+![A Direct Connect gateway that connects VPCs in two AWS Regions and your data center](https://docs.aws.amazon.com/images/directconnect/latest/UserGuide/images/dx-gateway.png)
+*Figure: AWS's reference diagram of a Direct Connect Gateway bridging one physical connection in
+one Region to VPCs with Virtual Private Gateways in two different Regions — a single DX
+connection, multiple Regions reached. Source: AWS documentation, "Direct Connect gateways" —
+https://docs.aws.amazon.com/directconnect/latest/UserGuide/direct-connect-gateways-intro.html*
+
+### Packet-level walkthrough: BGP route exchange and failover
+
+```mermaid
+sequenceDiagram
+    participant OnPremRouter as On-Prem Router
+    participant DXGW as Direct Connect Gateway
+    participant VGW as Virtual Private Gateway
+    participant VPC as VPC Route Table
+
+    OnPremRouter->>DXGW: BGP session established (primary path)
+    DXGW->>VGW: advertise VPC routes via BGP
+    VGW->>VPC: propagate routes into route table
+    Note over OnPremRouter,VPC: Normal operation: traffic flows over Direct Connect
+    OnPremRouter--xDXGW: physical link fails
+    Note over OnPremRouter,VPC: BGP session drops, routes withdrawn
+    OnPremRouter->>VPC: fallback path (e.g., Site-to-Site VPN)<br/>if configured as backup
+```
+
+Direct Connect uses **BGP**, not static routes, to exchange reachability information — this is
+what allows automatic failover behavior when a backup path (commonly a Site-to-Site VPN) exists:
+if the BGP session over Direct Connect drops, routes advertised over it are withdrawn, and if a
+VPN connection is also configured with its own BGP session advertising the same destinations,
+traffic can shift to it automatically without manual route table intervention — provided this
+backup path was deliberately designed in, since Direct Connect has **no redundancy by default**.
+
 ## Key Features / Components
 
 - **Dedicated connection** — a physical 1/10/100 Gbps port allocated entirely to you; requires
@@ -76,6 +115,127 @@ which is why most real deployments use a DX Gateway rather than a bare private V
 - **MACsec** — optional Layer 2 encryption available on certain dedicated connections (Direct
   Connect itself is physically private but not encrypted in transit by default — MACsec or an
   overlay VPN adds encryption if required by compliance).
+
+## Resiliency Models, Side by Side
+
+```mermaid
+flowchart TB
+    subgraph Basic["Basic (single connection) — NOT resilient"]
+        B1["One connection, one DX location"]
+    end
+    subgraph Development["Development/Test — minimal resiliency"]
+        D1["One connection per location,<br/>two DX locations"]
+    end
+    subgraph High["High Resiliency — recommended for production"]
+        H1["Two connections, two DX locations,<br/>separate devices on your side"]
+    end
+    subgraph Maximum["Maximum Resiliency — critical workloads"]
+        M1["Four connections across two DX locations<br/>(two connections per location,<br/>separate routers AND separate devices)"]
+    end
+```
+
+AWS explicitly publishes these four named resiliency tiers because "just add a Direct Connect
+connection" is not synonymous with "now I have a redundant hybrid link" — a single dedicated
+connection, even a very fast one, remains a single point of failure at the physical layer (fiber
+cut, router failure, facility power event). The exam-relevant takeaway: any scenario emphasizing
+fault tolerance for Direct Connect specifically needs **multiple connections at multiple
+locations**, not just a bigger single connection.
+
+## Link Aggregation Group (LAG) — bundling connections for bandwidth and resiliency
+
+```mermaid
+flowchart LR
+    subgraph LAGGroup["LAG — appears as ONE logical connection"]
+        Conn1["Dedicated Connection 1<br/>(10 Gbps)"]
+        Conn2["Dedicated Connection 2<br/>(10 Gbps)"]
+        Conn3["Dedicated Connection 3<br/>(10 Gbps)"]
+        Conn4["Dedicated Connection 4<br/>(10 Gbps)"]
+    end
+    LAGGroup -->|"combined 40 Gbps,<br/>single BGP session,<br/>single VIF configuration"| AWS["AWS Network"]
+```
+
+A LAG requires all member connections to be the **same speed** and terminate at the **same
+Direct Connect location**, and it's managed as a single logical connection for configuration
+purposes (one set of VIFs, one BGP session configuration applied across the bundle) while still
+providing N-1 physical redundancy — if one physical connection in the LAG fails, the others
+continue carrying traffic, just at reduced aggregate bandwidth, without manual VIF
+reconfiguration. This differs from the multi-location resiliency models above in one key way: a
+LAG's redundancy is only at the connection level *within a single location* — it does not protect
+against a whole-facility failure, which is exactly why "Maximum Resiliency" additionally requires
+separate locations, not just a LAG.
+
+## Worked Cost Comparison: Direct Connect vs. Internet Egress at Scale
+
+A simplified illustrative comparison for a steady 100 TB/month transfer out of AWS to on-prem,
+using indicative, rounded rates (always check current pricing before a real decision):
+
+| Path | Approximate monthly cost driver | Illustrative total |
+|---|---|---|
+| Standard internet egress | ~$0.09/GB tiered rate × 100,000 GB | ~$9,000/month (data alone) |
+| Direct Connect (1 Gbps dedicated, always-on) | Port-hour (~$0.30/hr × 730) + lower per-GB rate (~$0.02/GB × 100,000 GB) | ~$219 (port) + ~$2,000 (data) ≈ $2,219/month |
+
+At this volume, Direct Connect's lower per-GB rate dramatically outweighs its fixed port-hour
+cost, illustrating why the exam's cost-optimization questions consistently favor Direct Connect
+once volume crosses a certain steady-state threshold — the crossover point depends on actual
+current rates and connection speed, but the *shape* of the tradeoff (fixed cost + cheap marginal
+rate vs. no fixed cost + expensive marginal rate) is the concept being tested, not memorizing an
+exact dollar crossover number.
+
+## Common Architectures
+
+**1. Direct Connect + VPN as backup (the standard hybrid HA pattern).** Primary traffic flows
+over Direct Connect; a Site-to-Site VPN connection (over the internet, cheap, fast to provision)
+serves as an automatic BGP-based fallback if the dedicated connection fails.
+
+```mermaid
+flowchart LR
+    OnPrem["On-Premises Network"]
+    DX["Direct Connect<br/>(primary, BGP priority higher)"]
+    VPN["Site-to-Site VPN<br/>(backup, BGP priority lower)"]
+    VGW["Virtual Private Gateway"]
+    OnPrem -->|"preferred path"| DX --> VGW
+    OnPrem -.->|"automatic fallback<br/>if DX BGP session drops"| VPN -.-> VGW
+```
+
+**2. Direct Connect Gateway + Transit Gateway for enterprise-scale hybrid networking.** One
+physical Direct Connect connection, through a Direct Connect Gateway, associated with a Transit
+Gateway that fans out to dozens of VPCs across many accounts — a single hybrid entry point for an
+entire AWS Organization's network.
+
+**3. Public VIF for direct, non-internet access to AWS public services.** A workload that calls
+S3 or DynamoDB heavily from on-prem, without a VPC in the picture at all, uses a public VIF to
+reach those services' public endpoints over the dedicated link rather than the internet —
+reducing both latency variability and internet egress costs for that traffic.
+
+**4. Private IP VPN over Direct Connect (encrypted without public IPs).** For workloads needing
+both the guaranteed path of Direct Connect and encryption in transit, a Site-to-Site VPN can be
+layered **on top of** a private VIF, encrypting traffic end-to-end while still avoiding the
+public internet entirely — distinct from running a VPN purely over the internet as a backup path.
+
+## Transit VIF — reaching a Transit Gateway directly
+
+```mermaid
+flowchart LR
+    OnPrem["On-Premises Router"]
+    DXConn["Direct Connect Connection"]
+    DXGW["Direct Connect Gateway"]
+    TransitVIF["Transit VIF"]
+    TGW["Transit Gateway"]
+    VPCA["VPC A"]
+    VPCB["VPC B"]
+    VPCC["VPC C"]
+    OnPrem --> DXConn --> DXGW --> TransitVIF --> TGW
+    TGW --> VPCA & VPCB & VPCC
+```
+
+A transit VIF is the modern, scale-friendly pairing with Transit Gateway: instead of a private
+VIF reaching one VPC's Virtual Private Gateway at a time, a transit VIF connects a Direct
+Connect Gateway directly to a Transit Gateway, inheriting whatever VPC attachments that Transit
+Gateway already has — adding a new VPC to the hybrid network becomes "attach it to the Transit
+Gateway," with zero additional Direct Connect-side configuration required. This is the preferred
+pattern for any organization already standardizing on Transit Gateway as their VPC
+interconnection hub (see `transit-gateway-and-peering.md`), since it avoids maintaining a growing
+list of individual private VIFs as the VPC count grows.
 
 ## Use Cases — When to Use It
 
@@ -133,6 +293,47 @@ cross-connect itself, charged by the colocation facility (not AWS), and any carr
 to physically reach the Direct Connect location. Official pricing:
 https://aws.amazon.com/directconnect/pricing/
 
+## Limits & Quotas
+
+| Resource | Default quota |
+|---|---|
+| Dedicated connections per Region | 10 (soft) |
+| Private VIFs per dedicated connection | 50 (soft) |
+| Public VIFs per dedicated connection | 1 (soft, increasable) |
+| Private VIFs per Direct Connect Gateway | 30 |
+| Direct Connect Gateways per account | 200 (soft) |
+| Connections per Link Aggregation Group | 4 |
+| Transit VIFs per connection | 1 (soft, increasable) |
+| BGP route limit per VIF | 100 (soft) advertised routes |
+
+## Troubleshooting / Common Issues
+
+- **"Direct Connect shows as UP but no traffic flows between on-prem and the VPC."** Check the
+  BGP session state specifically (not just physical link state) — a connection can be physically
+  up while BGP hasn't established, meaning no routes are being exchanged at all; verify BGP
+  neighbor status and route advertisements on both sides.
+- **"Failover to a backup VPN connection isn't happening when Direct Connect fails."** Confirm
+  the VPN connection is also BGP-based (not static-route-only) and configured with appropriate
+  route preference (usually via AS path prepending or local preference) so it only becomes active
+  when Direct Connect's routes are withdrawn — a static VPN alongside a BGP-based Direct Connect
+  typically won't fail over automatically.
+- **"A new VPC in a second Region can't be reached over an existing single-Region Direct Connect
+  connection."** A private VIF alone only reaches one VPC in one Region — reaching additional
+  Regions requires a Direct Connect Gateway associated with each Region's Virtual Private
+  Gateway/Transit Gateway.
+- **"Traffic over Direct Connect appears to be unencrypted and a compliance audit flags this."**
+  Expected — Direct Connect provides physical privacy, not encryption, by default; the fix is
+  enabling MACsec (if available for the specific connection/location) or layering a VPN on top of
+  the private VIF.
+- **"After ordering a dedicated connection, the team is surprised it isn't usable for weeks."**
+  Expected — physical cross-connects and carrier circuits have real-world lead times; this is
+  precisely why VPN is recommended as the interim or lower-urgency alternative, not a Direct
+  Connect misconfiguration.
+- **"BGP routes from on-prem aren't being accepted by the Direct Connect Gateway."** Check the
+  advertised route count against the per-VIF BGP route limit (100 by default) — exceeding it can
+  cause the session to reset or routes beyond the limit to be silently dropped, depending on
+  configuration.
+
 ## Hands-on Lab (Floci)
 
 **Honest limitation — by definition, not just a Floci gap:** Direct Connect requires a real
@@ -145,6 +346,8 @@ exploring the read-only, informational API:
 # not meaningful against Floci since there's no physical network to describe
 aws directconnect describe-locations
 aws directconnect describe-connections
+aws directconnect describe-direct-connect-gateways
+aws directconnect describe-virtual-interfaces
 ```
 
 For hands-on understanding of what Direct Connect *configures on the AWS side* (Virtual
@@ -153,6 +356,44 @@ Interfaces, Direct Connect Gateway route propagation into a VPC), use the **VPN 
 Gateway, route propagation, Customer Gateway) is structurally identical to what you'd configure
 for a Direct Connect private VIF, and VPN's control-plane APIs are exercisable via Floci's EC2
 backing. Full notes: `labs-floci/networking-vpc-lab.md`.
+
+## Exam Scenario Deep Dive
+
+**Scenario 1 — "A company needs guaranteed bandwidth and low latency for a mission-critical
+hybrid application, and cannot tolerate a single point of failure anywhere in the connectivity
+path, including at the physical facility level."**
+This calls for AWS's "Maximum Resiliency" model — multiple dedicated connections across
+**multiple, physically separate** Direct Connect locations, each terminating on separate routers
+on the customer side — a single connection, even duplicated at the same location, still leaves a
+facility-level single point of failure.
+
+**Scenario 2 — "A startup needs hybrid connectivity to AWS set up this week for a proof of
+concept, with modest, non-steady traffic volume."**
+Site-to-Site VPN, not Direct Connect — Direct Connect's provisioning lead time (weeks to months)
+makes it unsuitable for an immediate need regardless of its long-term cost/performance
+advantages at scale, which this low/non-steady-volume scenario doesn't need anyway.
+
+**Scenario 3 — "An enterprise has a single Direct Connect connection to us-east-1 and needs to
+extend the same physical connection's reach to a newly created VPC in eu-west-1 without
+provisioning a second physical circuit."**
+Direct Connect Gateway — it's specifically designed to let one physical connection in one Region
+reach VPCs (via their Virtual Private Gateways) in other Regions, which a bare private VIF
+cannot do on its own.
+
+**Scenario 4 — "A compliance requirement states that hybrid traffic must never traverse the
+public internet AND must be encrypted end-to-end."**
+Direct Connect with either MACsec enabled (if available for the connection) or a Site-to-Site
+VPN layered on top of the private VIF — Direct Connect alone satisfies "never touches the
+internet" but not "encrypted," so one of these two encryption mechanisms must be added
+deliberately; a standalone VPN-over-internet wouldn't satisfy the "never touches the internet"
+half of the requirement.
+
+**Scenario 5 — "A finance company needs on-premises systems to call Amazon S3 and DynamoDB
+directly, without routing through any VPC, while avoiding the public internet for cost and
+latency reasons."**
+A public VIF — it specifically grants access to AWS public service endpoints over the dedicated
+Direct Connect link, bypassing both the public internet and the need for a private VIF/VPC
+connection at all, matching the "no VPC involved" detail precisely.
 
 ## Exam Tips
 
@@ -174,6 +415,20 @@ backing. Full notes: `labs-floci/networking-vpc-lab.md`.
   → Direct Connect wins on both cost-per-GB and reliability at scale; low/sporadic volume → VPN
   or standard internet transfer is more cost-effective since you avoid port-hour and circuit
   costs entirely.
+- **Know the four resiliency models by name** (Basic, Development/Test, High Resiliency, Maximum
+  Resiliency) and which one satisfies "no single point of failure, including facility-level" —
+  only Maximum Resiliency does, since it mandates multiple physically separate locations.
+- **Direct Connect uses BGP, not static routing, for VPC/Gateway route exchange** — this is also
+  the mechanism that enables automatic failover to a BGP-based VPN backup; a purely static VPN
+  backup won't fail over automatically the same way.
+
+## Further Reading
+
+- AWS Docs — What is AWS Direct Connect?: https://docs.aws.amazon.com/directconnect/latest/UserGuide/Welcome.html
+- AWS Docs — Direct Connect resiliency recommendations: https://docs.aws.amazon.com/directconnect/latest/UserGuide/resiliency_toolkit.html
+- AWS Docs — Direct Connect gateways: https://docs.aws.amazon.com/directconnect/latest/UserGuide/direct-connect-gateways-intro.html
+- AWS Whitepaper — Amazon VPC Connectivity Options, Direct Connect section: https://docs.aws.amazon.com/whitepapers/latest/aws-vpc-connectivity-options/aws-direct-connect.html
+- AWS re:Post — Troubleshoot Direct Connect BGP: https://repost.aws/knowledge-center/direct-connect-bgp-troubleshoot
 
 ## Related Terms
 

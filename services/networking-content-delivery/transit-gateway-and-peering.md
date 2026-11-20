@@ -29,6 +29,12 @@ Transit Gateway's own route tables decide which attachments can reach which othe
 giving you both full-mesh connectivity (everything can reach everything by default) and
 fine-grained segmentation (route tables can isolate certain attachments from others) in one place.
 
+![Transit gateway with three VPC attachments routing between them](https://docs.aws.amazon.com/images/vpc/latest/tgw/images/transit-gateway-overview.png)
+*Figure: AWS's reference diagram of a Transit Gateway with three VPC attachments — each VPC's
+route table sends traffic destined for the other two VPCs to the Transit Gateway, which routes
+it at Layer 3 based on destination IP. Source: AWS documentation, "How AWS Transit Gateway
+works" — https://docs.aws.amazon.com/vpc/latest/tgw/how-transit-gateways-work.html*
+
 ```mermaid
 flowchart TB
     subgraph Peering["VPC Peering — non-transitive"]
@@ -57,6 +63,56 @@ per attachment, enabling segmentation — e.g., a "shared services" route table 
 route table) decide who can reach whom, letting you express complex, segmented, enterprise-scale
 topologies from one managed service instead of a sprawling peering mesh.
 
+### Packet-level walkthrough: how a Transit Gateway actually routes a packet
+
+```mermaid
+sequenceDiagram
+    participant VPCA as VPC A Instance (10.0.1.5)
+    participant RTA as VPC A Route Table
+    participant TGW as Transit Gateway (ENI in VPC A subnet)
+    participant TGWRT as TGW Route Table
+    participant TGWeniB as TGW ENI in VPC B subnet
+    participant VPCB as VPC B Instance (10.1.1.8)
+
+    VPCA->>RTA: packet dst=10.1.1.8
+    RTA->>TGW: route 10.1.0.0/16 -> tgw-attachment-id
+    TGW->>TGWRT: lookup destination attachment for 10.1.1.8
+    TGWRT->>TGWeniB: forward via VPC B's attachment
+    TGWeniB->>VPCB: delivered, dst=10.1.1.8
+    VPCB-->>TGWeniB: response dst=10.0.1.5
+    TGWeniB-->>TGWRT: lookup destination attachment for 10.0.1.5
+    TGWRT-->>TGW: forward via VPC A's attachment
+    TGW-->>RTA: delivered
+    RTA-->>VPCA: response received
+```
+
+The mechanical detail worth internalizing: a Transit Gateway attachment to a VPC is implemented
+as an **Elastic Network Interface (ENI)** placed in one subnet per Availability Zone you enable —
+traffic physically enters/exits the Transit Gateway through these ENIs, and routing between
+attachments happens at true Layer 3 (destination-IP-based), independent of any particular VPC's
+own internal route tables beyond the entry/exit hop.
+
+### VPC Peering — the non-transitivity trap, visualized
+
+```mermaid
+flowchart LR
+    VPCA["VPC A — 10.0.0.0/16"]
+    VPCB["VPC B — 10.1.0.0/16"]
+    VPCC["VPC C — 10.2.0.0/16"]
+    PCX1["Peering Connection 1"]
+    PCX2["Peering Connection 2"]
+    VPCA <--> PCX1 <--> VPCB
+    VPCB <--> PCX2 <--> VPCC
+    VPCA -.-x|"NO peering connection exists between A and C"| VPCC
+```
+
+Even though B can reach both A and C, and traffic *could* theoretically flow A → B → C at the
+network layer, **AWS explicitly disallows this** — a VPC peering connection only permits traffic
+whose source and destination are the two directly peered VPCs; it will not forward transit
+traffic on behalf of a third VPC under any circumstances, even if that third VPC is itself peered
+with one side. This isn't a configuration limitation you can work around with route tables — it's
+an architectural rule of the peering connection object itself.
+
 ## Key Features / Components
 
 - **VPC Peering Connection** — 1:1 link; works across accounts and across Regions (inter-Region
@@ -74,6 +130,86 @@ topologies from one managed service instead of a sprawling peering mesh.
   (media, trading systems), which VPC Peering cannot provide.
 - **Transit Gateway Network Manager** — centralized visibility/monitoring across the whole
   global network built on Transit Gateways and (optionally) AWS Cloud WAN.
+- **Transit Gateway Connect attachment** — a GRE-tunnel-based attachment type for integrating
+  SD-WAN appliances directly with the Transit Gateway, without a VPN/Direct Connect in between.
+
+## Transit Gateway Route Table Segmentation — a worked example
+
+```mermaid
+flowchart TB
+    TGW{{"Transit Gateway"}}
+    subgraph ProdRT["Prod Route Table"]
+        ProdEntry["Routes to: Prod VPC, Shared Services VPC"]
+    end
+    subgraph DevRT["Dev Route Table"]
+        DevEntry["Routes to: Dev VPC, Shared Services VPC<br/>(NOT Prod VPC)"]
+    end
+    ProdVPC["Prod VPC"] -->|"associated with"| ProdRT
+    DevVPC["Dev VPC"] -->|"associated with"| DevRT
+    SharedVPC["Shared Services VPC"] -.->|"propagates into BOTH tables"| ProdRT
+    SharedVPC -.-> DevRT
+    TGW --- ProdRT
+    TGW --- DevRT
+```
+
+This is the mechanism behind "dev should never reach prod, even though both are attached to the
+same Transit Gateway": each attachment is **associated** with exactly one Transit Gateway route
+table (determining what it can send traffic *to*), while a separate **propagation** setting
+controls which route tables learn about a given attachment's routes (determining what can send
+traffic *to it*). The Shared Services VPC propagates its routes into both the Prod and Dev route
+tables (so both can reach it), but Prod's own routes are never propagated into the Dev route
+table, so Dev attachments have no route to Prod at all — not merely a blocked route, but no
+route existing in the first place.
+
+## Common Architectures
+
+**1. Hub-and-spoke with centralized egress.** All spoke VPCs route internet-bound traffic
+through a central "egress VPC" attached to the same Transit Gateway, which holds the shared NAT
+Gateways — reducing the number of NAT Gateways the organization needs to manage/pay for across
+many VPCs.
+
+```mermaid
+flowchart TB
+    TGW{{"Transit Gateway"}}
+    EgressVPC["Egress VPC<br/>(shared NAT Gateways)"]
+    SpokeA["Spoke VPC A"]
+    SpokeB["Spoke VPC B"]
+    SpokeC["Spoke VPC C"]
+    IGW["Internet Gateway"]
+    SpokeA & SpokeB & SpokeC --> TGW --> EgressVPC --> IGW
+```
+
+**2. Multi-account landing zone with network segmentation.** Separate Transit Gateway route
+tables per environment (prod, non-prod, shared-services) attached to the same hub, enforcing
+"dev can never reach prod" purely at the network layer, independent of IAM policy.
+
+**3. Simple two-VPC peering for a narrow, specific purpose.** A central "shared services" VPC
+(hosting a company-wide artifact repository, say) peered with just one consuming application VPC
+— no Transit Gateway needed at all for this narrow, two-party relationship.
+
+**4. Transit Gateway peering across Regions.** Two Transit Gateways, one per Region, peered to
+each other, letting every VPC attached to either hub reach every VPC attached to the other — a
+global backbone built from regional hubs rather than a mesh of inter-Region VPC peerings.
+
+```mermaid
+flowchart LR
+    subgraph RegionA["us-east-1"]
+        TGWA{{"Transit Gateway A"}}
+        VPCA1["VPC A1"]
+        VPCA2["VPC A2"]
+    end
+    subgraph RegionB["eu-west-1"]
+        TGWB{{"Transit Gateway B"}}
+        VPCB1["VPC B1"]
+    end
+    VPCA1 & VPCA2 --- TGWA
+    VPCB1 --- TGWB
+    TGWA <-->|"Transit Gateway Peering<br/>(cross-Region)"| TGWB
+```
+
+**5. Centralized Direct Connect/VPN entry point.** A Direct Connect Gateway and/or multiple
+Site-to-Site VPN connections attach once to the Transit Gateway, immediately reaching every VPC
+already attached, instead of requiring a hybrid connection per VPC.
 
 ## Use Cases — When to Use It
 
@@ -129,6 +265,48 @@ charge for all data flowing through it — this per-GB charge is the key cost di
 peering's lack of a hub fee, and matters at high data volumes. Official pricing:
 https://aws.amazon.com/transit-gateway/pricing/ and https://aws.amazon.com/vpc/pricing/
 
+## Limits & Quotas
+
+| Resource | Default quota |
+|---|---|
+| VPC peering connections per VPC | 50 (soft) |
+| Transit Gateways per account per Region | 5 (soft) |
+| Attachments per Transit Gateway | 5,000 |
+| Transit Gateway route tables per Transit Gateway | 20 (soft) |
+| Routes per Transit Gateway route table | 10,000 (soft) |
+| Transit Gateway peering connections per Transit Gateway | 50 (soft) |
+| Bandwidth per VPC attachment | Up to 50 Gbps (burstable, shared across the Transit Gateway) |
+| Max transitive VPCs via peering | 0 (strictly non-transitive, no limit — it's a hard rule) |
+
+## Troubleshooting / Common Issues
+
+- **"VPC A can reach VPC B, and VPC B can reach VPC C, but VPC A can't reach VPC C."** This is
+  expected, correct VPC Peering behavior — peering is strictly non-transitive. The fix is either
+  a direct A↔C peering connection or, if this pattern is recurring/growing, migrating to Transit
+  Gateway, which natively supports exactly this multi-VPC reachability.
+- **"Two VPCs can't establish a peering connection or Transit Gateway attachment."** Check for
+  overlapping CIDR blocks first — this is the single most common cause, and it cannot be worked
+  around without re-IP'ing one side or using a secondary, non-overlapping CIDR block.
+- **"Instances in one VPC attached to a Transit Gateway can't reach instances in another
+  attached VPC."** Check three things in order: (1) does each VPC's own subnet route table have
+  a route to the Transit Gateway for the other VPC's CIDR? (2) is the attachment associated with
+  a Transit Gateway route table that has a route to the destination attachment? (3) are security
+  groups/NACLs on both ends actually allowing the traffic? All three layers must be correct.
+- **"A dev VPC can unexpectedly reach a prod VPC through the shared Transit Gateway."** Check
+  route propagation settings — if dev's Transit Gateway route table was accidentally associated
+  or propagated routes from the prod attachment, segmentation has been bypassed; route table
+  association/propagation misconfiguration is the most common cause of accidental cross-
+  environment reachability on a shared hub.
+- **"Transit Gateway peering between two Regions shows established, but traffic doesn't flow
+  between VPCs in each Region."** Transit Gateway peering only connects the two Transit Gateways
+  themselves — you still need each Transit Gateway's route table to have routes (often via
+  propagation) pointing at the peered Transit Gateway's attachment for the relevant CIDRs; the
+  peering connection existing is necessary but not sufficient.
+- **"Throughput through the Transit Gateway seems capped below expectations during a burst."**
+  Transit Gateway bandwidth per attachment, while high (up to 50 Gbps), is burstable and shared
+  — at extreme, sustained, very-high-throughput point-to-point needs between just two VPCs,
+  direct VPC peering (no intermediate device at all) may outperform going through a shared hub.
+
 ## Hands-on Lab (Floci)
 
 Both VPC Peering and Transit Gateway objects live in the `ec2` CLI namespace, which Floci backs
@@ -155,9 +333,54 @@ awslocal ec2 create-transit-gateway-vpc-attachment \
   --transit-gateway-id <tgw-id> --vpc-id <vpc-a-id> --subnet-ids <subnet-id>
 
 awslocal ec2 describe-transit-gateway-attachments --transit-gateway-attachment-ids <attachment-id>
+
+# Create a second, non-default Transit Gateway route table for segmentation practice
+awslocal ec2 create-transit-gateway-route-table --transit-gateway-id <tgw-id>
+awslocal ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id <custom-rtb-id> \
+  --transit-gateway-attachment-id <attachment-id>
 ```
 
 Full lab: `labs-floci/networking-vpc-lab.md`.
+
+## Exam Scenario Deep Dive
+
+**Scenario 1 — "An organization has 15 VPCs across 5 AWS accounts that increasingly need to
+communicate with each other, and the network team reports growing difficulty managing dozens of
+individual peering connections."**
+This is the textbook Transit Gateway migration signal — 15 VPCs under full-mesh peering would
+need up to 105 individual connections (15×14/2); Transit Gateway collapses this to 15 single
+attachments to one hub, with route tables providing any needed segmentation.
+
+**Scenario 2 — "Two specific VPCs, a shared analytics VPC and one consuming application VPC,
+need a one-time, narrowly-scoped connection, with no other VPCs involved now or in the
+foreseeable future."**
+VPC Peering — a direct, free (no hub fee), simple connection is the right-sized answer for
+exactly two VPCs with no anticipated growth in interconnection complexity; reaching for Transit
+Gateway here would be premature over-engineering.
+
+**Scenario 3 — "A security requirement states that development environment VPCs must never be
+able to reach production environment VPCs, even though both need to reach a shared services VPC
+hosting internal tooling."**
+Transit Gateway with separate route tables for the dev and prod attachment groups, both of which
+have the shared services VPC's routes propagated into them, but neither of which has the other
+environment's routes propagated — this achieves the "shared access to common services, mutual
+isolation from each other" requirement precisely.
+
+**Scenario 4 — "A company operating Transit Gateways in two Regions needs VPCs in either Region
+to reach VPCs in the other, without building a full mesh of inter-Region VPC peering
+connections."**
+Transit Gateway peering — connecting the two regional Transit Gateways directly extends
+reachability between every VPC attached to either hub, avoiding both the mesh-growth problem and
+the need for direct inter-Region VPC-to-VPC peering connections.
+
+**Scenario 5 — "After merging with another company, two organizations' VPCs need to be
+connected, but a CIDR overlap analysis reveals both use `10.0.0.0/16` for their primary VPCs."**
+Neither VPC Peering nor Transit Gateway attachment can connect these VPCs directly as-is — the
+overlapping CIDR must be resolved first, either by re-IP'ing one side's VPC or by using NAT-based
+workarounds for specific resource-level connectivity; this is a CIDR-planning failure, not a
+connectivity-service limitation, and no amount of Transit Gateway or peering configuration can
+route around genuinely identical address spaces.
 
 ## Exam Tips
 
@@ -171,12 +394,28 @@ Full lab: `labs-floci/networking-vpc-lab.md`.
 - **Transit Gateway route tables enable segmentation** — a scenario needing "dev VPCs should
   never reach prod VPCs even though both are attached to the same hub" points directly at using
   separate Transit Gateway route tables per attachment group.
+- **Association vs. propagation are two distinct settings** — association determines which route
+  table an attachment *uses* to send traffic; propagation determines which route tables *learn
+  about* an attachment's routes. A scenario describing unexpected reachability (or unexpected
+  lack of it) is often really about one of these two settings being set incorrectly, not a
+  missing route per se.
 - **Cost tradeoff**: peering has no hub fee (good for simple, high-volume point-to-point); Transit
   Gateway charges per-GB processed on top of attachment-hours (worth it for manageability/
   segmentation at scale, a real cost to weigh in Domain 4-style questions).
 - Non-overlapping CIDRs are required for both peering and Transit Gateway attachment — if a
   scenario mentions merging two companies'/VPCs' networks with overlapping address space, the
   answer involves re-IP'ing or NAT-based workarounds, not simply "just peer them."
+- **Transit Gateway peering connects hubs, not individual VPCs directly** — know this is a
+  distinct feature from VPC-to-VPC peering, used specifically to extend a Transit Gateway-based
+  topology across Regions.
+
+## Further Reading
+
+- AWS Docs — What is AWS Transit Gateway?: https://docs.aws.amazon.com/vpc/latest/tgw/what-is-transit-gateway.html
+- AWS Docs — How AWS Transit Gateway works: https://docs.aws.amazon.com/vpc/latest/tgw/how-transit-gateways-work.html
+- AWS Docs — VPC peering basics: https://docs.aws.amazon.com/vpc/latest/peering/what-is-vpc-peering.html
+- AWS Docs — Transit Gateway route tables: https://docs.aws.amazon.com/vpc/latest/tgw/tgw-route-tables.html
+- AWS re:Post — Transit Gateway routing troubleshooting: https://repost.aws/knowledge-center/transit-gateway-vpc-connectivity
 
 ## Related Terms
 

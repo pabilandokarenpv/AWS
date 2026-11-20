@@ -11,6 +11,14 @@ transform** — plus **SageMaker Neo** to compile a model for efficient executio
 hardware. Picking the right one for your traffic pattern is one of the highest-value decisions
 in an ML system's cost and latency profile.
 
+Two terms worth pinning down precisely before the rest of this document leans on them:
+- **Latency** — how long a single prediction takes to come back after it's requested. A fraud
+  check needs latency measured in tens-to-low-hundreds of milliseconds; a nightly report has
+  essentially no latency requirement at all.
+- **Cold start** — the delay the *first* request after a period of inactivity experiences while
+  AWS provisions compute that wasn't already running. This is the specific, named cost serverless
+  and async endpoints pay in exchange for not billing anything while idle.
+
 ## Purpose
 
 Not every prediction need is the same. A fraud-check needs an answer in under 100ms. A nightly
@@ -72,6 +80,80 @@ Step by step:
    Greengrass**) directly on the device, without needing a live connection to a SageMaker
    endpoint at inference time at all.
 
+### The serverless workflow, in AWS's own diagram
+
+![Diagram showing the SageMaker Serverless Inference workflow: a client invokes the endpoint, SageMaker provisions compute on demand, scales it based on traffic, and scales back to zero when idle](https://docs.aws.amazon.com/sagemaker/latest/dg/images/serverless-endpoints-how-it-works.png)
+
+*Figure: AWS's own diagram of Serverless Inference — when you create an on-demand serverless
+endpoint, SageMaker provisions and manages the compute resources for you, scaling up and down
+with request traffic, billing only for what's used. Source: AWS SageMaker Developer Guide,
+"Deploy models with Amazon SageMaker Serverless Inference" —
+docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html.*
+
+### Worked example — choosing (and justifying) an inference option, three ways
+
+To see the decision-making in action rather than as an abstract table, walk through three
+variants of the same underlying model (a product recommendation scorer) under different traffic
+assumptions.
+
+**Variant A — storefront homepage, every page load.** Hundreds of requests per second,
+consistently, all day, every day, each needing a response in well under 200ms to not visibly
+slow the page. **Real-time endpoint**, sized with auto-scaling policies tied to a target
+invocations-per-instance metric, is the only option that fits — serverless's cold starts would
+be visible to real users at this request rate, and nothing about this traffic is spiky or
+low-volume enough to justify paying for idle-avoidance machinery that doesn't apply here anyway
+(the endpoint is essentially never idle).
+
+**Variant B — an internal admin tool used by five employees a few times a day.** A handful of
+requests scattered through business hours, long idle stretches overnight and on weekends. A
+real-time endpoint here would bill 24/7 for an endpoint that's idle more than 95% of the time —
+**serverless** is the clear fit: near-zero cost during the long idle periods, and the occasional
+cold start (maybe a second or two) is a completely acceptable tradeoff for an internal tool used
+by five people.
+
+**Variant C — a nightly batch job scoring the entire 2-million-row product catalog for next
+week's merchandising report.** No live user is waiting on any individual prediction; the whole
+job just needs to finish by morning. **Batch Transform** is correct — provisioning a persistent
+endpoint (real-time or serverless) for a workload that never serves a live request at all would
+be pure unnecessary infrastructure; Batch Transform spins up exactly the compute needed, scores
+everything, writes results to S3, and tears down, with zero endpoint existing before or after.
+
+The pattern across all three: the *traffic pattern description* in a scenario, not the model
+itself, is almost always what determines the correct inference option — the same trained model
+artifact could legitimately be deployed via any of the four options depending on how it's called.
+
+### The request lifecycle, side by side
+
+Seeing the actual request/response shape for each synchronous-feeling option clarifies exactly
+where the differences live:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant RT as Real-time Endpoint
+    participant SL as Serverless Endpoint
+    participant AS as Async Endpoint
+
+    Note over C,RT: Real-time: instance always running
+    C->>RT: InvokeEndpoint(payload)
+    RT-->>C: Prediction (milliseconds)
+
+    Note over C,SL: Serverless: compute spun up on demand
+    C->>SL: InvokeEndpoint(payload)
+    SL->>SL: Cold start if idle (provision compute)
+    SL-->>C: Prediction (ms to a few seconds)
+
+    Note over C,AS: Async: request queued, no live wait
+    C->>AS: InvokeEndpointAsync(payload in S3)
+    AS-->>C: Immediate ACK (request accepted)
+    AS->>AS: Process when ready (seconds to ~1 hour)
+    AS->>C: SNS notification + result in S3
+```
+
+The three all start the same way — the client calls an `Invoke*` API — but what happens next,
+and when the client actually learns the answer, differs entirely by design, which is exactly
+what the "traffic pattern" framing in exam scenarios is probing.
+
 ## Key Features / Components
 
 - **Real-time endpoint** — persistent, low-latency, auto-scaling, supports multi-model/multi-
@@ -88,11 +170,34 @@ Step by step:
 - **Multi-model endpoints (MME)** — host hundreds/thousands of models behind one endpoint,
   loading them into memory on demand, sharing the same underlying instances to cut cost when
   you have many infrequently-used models.
+- **Inference components** — a newer real-time endpoint feature letting you deploy multiple
+  models to one endpoint with independently-managed compute allocation per model (CPU/GPU/memory
+  assigned per model, scaled and updated independently), a more flexible evolution of the older
+  single-model-per-endpoint pattern.
 - **Inference Recommender** — runs automated load tests across instance types/configurations and
   recommends the cheapest one that meets your latency/throughput target.
 - **Auto Scaling** — real-time endpoints can scale instance count based on invocation metrics.
-- **Elastic Inference (legacy)/GPU vs CPU instance choice** — pick GPU instances for deep
-  learning inference where latency matters, CPU for simpler models where cost matters more.
+- **Shadow testing** — route a copy of live production traffic to a new model variant without
+  affecting what users actually see, comparing its predictions against the current production
+  model before committing to a real rollout.
+- **Deployment guardrails** — built-in support for blue/green and rolling deployments when
+  updating a real-time or async endpoint to a new model version, reducing the risk of a bad
+  update taking down live traffic.
+
+### The four options, side by side
+
+| | Real-time | Serverless | Asynchronous | Batch Transform |
+|---|---|---|---|---|
+| Response | Synchronous | Synchronous (with possible cold start) | Async (S3 + SNS) | N/A (batch output) |
+| Scales to zero | No | Yes | Yes | N/A (ephemeral by design) |
+| Max payload | Smallest | Small | Largest | Bounded by job config |
+| Max processing time | Shortest (sub-minute) | Short | Up to ~1 hour | Bounded by job's `MaxRuntimeInSeconds` |
+| Billing while idle | Yes (always) | No | No | N/A (no idle state exists) |
+| Best traffic shape | Steady, latency-sensitive | Spiky, low/unpredictable | Large/long, non-blocking | One-off or scheduled bulk |
+
+This table is worth memorizing in shape (not exact numbers, which change) because nearly every
+Domain 3 scenario question reduces to picking one row based on the traffic/payload/latency
+clues embedded in the question's wording.
 
 ## Use Cases — When to Use It
 
@@ -108,6 +213,11 @@ Step by step:
 - **Neo** — a smart camera, drone, or factory sensor that must run inference locally with no
   guaranteed internet connectivity, or where sending every frame to the cloud would be too slow
   or too expensive in data transfer.
+- **Multi-model endpoints / inference components** — you have many models (per-customer models,
+  many narrow use cases) each with low individual traffic, and hosting one dedicated endpoint
+  per model would be prohibitively expensive.
+- **Shadow testing** — you want real confidence a new model version performs at least as well as
+  the current one before it ever actually influences a real user's experience.
 
 ## When NOT to Use It / Alternatives
 
@@ -125,6 +235,71 @@ Step by step:
   endpoint; only invest in Neo when edge deployment is a genuine requirement.
 - **Any SageMaker endpoint when a pre-built AI API already does the job** — don't host your own
   model to do sentiment analysis; call Comprehend instead.
+- **Multi-model endpoints when you have very few, very high-traffic models** — the memory
+  management overhead of loading/evicting models on demand only pays off when you have *many*
+  models with individually modest traffic; a single hot model is better served by a dedicated
+  endpoint with its own autoscaling.
+
+## Common Architectures
+
+### Pattern 1 — Blue/green canary rollout on a real-time endpoint
+
+The standard safe-deployment pattern for updating a production model without risking a bad
+version taking down live traffic all at once:
+
+```mermaid
+flowchart LR
+    LB[Endpoint traffic<br/>splitter] -->|95%| BLUE[Production Variant<br/>current model]
+    LB -->|5%| GREEN[Canary Variant<br/>new model]
+    GREEN --> METRICS{New variant's<br/>metrics healthy?}
+    METRICS -->|yes| SHIFT[Gradually shift<br/>more traffic to Green]
+    METRICS -->|no| ROLLBACK[Roll back to 100% Blue]
+    SHIFT --> FULL[100% traffic on Green,<br/>Blue retired]
+```
+
+This pattern — small initial exposure, monitor, then gradually increase — is the direct
+production-deployment analog of a software canary release, applied to a model update instead of
+an application code update.
+
+### Pattern 2 — Document processing pipeline with async endpoints
+
+For a system ingesting user-uploaded documents that take meaningful time to process (OCR +
+model-based classification, say) without holding an HTTP connection open:
+
+```mermaid
+flowchart TD
+    USER[User uploads document] --> S3IN[(S3: input)]
+    S3IN --> ASYNC[Async Endpoint:<br/>queued request]
+    ASYNC --> PROC[Model processes<br/>document, minutes-scale]
+    PROC --> S3OUT[(S3: output)]
+    PROC --> SNS[SNS notification:<br/>processing complete]
+    SNS --> APP[Application polls or<br/>subscribes for result]
+    APP --> USER
+```
+
+The key structural idea: the user's upload action and the eventual result delivery are
+decoupled — nothing in this architecture requires a client to hold a connection open for however
+long the model actually takes to run.
+
+### Pattern 3 — Edge inference with centralized model management
+
+For a fleet of IoT devices (cameras, sensors) that need to run inference locally but still be
+centrally managed and updated:
+
+```mermaid
+flowchart TD
+    SM[SageMaker: trained model] --> NEO[SageMaker Neo<br/>compile for target device]
+    NEO --> PKG[Compiled, optimized<br/>model package]
+    PKG --> GG[AWS IoT Greengrass<br/>deploys to fleet]
+    GG --> D1[Device 1: local inference]
+    GG --> D2[Device 2: local inference]
+    GG --> D3[Device 3: local inference]
+    D1 -.occasional sync, not per-inference.-> S3[(S3: periodic<br/>metrics/logs upload)]
+```
+
+The critical property this architecture provides: inference itself never depends on live
+connectivity to AWS — only periodic management/telemetry traffic does, which is exactly what
+makes this pattern viable for devices with unreliable or bandwidth-constrained network access.
 
 ## Why It's Important
 
@@ -148,6 +323,27 @@ general pattern of "choose the right compute/latency tradeoff" echoes DVA-C03's 
 choosing between Lambda, Fargate, and EC2 for application hosting — same engineering instinct,
 different service family.
 
+## Limits & Quotas
+
+- **Real-time endpoint payload size** is capped (well under 10 MB) — a request larger than this
+  limit is rejected outright, which is exactly why large-payload workloads need the asynchronous
+  endpoint's much larger payload allowance instead.
+- **Request timeout** differs sharply by endpoint type: real-time and serverless endpoints
+  enforce a timeout well under a minute; asynchronous endpoints tolerate processing times up to
+  about an hour; batch transform has no per-record timeout in the same sense, bounded instead by
+  the overall job's configured runtime.
+- **Serverless endpoint memory and concurrency** are configured per endpoint, with an account-
+  level ceiling on total concurrent serverless executions — a sudden spike beyond configured max
+  concurrency causes throttling, the serverless-world equivalent of an under-scaled real-time
+  endpoint.
+- **Multi-model endpoint model count** is bounded by the available memory on the underlying
+  instances, not an arbitrary API cap — too many large models competing for the same memory
+  footprint causes more frequent load/evict cycles and higher average latency, a capacity-
+  planning problem rather than a hard quota.
+- **Instance quotas per type/Region** apply to endpoint instances exactly as they do to training
+  instances — a real-time endpoint's desired autoscaling max instance count can be silently
+  capped by an account quota lower than that max, a genuinely common production surprise.
+
 ## Pricing Model (summary)
 
 - **Real-time endpoint** — billed per instance-hour continuously while deployed, regardless of
@@ -160,7 +356,55 @@ different service family.
 - **SageMaker Neo** — compilation jobs billed per use; running the compiled model on your own
   edge hardware has no SageMaker inference charge (you're running it off-AWS), though IoT
   Greengrass device management has its own pricing.
-- Full current rates: https://aws.amazon.com/sagemaker/pricing/
+
+**Worked cost comparison, continuing the three-variant example above:** Variant A's real-time
+endpoint at, say, three `ml.m5.xlarge` instances running continuously costs roughly 3 × 730
+instance-hours/month regardless of traffic shape, because it's genuinely busy most of the time —
+the right cost to pay for the latency this traffic pattern demands. Variant B's serverless setup
+for the same model, called perhaps 50 times/day at 300ms each, bills for roughly 50 × 0.3
+seconds/day ≈ 15 seconds/day of actual compute — a difference of multiple orders of magnitude
+from running the same model as a real-time endpoint, purely because the *traffic pattern*
+differs, not because the model itself is any different.
+
+Full current rates: https://aws.amazon.com/sagemaker/pricing/
+
+## Troubleshooting / Common Issues
+
+- **Real-time endpoint returns `ModelError` or times out under load it handled fine in testing.**
+  Check whether Application Auto Scaling is actually configured on the endpoint — a fixed
+  instance count under a sudden traffic increase behaves like any other under-provisioned
+  service; this is not automatic unless you've set up a scaling policy.
+- **Serverless endpoint's first request after a quiet period takes multiple seconds.** This is
+  the expected cold-start behavior, not a bug — if this latency is unacceptable for your use
+  case, that's a signal to move to a real-time endpoint (possibly with a minimum instance count)
+  rather than trying to eliminate cold starts from a serverless endpoint.
+- **Async endpoint's SNS notification never arrives even though the job appears to have
+  completed.** Check the SNS topic's subscription/permissions configuration and the endpoint's
+  configured success/failure topic ARNs separately — these are configured independently, and a
+  misconfigured failure topic can silently swallow notifications for failed jobs specifically.
+- **Multi-model endpoint has inconsistent latency per model.** Models not recently called get
+  evicted from memory and must be reloaded on the next request (a cold-start-like penalty per
+  model) — if specific models are latency-critical, consider pre-warming them or moving
+  especially hot models to a dedicated endpoint instead.
+- **A Neo-compiled model behaves differently (lower accuracy) than the original on the edge
+  device.** Compilation can involve precision reduction (e.g., FP32 → FP16/INT8) as part of the
+  size/speed optimization — validate the compiled model's accuracy against a held-out test set
+  on the actual target hardware before deploying to a full device fleet, don't assume
+  compilation is accuracy-neutral by default.
+- **Batch Transform job output has fewer records than input.** Check for malformed input records
+  being silently skipped (inspect CloudWatch Logs for per-record errors) rather than assuming the
+  job partially succeeded without issue.
+- **An endpoint using inference components shows uneven latency across the hosted models.**
+  Inference components each get their own compute allocation, but if several hot models are
+  packed too densely onto the same underlying instances, resource contention between them can
+  degrade latency for all of them — check whether the per-component compute allocation (CPU
+  cores, memory, accelerator share) matches each model's actual traffic, not just a default even
+  split across components.
+- **A canary deployment's new variant looks fine in aggregate metrics but individual users are
+  reporting problems.** Aggregate latency/error-rate metrics can mask problems affecting a
+  specific input pattern or user segment that happens to be underrepresented in the canary's 5%
+  traffic slice — widen the canary percentage or extend the observation window before concluding
+  a new variant is genuinely safe to fully promote.
 
 ## Hands-on Lab (Floci)
 
@@ -208,6 +452,30 @@ awslocal s3 cp model.tar.gz s3://sagemaker-model-artifacts/
 # aws sagemaker create-endpoint --endpoint-name iris-rf-endpoint --endpoint-config-name iris-rf-config
 ```
 
+**Option D — simulate an async endpoint's queue + notification pattern locally:**
+```bash
+python3 - <<'EOF'
+import time, queue, threading
+
+request_queue = queue.Queue()
+results = {}
+
+def worker():
+    while True:
+        req_id, payload = request_queue.get()
+        time.sleep(1)  # stand-in for a multi-minute processing job
+        results[req_id] = f"processed: {payload}"
+        print(f"[SNS-style notification] request {req_id} complete")
+        request_queue.task_done()
+
+threading.Thread(target=worker, daemon=True).start()
+request_queue.put(("req-1", "large-document.pdf"))
+print("Client: submitted request, not waiting for a synchronous response")
+request_queue.join()
+print("Result now available:", results["req-1"])
+EOF
+```
+
 See `certifications/mla-c02/domain-3-deployment-orchestration/labs.md`.
 
 ## Exam Tips
@@ -223,6 +491,69 @@ See `certifications/mla-c02/domain-3-deployment-orchestration/labs.md`.
 - Neo always pairs conceptually with IoT Greengrass for the actual edge execution runtime.
 - Distinguish this domain's content from Domain 2 (training) — a question about "already-trained
   model, now serving it" is Domain 3, not Domain 2.
+
+### Sample exam scenarios, worked
+
+**Scenario 1:** "A company wants to test a new model version against real production traffic
+without risking a bad model affecting any actual user's experience." *Answer:* Shadow testing —
+a copy of live traffic is sent to the new variant for comparison, but its responses are never
+actually returned to real users, distinguishing it from a canary deployment (which does expose
+a small percentage of real users to the new variant).
+
+**Scenario 2:** "An endpoint hosts 300 lightly-used per-customer models, and the team's current
+approach (one real-time endpoint per customer) costs far more than the traffic justifies."
+*Answer:* multi-model endpoints or inference components — consolidate onto shared instances,
+loading each customer's model into memory only when actually called, instead of paying for 300
+continuously-running dedicated endpoints.
+
+**Scenario 3:** "A medical imaging application needs to process large image files (50+ MB) and
+can tolerate a response arriving a minute or two later via notification rather than instantly."
+*Answer:* asynchronous endpoint — the payload size alone rules out real-time and serverless
+(both have much smaller payload limits), and the tolerance for a delayed, notification-based
+response is exactly async's design center.
+
+**Scenario 4:** "A smart security camera needs to detect intrusions locally within 50
+milliseconds, and the facility has no reliable internet connectivity." *Answer:* SageMaker Neo
+compiling the model for the camera's specific hardware, deployed and managed via AWS IoT
+Greengrass — a cloud endpoint of any kind is disqualified by "no reliable internet connectivity"
+regardless of how fast that endpoint's latency would otherwise be.
+
+**Scenario 5:** "A team wants to roll out a new model version gradually, starting with 5% of
+traffic, with the ability to immediately revert to the old version if error rates increase."
+*Answer:* a canary deployment on the real-time endpoint using production variants — distinct from
+shadow testing (which never exposes real users to the new variant's actual responses) and
+distinct from a full blue/green cutover (which shifts all traffic at once rather than gradually).
+Getting canary, shadow, and blue/green straight — all three are safe-rollout patterns, but they
+differ in whether real users see the new variant's output (canary: yes, partially; shadow: no;
+blue/green: yes, fully, after validation) — is itself a recurring source of exam distractors.
+
+### Deployment's place in the lifecycle, one more time
+
+Deployment only ever receives what Training produced and the Registry approved — it's worth
+restating this dependency explicitly, because a surprising number of real-world incidents trace
+back to someone deploying directly from a Training Job's output, skipping the Registry's
+approval gate entirely, simply because it was technically possible to do so. Nothing in
+SageMaker's API *forces* you to route every deployment through an Approved Registry entry — the
+governance is a process discipline your pipeline design enforces (via a Condition Step gating
+the Register and Deploy steps, as described in `sagemaker-pipelines.md`), not a hard technical
+constraint SageMaker itself imposes. Recognizing that this is a *process* gate, not a *platform*
+gate, is itself a useful piece of exam-reasoning: a question describing a bypassed approval
+process is describing a pipeline design gap, not evidence that SageMaker's governance tooling
+failed.
+
+## Further Reading
+
+- Understand the options for deploying models in Amazon SageMaker AI:
+  https://docs.aws.amazon.com/sagemaker/latest/dg/deploy-model-get-started.html
+- Deploy models with Amazon SageMaker Serverless Inference:
+  https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
+- SageMaker inference options supported features matrix:
+  https://docs.aws.amazon.com/sagemaker/latest/dg/model-deploy-feature-matrix.html
+- SageMaker Neo: https://docs.aws.amazon.com/sagemaker/latest/dg/neo.html
+- Deploy models for real-time inference (inference components):
+  https://docs.aws.amazon.com/sagemaker/latest/dg/realtime-endpoints-deploy-models.html
+- SageMaker pricing: https://aws.amazon.com/sagemaker/pricing/
+- AWS Skill Builder — "Exam Prep: AWS Certified Machine Learning Engineer – Associate (MLA-C02)"
 
 ## Related Terms
 

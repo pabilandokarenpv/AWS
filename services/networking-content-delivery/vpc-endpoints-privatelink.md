@@ -31,6 +31,13 @@ actual **Elastic Network Interface (ENI)** with a private IP inside your subnet 
 application just resolves the service's normal DNS name (via Route 53 private DNS integration)
 and it transparently resolves to that private ENI instead of the public internet endpoint.
 
+![Traffic to an AWS service leaves your VPC through an internet gateway, but stays in the AWS network](https://docs.aws.amazon.com/images/vpc/latest/privatelink/images/access-with-igw.png)
+*Figure: AWS's reference diagram of the default path — reaching an AWS service through an
+internet gateway. Even though the traffic technically stays within the AWS network, it still
+requires a public IP path and an Internet Gateway/NAT Gateway hop. Source: AWS documentation,
+"Access AWS services through AWS PrivateLink" —
+https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html*
+
 ```mermaid
 flowchart TB
     subgraph VPC["Private Subnet (no NAT, no IGW route)"]
@@ -61,6 +68,55 @@ path (bottom) is simpler still: there's no ENI at all, just a route-table entry 
 AWS-managed **prefix list** (representing all of S3's/DynamoDB's IP ranges) to the endpoint — any
 traffic matching that prefix list is routed privately, completely free of charge.
 
+### Interface Endpoint path, traced packet by packet
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant DNS as VPC-internal DNS (private hosted zone)
+    participant ENI as Interface Endpoint ENI (10.0.1.50)
+    participant AWSNet as AWS Private Network
+    participant Service as AWS Service (e.g., Secrets Manager)
+
+    App->>DNS: resolve secretsmanager.us-east-1.amazonaws.com
+    DNS-->>App: 10.0.1.50 (the ENI's private IP, NOT the public IP)
+    App->>ENI: TCP connection to 10.0.1.50:443
+    ENI->>AWSNet: forwarded over AWS's private network
+    AWSNet->>Service: request delivered
+    Service-->>App: response, same private path back
+    Note over App,Service: Zero bytes of this traffic ever touch<br/>the public internet or a NAT Gateway
+```
+
+The DNS override is the detail that makes this invisible to application code: no SDK
+configuration, endpoint URL, or code change is required — the application calls the exact same
+hostname it always would, and the **private hosted zone** automatically associated with the
+interface endpoint intercepts that specific DNS query inside the VPC and answers with the
+private IP instead of letting it resolve publicly.
+
+### Multi-AZ interface endpoint — one ENI per enabled AZ
+
+```mermaid
+flowchart TB
+    subgraph VPC["VPC"]
+        subgraph AZa["AZ-a"]
+            ENIa["Endpoint ENI (AZ-a)<br/>10.0.1.50"]
+            AppA["App instance AZ-a"]
+        end
+        subgraph AZb["AZ-b"]
+            ENIb["Endpoint ENI (AZ-b)<br/>10.0.2.50"]
+            AppB["App instance AZ-b"]
+        end
+    end
+    AppA -->|"same-AZ, lower latency,<br/>no cross-AZ data charge"| ENIa
+    AppB -->|"same-AZ, lower latency,<br/>no cross-AZ data charge"| ENIb
+```
+
+Enabling an interface endpoint across multiple AZs creates a **separate ENI per AZ**, each
+independently billed and each giving same-AZ traffic a local path to the service — this is why
+best practice is enabling the endpoint in every AZ your workload actually runs in, rather than
+one AZ shared by everything (which would otherwise incur cross-AZ data transfer charges purely
+to reach the endpoint itself, on top of its own usage charges).
+
 ## Key Features / Components
 
 - **Gateway Endpoint** — S3 and DynamoDB only; free; implemented as a route table entry +
@@ -81,6 +137,80 @@ traffic matching that prefix list is routed privately, completely free of charge
   can only reach this one S3 bucket," even if the IAM principal's own permissions are broader).
 - **Security groups on interface endpoints** — because interface endpoints are ENIs, they can
   have security groups attached, controlling which resources inside the VPC may use them.
+- **VPC Lattice service networks** — a newer, related construct where a VPC endpoint can connect
+  to an entire application network (a "service network") rather than one specific service, for
+  more complex multi-service architectures.
+
+## PrivateLink as a Provider — exposing your own service
+
+```mermaid
+flowchart LR
+    subgraph ProviderAcct["Service Provider's AWS Account"]
+        NLB["Network Load Balancer"]
+        EndpointSvc["VPC Endpoint Service<br/>configuration"]
+        AppBackend["Backend application"]
+        NLB --> AppBackend
+        EndpointSvc --> NLB
+    end
+    subgraph ConsumerAcct["Customer's AWS Account"]
+        ConsumerVPC["Customer VPC"]
+        ConsumerEP["Interface Endpoint<br/>(consumer-side)"]
+        ConsumerApp["Customer's application"]
+        ConsumerApp --> ConsumerEP
+    end
+    ConsumerEP -.->|"private connection,<br/>permission required"| EndpointSvc
+```
+
+This is the architecture behind most "connect privately to our SaaS product" offerings on AWS
+Marketplace: the provider fronts their application with an NLB, publishes it as a VPC Endpoint
+Service, and grants specific AWS account principals permission to connect. Each permitted
+customer then creates their own interface endpoint pointing at that service — the customer's
+traffic never crosses the public internet, and the provider never needs VPC peering or direct
+network connectivity with every individual customer's VPC, which wouldn't scale to many
+customers anyway.
+
+## Common Architectures
+
+**1. Private subnet, zero NAT Gateway, Gateway + Interface Endpoints only.** A fully isolated
+subnet whose only "external" dependencies are specific AWS services — Gateway Endpoint for S3,
+Interface Endpoints for Secrets Manager/KMS/SQS as needed — with no NAT Gateway and no IGW route
+at all, the strongest security posture for a workload whose dependencies are entirely AWS-native.
+
+```mermaid
+flowchart TB
+    subgraph PrivSub["Isolated Private Subnet"]
+        App["Application"]
+    end
+    GWEndpoint["Gateway Endpoint -> S3"]
+    IntEndpointSM["Interface Endpoint -> Secrets Manager"]
+    IntEndpointKMS["Interface Endpoint -> KMS"]
+    App --> GWEndpoint
+    App --> IntEndpointSM
+    App --> IntEndpointKMS
+    App -.->|"NO route to NAT Gateway or IGW"| Internet((Internet))
+```
+
+**2. Lambda-in-VPC reaching other AWS services without a NAT Gateway.** A Lambda function placed
+in a private subnet (to reach an RDS instance) also needs to call Secrets Manager for database
+credentials — rather than adding a NAT Gateway just for that one call, an interface endpoint for
+Secrets Manager handles it directly, keeping the function's only internet dependency (if any)
+minimal or nonexistent.
+
+**3. Cost optimization: replacing NAT Gateway traffic with Gateway Endpoints.** A workload
+heavily reading/writing S3 from private subnets currently routes that traffic through a NAT
+Gateway — adding a free Gateway Endpoint for S3 removes that traffic's NAT Gateway data
+processing charge entirely, often the single highest-leverage, lowest-effort cost optimization
+available in a VPC's network design.
+
+**4. Private API Gateway access via interface endpoint.** An internal REST API configured as a
+Private API type is only reachable through its associated interface VPC endpoint — satisfying a
+"never expose this API to the public internet" requirement at the API Gateway configuration
+level, enforced by the endpoint and its resource policy together.
+
+**5. Multi-account SaaS consumption via PrivateLink.** Several business units, each in their own
+AWS account, each create their own interface endpoint to a centrally hosted internal tool exposed
+as a VPC Endpoint Service by a platform team — avoiding VPC peering sprawl for what's really just
+service-level access, not whole-network connectivity.
 
 ## Use Cases — When to Use It
 
@@ -144,6 +274,47 @@ route entirely, shrinking the blast radius if something in that subnet is compro
   fee per endpoint connection accepted from a consumer.
 Official pricing: https://aws.amazon.com/privatelink/pricing/
 
+## Limits & Quotas
+
+| Resource | Default quota |
+|---|---|
+| VPC endpoints per VPC | 255 (soft) |
+| Interface endpoints per service per VPC | 1 per AZ enabled (ENI-based) |
+| Gateway endpoints per VPC | 20 (soft) |
+| Endpoint services (provider side) per account | 100 (soft) |
+| Endpoint connections per endpoint service | 1,000 (soft) |
+| Security groups per interface endpoint ENI | 5 |
+| Endpoint policy size | 20,480 characters |
+
+## Troubleshooting / Common Issues
+
+- **"An application still can't reach S3 even after adding a Gateway Endpoint."** Check that the
+  Gateway Endpoint is associated with the **specific route table** used by the subnet the
+  application runs in — a Gateway Endpoint only affects route tables it's explicitly associated
+  with, not every route table in the VPC automatically.
+- **"An interface endpoint was created, but the application is still reaching the service's
+  public endpoint instead of the private one."** Confirm **Private DNS** is enabled on the
+  endpoint — without it, the endpoint-specific DNS name must be used explicitly in application
+  code; the public hostname will continue resolving publicly unless private DNS override is on.
+- **"A request through an interface endpoint fails with an access-denied style error, even
+  though the IAM principal's permissions look correct."** Check the **endpoint policy** attached
+  directly to the VPC endpoint — it's a separate, additional layer of access control beyond IAM
+  identity/resource policies; an endpoint policy that's more restrictive than the IAM principal's
+  own permissions will still block the call.
+- **"Interface endpoint traffic isn't reaching the service at all."** Check the security group
+  attached to the endpoint's ENI(s) — since interface endpoints are real ENIs, they're subject to
+  security group rules just like any other network interface, and a missing inbound rule for the
+  calling application's security group will block the connection.
+- **"Cross-AZ traffic charges appeared even though a VPC endpoint was added."** If the interface
+  endpoint was only enabled in one AZ, but the application runs across multiple AZs, traffic from
+  other AZs to reach that single AZ's endpoint ENI still crosses AZ boundaries and incurs the
+  standard inter-AZ charge — enabling the endpoint in every AZ the application actually uses
+  avoids this.
+- **"A PrivateLink endpoint service connection request is stuck in 'pending' state."** The
+  service provider must explicitly accept the connection request (unless auto-acceptance is
+  configured) — a pending connection simply means the provider hasn't approved it yet, not a
+  technical failure.
+
 ## Hands-on Lab (Floci)
 
 VPC Endpoint creation lives in the `ec2` CLI namespace, which Floci backs with real Docker-based
@@ -165,6 +336,18 @@ awslocal ec2 create-vpc-endpoint --vpc-id <vpc-id> \
   --private-dns-enabled
 
 awslocal ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=<vpc-id>
+
+# Attach an endpoint policy restricting access to one specific S3 bucket
+awslocal ec2 modify-vpc-endpoint --vpc-endpoint-id <vpce-id> \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": ["arn:aws:s3:::study-bucket", "arn:aws:s3:::study-bucket/*"]
+    }]
+  }'
 ```
 
 Since Floci fully supports **S3** and **SQS** as real services, this is a genuinely useful
@@ -173,6 +356,46 @@ list-queues` and confirm the calls succeed — even though Floci's single-proces
 means you won't observe an actual difference in network path the way you would against real
 AWS (where you could show the private IP is used via `dig`/VPC Flow Logs). Full lab:
 `labs-floci/networking-vpc-lab.md`.
+
+## Exam Scenario Deep Dive
+
+**Scenario 1 — "A company wants to minimize the cost of heavy S3 traffic from a private subnet
+that currently routes through a NAT Gateway, with no other changes to application code."**
+Add a Gateway VPC Endpoint for S3 associated with that subnet's route table — it's free, requires
+no application changes (S3's hostname resolution is unaffected since Gateway Endpoints work via
+routing, not DNS), and removes this traffic from the NAT Gateway's per-GB processing charge
+entirely.
+
+**Scenario 2 — "A Lambda function placed inside a VPC to reach an RDS database now fails when
+trying to retrieve a secret from Secrets Manager, despite having correct IAM permissions."**
+Placing a Lambda function in a VPC removes its default internet access — the fix is adding an
+Interface Endpoint for Secrets Manager (with private DNS enabled) in the same VPC/subnets, not
+adding a NAT Gateway purely for this one AWS-service call, and not just re-checking IAM
+permissions, which are a separate concern from network reachability.
+
+**Scenario 3 — "A SaaS company wants to offer their analytics product to hundreds of customer
+AWS accounts, with each customer's traffic staying entirely private and never traversing the
+public internet, without the operational burden of individually peering with every customer's
+VPC."**
+Expose the product as a VPC Endpoint Service (PrivateLink), fronted by an NLB — each customer
+creates their own interface endpoint and connects privately, with the provider simply approving
+connection requests rather than managing hundreds of individual peering connections.
+
+**Scenario 4 — "An interface endpoint for KMS was created in only one Availability Zone, and a
+workload running across three AZs is seeing both higher latency and unexpected cross-AZ data
+transfer charges for KMS calls."**
+Enable the interface endpoint in all three AZs the workload actually runs in — each AZ gets its
+own ENI, giving every AZ's instances a local, same-AZ path to the service and eliminating both
+the latency penalty and the cross-AZ charge that resulted from funneling every AZ's traffic to
+a single AZ's endpoint.
+
+**Scenario 5 — "A security review requires that even though an IAM role has broad S3
+permissions, a specific private subnet's traffic through its VPC endpoint must be restricted to
+only one named S3 bucket, regardless of what the IAM role could otherwise access."**
+Attach an **endpoint policy** to the VPC endpoint itself, scoped to only that one bucket's ARN —
+endpoint policies are a separate, additive restriction layer evaluated alongside IAM policies;
+even a broadly-permissioned IAM role is still constrained to whatever the endpoint policy allows
+when traffic flows through that specific endpoint.
 
 ## Exam Tips
 
@@ -190,6 +413,20 @@ AWS (where you could show the private IP is used via `dig`/VPC Flow Logs). Full 
   resolution on an interface endpoint being described.
 - VPC Endpoints are a **service-level** private connection, not a general network-to-network
   tunnel — don't confuse with VPC Peering/Transit Gateway, which connect whole networks.
+- **Endpoint policies are an additional, separate access-control layer from IAM** — a scenario
+  describing access being blocked despite correct IAM permissions, specifically when going
+  through a VPC endpoint, is pointing at the endpoint policy, not an IAM misconfiguration.
+- **One ENI per enabled AZ for interface endpoints** — a scenario about unexpected cross-AZ
+  charges or latency for endpoint traffic is testing whether you know to enable the endpoint in
+  every AZ the workload actually uses, not just one.
+
+## Further Reading
+
+- AWS Docs — What is AWS PrivateLink?: https://docs.aws.amazon.com/vpc/latest/privatelink/what-is-privatelink.html
+- AWS Docs — Access AWS services through AWS PrivateLink: https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html
+- AWS Docs — Share your services through AWS PrivateLink: https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-share-your-services.html
+- AWS Docs — Gateway endpoints for Amazon S3: https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html
+- AWS re:Post — VPC endpoint troubleshooting: https://repost.aws/knowledge-center/vpc-endpoint-troubleshoot
 
 ## Related Terms
 

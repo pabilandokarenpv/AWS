@@ -17,6 +17,14 @@ the internet is one of the most common sources of compromise). AWS built Systems
 fleets of instances could be configured, patched, inspected, and accessed — all through the AWS
 API, authenticated by IAM, logged by CloudTrail, with zero inbound ports ever opened.
 
+The underlying design principle is **inversion of connection direction**. Traditional remote
+management (SSH, RDP, WinRM) requires the administrator to reach *into* the network and the
+server to listen on an open port. Systems Manager flips this: the agent on each instance reaches
+*out* to AWS, and the administrator talks to AWS, never directly to the instance. This single
+architectural choice is why Session Manager can offer interactive shell access to a fully
+private-subnet instance with absolutely no inbound rule, no bastion host, and no VPN — the
+instance is never listening for anything.
+
 ## How It Works
 
 An **SSM Agent** runs on each managed instance (pre-installed on most Amazon Linux/Windows AMIs)
@@ -55,6 +63,103 @@ and it installs patches and reports compliance; (5) **Parameter Store**, archite
 separate from the agent-based tools, is just a secure API any AWS service or application can call
 directly to fetch a config value or secret — no agent involved at all.
 
+### Session Manager connection establishment flow
+
+```mermaid
+sequenceDiagram
+    participant User as IAM User/Role
+    participant Console as SSM Console/CLI
+    participant SSM as Systems Manager Service
+    participant Agent as SSM Agent (on instance, private subnet)
+    participant Logs as CloudWatch Logs / S3 (session recording)
+
+    User->>Console: Start Session (target: i-0abc123)
+    Console->>SSM: StartSession API call (IAM-authorized)
+    SSM->>Agent: Open secure data channel (agent already polling outbound)
+    Agent-->>SSM: Channel established, ACK
+    SSM-->>Console: WebSocket stream ready
+    Console-->>User: Interactive shell in browser/terminal
+    User->>Agent: Commands typed, relayed via SSM
+    Agent-->>Logs: Stream session transcript (if logging enabled)
+    User->>Console: exit
+    Console->>SSM: TerminateSession
+    SSM->>Agent: Close channel
+```
+
+Walking through it: (1) the user requests a session against a specific instance ID, authorized
+purely by IAM policy (no SSH key exchange of any kind); (2) Systems Manager relays the request to
+that instance's already-established outbound agent connection — at no point does AWS or the user
+initiate an inbound connection to the instance; (3) a secure, TLS 1.2-encrypted data channel
+carries the interactive session; (4) if session logging is enabled, every keystroke and output
+line streams to CloudWatch Logs and/or S3 in parallel with the live session, producing a durable
+audit transcript automatically, with no extra effort from the user; (5) ending the session cleanly
+tears down the channel — there's no lingering open port or orphaned connection to clean up
+afterward, unlike a forgotten bastion host SSH session.
+
+## Worked Example: Run Command at Fleet Scale With Output Aggregation
+
+```bash
+# Run a diagnostic script across every instance tagged Environment=prod, Role=web
+aws ssm send-command \
+  --document-name "AWS-RunShellScript" \
+  --targets "Key=tag:Environment,Values=prod" "Key=tag:Role,Values=web" \
+  --parameters 'commands=[
+    "echo === disk usage ===",
+    "df -h /",
+    "echo === top 5 memory processes ===",
+    "ps aux --sort=-%mem | head -6",
+    "echo === nginx status ===",
+    "systemctl is-active nginx || echo NGINX_DOWN"
+  ]' \
+  --comment "Fleet-wide health diagnostic" \
+  --output text --query "Command.CommandId"
+
+# Poll for completion and pull all instance outputs centrally
+COMMAND_ID="<id-from-above>"
+aws ssm list-command-invocations \
+  --command-id "$COMMAND_ID" \
+  --details \
+  --query "CommandInvocations[].{Instance:InstanceId,Status:Status,Output:CommandPlugins[0].Output}"
+```
+
+This single command replaces what would otherwise be a hand-rolled SSH fan-out script (or a
+third-party fleet-management tool) — targeting by tag rather than a static instance list means
+the same command automatically covers newly launched instances in that Auto Scaling group
+without updating a target list.
+
+## Worked Example: Parameter Store Hierarchy and Dynamic References
+
+```bash
+# Build a realistic hierarchical config tree
+aws ssm put-parameter --name "/myapp/prod/db/host" --value "prod-db.internal" --type String
+aws ssm put-parameter --name "/myapp/prod/db/port" --value "5432" --type String
+aws ssm put-parameter --name "/myapp/prod/db/password" --value "S3cr3t!" --type SecureString
+aws ssm put-parameter --name "/myapp/staging/db/host" --value "staging-db.internal" --type String
+
+# Fetch an entire environment's config tree in one call
+aws ssm get-parameters-by-path --path "/myapp/prod/" --recursive --with-decryption
+```
+
+A CloudFormation template can reference these values directly without ever hardcoding them,
+using a dynamic reference resolved at deploy time:
+
+```yaml
+Resources:
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            echo "DB_HOST=${DbHost}" >> /etc/environment
+          - DbHost: '{{resolve:ssm:/myapp/prod/db/host:1}}'
+```
+
+The `{{resolve:ssm:...}}` syntax fetches the parameter's value at stack deploy/update time — the
+actual secret value never appears in the template itself, which matters both for security review
+and for keeping the template safely committable to a Git repository.
+
 ## Key Features / Components
 
 - **Parameter Store** — hierarchical key-value storage (`/app/prod/db-password`), String/
@@ -76,6 +181,93 @@ directly to fetch a config value or secret — no agent involved at all.
   spirit to Config, but acting on the instance rather than just observing it).
 - **Maintenance Windows** — scheduled time windows during which disruptive operations (patching,
   restarts) are allowed to run.
+- **OpsCenter** — a centralized view of "OpsItems," operational issues (often created
+  automatically from a CloudWatch alarm or Config finding) with runbook-driven remediation tracked
+  to resolution — the operational-incident counterpart to Config's compliance findings.
+- **Explorer** — a cross-account, cross-region operational dashboard summarizing patch compliance,
+  inventory, and OpsItems — the Systems Manager analog to a Config aggregator.
+
+## CloudWatch Logs Insights Query for Session Manager Audit
+
+If Session Manager logging is configured to stream to CloudWatch Logs, you can audit shell
+activity directly with Logs Insights:
+
+```
+fields @timestamp, @message
+| filter @logStream like /i-0abc123456789def0/
+| filter @message like /sudo/ or @message like /rm -rf/
+| sort @timestamp desc
+```
+
+This surfaces potentially risky commands (`sudo`, destructive `rm` invocations) run during any
+Session Manager session on a specific instance — a realistic security review step after an
+incident, made possible only because Session Manager logs sessions centrally rather than leaving
+command history scattered across each instance's local shell history file, which an attacker with
+root could simply delete.
+
+## Cost Worked Example: Parameter Store Standard vs. Advanced Tier
+
+| Scenario | Tier needed | Cost impact |
+|---|---|---|
+| Fewer than 10,000 parameters, standard throughput, no expiration policies | Standard | Free |
+| More than 10,000 parameters | Advanced (required) | Small per-parameter monthly charge |
+| Need parameter expiration/notification policies | Advanced (required) | Small per-parameter monthly charge |
+| High-throughput reads (e.g., thousands of Lambda cold starts per minute each reading config) | Advanced (for higher throughput tier) | Per-API-call charges beyond the free allotment |
+
+```bash
+# Check whether a parameter is Standard or Advanced tier, and upgrade if needed
+aws ssm put-parameter \
+  --name "/myapp/prod/feature-flags" \
+  --value '{"newCheckout":true}' \
+  --type String \
+  --tier Advanced \
+  --overwrite
+```
+
+A common real-world cost mistake: creating tens of thousands of fine-grained parameters (one per
+feature flag per environment per service) without realizing the account has silently crossed into
+Advanced-tier billing territory — consolidating related config into fewer, structured JSON-valued
+parameters (one parameter holding a JSON blob of flags, rather than one parameter per flag) is a
+common mitigation.
+
+## Common Architectures
+
+**1. Zero-bastion-host network design**
+
+```mermaid
+flowchart LR
+    A[Administrator] -->|IAM-authenticated, HTTPS| B[Systems Manager Service]
+    B -->|outbound-established channel| C[Private Subnet EC2 Instance]
+    D[No bastion host] -.eliminated entirely.-> C
+    E[No inbound SSH/RDP rule] -.eliminated entirely.-> C
+```
+
+An entire fleet in private subnets, with **no bastion host anywhere in the architecture** and
+**no security group rule allowing inbound SSH/RDP from anywhere** — access is exclusively via
+Session Manager, governed by IAM policy and optionally restricted further by IAM Condition keys
+(time-of-day, source IP of the *administrator*, MFA presence) scoped to the SSM API calls
+themselves rather than network-layer rules on the instance.
+
+**2. Patch Manager fleet compliance with tiered maintenance windows**
+
+Production instances patch in a narrow, off-peak maintenance window with a conservative patch
+baseline (security patches only, delayed N days after release to catch any bad patches reported
+by the community first); dev/staging instances patch immediately against a broader baseline
+(security + all updates) — giving patches a "soak period" in lower environments before reaching
+production, a common and testable pattern.
+
+**3. Config auto-remediation powered by SSM Automation (cross-reference)**
+
+As detailed in [AWS Config](aws-config.md), Config's "automatic remediation" feature is Systems
+Manager Automation underneath — a Config rule flags a non-compliant security group, and an SSM
+Automation document (potentially the same Run Command mechanics described here) applies the fix.
+
+**4. CI/CD pipeline reading deployment config from Parameter Store, not hardcoded values**
+
+A CodeBuild/CodePipeline stage reads `{{resolve:ssm:/app/${Environment}/image-tag}}`-style
+dynamic references, meaning promoting a build from staging to production is a Parameter Store
+value change (or a pipeline stage approval), never a template edit requiring a code review cycle
+for a pure config change.
 
 ## Use Cases — When to Use It
 
@@ -122,7 +314,8 @@ deployment artifact."
 - **DVA-C03 Domain 3 (Testing and Deployment, 22%), Task 3.1 — Prepare application artifacts for
   deployment** explicitly names **Parameter Store/Secrets Manager/AppConfig** as config delivery
   mechanisms; Systems Manager resurfaces in **Domain 4 (Troubleshooting and Optimization)** for
-  Run Command-based diagnostics.
+  Run Command-based diagnostics. Expect a scenario comparing Parameter Store vs. Secrets Manager
+  where the deciding detail is whether automatic rotation is required.
 - **MLA-C02 Domain 4 (Operating, Monitoring, and Securing ML and AI Solutions, 24%)** references
   Systems Manager for operational security (patching training/inference infrastructure, storing
   pipeline configuration securely).
@@ -138,6 +331,65 @@ if you enable session logging, S3 storage for Automation output). **Parameter St
 tier (up to 10,000 parameters, standard throughput) is **free**; the **Advanced** tier (more
 parameters, higher throughput, parameter policies) charges a small per-parameter monthly fee plus
 per-API-call charges beyond the free allotment. See: https://aws.amazon.com/systems-manager/pricing/
+
+## Limits & Quotas
+
+| Limit | Default Value | Practical Impact |
+|---|---|---|
+| Standard-tier parameters per account/region | 10,000 | Large organizations with per-service, per-environment config trees hit this faster than expected — plan for Advanced tier or consolidation |
+| Parameter value size (Standard) | 4 KB | Large config blobs (e.g., a full JSON config file) often need Advanced tier (up to 8 KB) or S3 instead |
+| Parameter value size (Advanced) | 8 KB | Still too small for large files — use S3 + a parameter holding the S3 URI for anything bigger |
+| Run Command targets per command | 50 instances (synchronous) / up to 50,000 via S3 output + rate control | Large fleets need rate-controlled execution (`MaxConcurrency`/`MaxErrors`), not one giant blast |
+| Session Manager concurrent sessions per instance | 1 interactive session at a time (practically) | Coordinate team access; two engineers can't both interactively drive the same shell session simultaneously |
+| Maintenance window duration | Up to 24 hours | Long enough for virtually any patch cycle, including large Windows Server patch sets |
+
+## Troubleshooting / Common Issues
+
+- **"Instance not showing in Session Manager's target list"** — the instance needs the SSM Agent
+  running (usually pre-installed, but can be out of date), an attached IAM instance profile with
+  `AmazonSSMManagedInstanceCore` (or equivalent), and outbound HTTPS connectivity (either a public
+  IP + internet route, or VPC endpoints for `ssm`, `ssmmessages`, `ec2messages` if fully private).
+  The single most common cause is a **missing IAM instance profile**, not a network issue.
+  Missing VPC endpoints in a fully private subnet with no NAT Gateway is the second most common.
+- **Run Command reports `Delivery Timed Out`** — usually the same connectivity/IAM gap as above;
+  confirm the instance can actually reach the SSM service endpoints at all.
+- **Patch Manager shows instances as "Non-Compliant" indefinitely** — check the patch baseline's
+  approval rules (a baseline with an aggressive delay, e.g., "approve 30 days after release," will
+  correctly show instances non-compliant against patches not yet approved — this may be intended
+  behavior, not a bug) and confirm the maintenance window is actually enabled and has a target
+  registered.
+- **Parameter Store `ParameterNotFound` despite the parameter clearly existing** — check the exact
+  case-sensitive path and whether you're querying the right region; Parameter Store is region-scoped,
+  and a parameter created in `us-east-1` doesn't exist in `eu-west-1`.
+- **SecureString parameter decrypts to garbage/fails** — confirm the caller's IAM policy includes
+  both `ssm:GetParameter` with `--with-decryption` *and* `kms:Decrypt` on the specific KMS key used
+  to encrypt it; a caller can have SSM read permission but still fail decryption without the KMS
+  permission.
+- **Session Manager logging shows gaps in the transcript** — confirm both the CloudWatch Logs *and*
+  S3 logging destinations (if both configured) have correct IAM permissions for the SSM service
+  role to write to them; a misconfigured destination silently drops logging for that destination
+  without necessarily blocking the session itself.
+
+## Further Reading
+
+- AWS Systems Manager User Guide: https://docs.aws.amazon.com/systems-manager/latest/userguide/
+- AWS Systems Manager Session Manager documentation:
+  https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html
+- "Using AWS Systems Manager in Hybrid Cloud Environments" (AWS Architecture Blog):
+  https://aws.amazon.com/blogs/architecture/using-aws-systems-manager-in-hybrid-cloud-environments/
+- Systems Manager pricing: https://aws.amazon.com/systems-manager/pricing/
+- Parameter Store vs. Secrets Manager comparison:
+  https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-vs-secrets-manager.html
+
+![Initiating instance management via Session Manager from the AWS Management Console](https://d2908q01vomqb2.cloudfront.net/fc074d501302eb2b93e2554793fcaf50b3bf7291/2021/06/16/Figure1-2.png)
+*Starting an interactive Session Manager session against a managed instance — no SSH key, no
+bastion host, no open inbound port. Source: "Using AWS Systems Manager in Hybrid Cloud
+Environments," AWS Architecture Blog, aws.amazon.com/blogs/architecture (official AWS blog).*
+
+![CloudWatch log events captured for Session Manager session activity, for audit purposes](https://d2908q01vomqb2.cloudfront.net/fc074d501302eb2b93e2554793fcaf50b3bf7291/2021/06/16/Figure2-2.png)
+*Session Manager activity streamed to CloudWatch Logs, giving a durable, centralized audit
+transcript of a remote session. Source: "Using AWS Systems Manager in Hybrid Cloud Environments,"
+AWS Architecture Blog, aws.amazon.com/blogs/architecture (official AWS blog).*
 
 ## Hands-on Lab (Floci)
 
@@ -202,6 +454,84 @@ and use Run Command above as the closest hands-on proxy for "push an operation t
 - **Automation documents (runbooks)** power both standalone operational workflows *and* AWS
   Config's auto-remediation — a question connecting Config findings to automatic fixes is really
   asking about SSM Automation underneath.
+- **A missing IAM instance profile is the #1 real-world and exam-scenario cause** of "I can't
+  connect via Session Manager" — not a network/security-group issue, since Session Manager
+  requires no inbound rule at all.
+- **Dynamic references (`{{resolve:ssm:...}}`)** let CloudFormation/CDK templates pull config
+  without hardcoding or committing secrets to source control — a question about keeping secrets
+  out of a Git-committed template points here (or to the equivalent Secrets Manager resolver).
+
+## Exam Scenario Walkthroughs (SAA-C03 / DVA-C03 / MLA-C02)
+
+**Scenario 1 (SAA-C03, Domain 1 — Secure Architectures).** An architect needs to allow engineers
+to manage EC2 instances in a fully private subnet, with no bastion host and no NAT Gateway
+budgeted. Which service, and what prerequisite must exist on the instances?
+> **Answer: Session Manager, with VPC interface endpoints for `ssm`, `ssmmessages`, and
+> `ec2messages`** (since there's no NAT Gateway for outbound internet access) **plus an IAM
+> instance profile granting `AmazonSSMManagedInstanceCore`.** The "no NAT Gateway" detail is the
+> trap — without it, the agent needs VPC endpoints specifically, not just "Session Manager will
+> handle it," to reach the Systems Manager service from a fully isolated private subnet.
+
+**Scenario 2 (DVA-C03, Domain 3 — Testing and Deployment).** A CI/CD pipeline needs to read a
+database connection string at deploy time without ever committing the actual value to the Git
+repository holding the CloudFormation template. What's the mechanism?
+> **Answer: A `{{resolve:ssm:/path/to/parameter}}` dynamic reference** inside the template,
+> resolved by CloudFormation at deploy time — the template itself never contains the literal
+> value, satisfying both the "don't commit secrets" requirement and the "still usable in IaC"
+> requirement simultaneously.
+
+**Scenario 3 (DVA-C03, Domain 4 — Troubleshooting).** A newly launched EC2 instance doesn't
+appear as a target in Session Manager despite the SSM Agent clearly running (confirmed via the
+instance's own local agent logs). What's the single most likely cause?
+> **Answer: A missing or incorrectly scoped IAM instance profile** — the agent running locally
+> doesn't guarantee it has credentials to actually register with the Systems Manager service;
+> this is overwhelmingly the most common real-world and exam-tested root cause, ahead of network
+> connectivity issues.
+
+**Scenario 4 (MLA-C02, Domain 4 — Operating and Securing ML Solutions).** An ML team needs to
+patch the OS on a fleet of GPU training instances on a predictable schedule, with compliance
+reporting for an internal security audit, without manually logging into each instance.
+> **Answer: Patch Manager**, with a patch baseline and a maintenance window scoped to the
+> training fleet — the "predictable schedule + compliance reporting + fleet scale" combination
+> specifically identifies Patch Manager over a manual or ad hoc Run Command approach.
+
+**Scenario 5 (Cross-cert — Parameter Store vs. Secrets Manager).** A question describes a
+requirement for a database password that must automatically rotate every 30 days with zero manual
+intervention, used by a Lambda function via an SDK call. Does Parameter Store satisfy this?
+> **Answer: No — this is Secrets Manager's distinguishing feature.** Parameter Store SecureString
+> can *store* a secret securely, but automatic, scheduled rotation with a rotation Lambda
+> integration is a Secrets Manager-specific capability; a question explicitly mentioning
+> automatic rotation should always point away from Parameter Store alone.
+
+## Quick Reference: Choosing the Right Systems Manager Capability
+
+A condensed lookup table matching a described need to the specific SSM capability, since exam
+questions and real-world architecture decisions both hinge on picking the right sub-tool:
+
+| Need | Capability |
+|---|---|
+| Interactive shell access to one instance, no SSH key, no open port | Session Manager |
+| Run the same command/script across many tagged instances at once | Run Command |
+| Keep OS patches current on a fleet, on a schedule, with compliance reporting | Patch Manager |
+| Store and version application config/secrets, read via API | Parameter Store |
+| Execute a multi-step operational procedure (stop, snapshot, restart) | Automation (runbooks) |
+| Collect installed software/configuration metadata across a fleet | Inventory |
+| Ensure instances maintain a defined configuration over time | State Manager |
+| Track and resolve operational issues centrally, often from alarms/findings | OpsCenter |
+| One cross-account/cross-region operational health dashboard | Explorer |
+
+## Note on the Shared Agent Architecture
+
+Every capability described in this document — Run Command, Session Manager, Patch Manager,
+Automation targeting an instance, Inventory collection — depends on the exact same underlying
+mechanism: the SSM Agent's outbound connection to the Systems Manager service. This is why a
+single root cause (a missing IAM instance profile, a blocked outbound connection, an out-of-date
+agent) tends to simultaneously break *several* SSM capabilities at once on the same instance, and
+why troubleshooting "Session Manager doesn't work" and "Run Command times out on this instance"
+converges on the identical checklist: agent running, correct IAM instance profile attached,
+outbound connectivity (public IP + route, or the three required VPC endpoints) actually present.
+Recognizing this shared dependency is what lets you diagnose a new SSM-related failure quickly
+even if you haven't seen that exact symptom described before.
 
 ## Related Terms
 
@@ -209,4 +539,5 @@ and use Run Command above as the closest hands-on proxy for "push an operation t
 - [AWS CloudFormation](cloudformation.md) — templates commonly reference Parameter Store values
   via `{{resolve:ssm:...}}` dynamic references
 - [AWS CDK](cdk.md) — CDK constructs frequently read/write Parameter Store for cross-stack config
-- Glossary: Bastion Host, SSH, Patch Baseline, Maintenance Window, Secrets Manager
+- Glossary: Bastion Host, SSH, Patch Baseline, Maintenance Window, Secrets Manager, OpsItem,
+  Managed Instance, SSM Agent

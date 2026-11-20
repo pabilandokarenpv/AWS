@@ -26,7 +26,7 @@ Implemented by **SQS**. The consumer pulls (polls) work at its own pace.
 
 **Publish/subscribe (fan-out)**: one producer, one message, *every* subscriber gets an
 independent copy. Implemented by **SNS** (push-based broadcast) and, for durable multi-consumer
-fan-out, the combination **SNS → multiple SQS queues**.
+fan-out, the combination **SNS → multiple SQS queues** (the "topic-queue chaining" pattern).
 
 **Event-driven routing**: many different event *sources* (not just your own app — AWS services,
 SaaS partners, schedules), routed to different targets based on the event's *content*.
@@ -90,6 +90,224 @@ what order and with what logic,"** **SNS decides "who else needs to know, right 
 **SQS decides "how do we hold this safely until someone's ready to do the work."** None of them
 replace each other — each covers a distinct piece of the event-driven puzzle.
 
+### Official AWS reference: event-driven decoupling
+
+![Diagram showing synchronous, direct service-to-service calls being replaced by event-based routing through an intermediary, decoupling producers from consumers.](https://docs.aws.amazon.com/lambda/latest/dg/images/event-driven-architectures-figure-14.png)
+*Source: AWS Documentation — [Creating event-driven architectures with Lambda](https://docs.aws.amazon.com/lambda/latest/dg/concepts-event-driven-architectures.html), AWS Lambda Developer Guide. © Amazon Web Services.*
+
+![Diagram showing services processing data at different rates, using an event queue as a buffer between a fast producer and a slower consumer.](https://docs.aws.amazon.com/lambda/latest/dg/images/event-driven-architectures-figure-9.png)
+*Source: AWS Documentation — [Creating event-driven architectures with Lambda — Reducing complexity](https://docs.aws.amazon.com/lambda/latest/dg/concepts-event-driven-architectures.html), AWS Lambda Developer Guide. © Amazon Web Services.*
+
+## Worked End-to-End Flow — Actual JSON Payloads Across All Four Services
+
+Tracing one order through the combined system makes the hand-offs between services concrete.
+
+**1. A client places an order; the application publishes a custom event onto an EventBridge bus:**
+
+```json
+{
+  "Entries": [
+    {
+      "Source": "custom.orders",
+      "DetailType": "OrderPlaced",
+      "EventBusName": "orders-bus",
+      "Detail": "{\"orderId\":\"ORD-10042\",\"total\":750,\"region\":\"EU\"}"
+    }
+  ]
+}
+```
+
+**2. An EventBridge rule matches it and starts a Step Functions execution**, passing the event's
+`detail` as the execution input:
+
+```json
+{
+  "stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:order-processing",
+  "input": "{\"orderId\":\"ORD-10042\",\"total\":750,\"region\":\"EU\"}"
+}
+```
+
+**3. Inside the workflow, a Task state publishes a status update to SNS** once validation
+succeeds:
+
+```json
+{
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:order-status",
+  "Message": "{\"orderId\":\"ORD-10042\",\"status\":\"validated\"}",
+  "MessageAttributes": {
+    "eventType": { "DataType": "String", "StringValue": "order_validated" }
+  }
+}
+```
+
+**4. SNS fans that out to a billing SQS queue** (topic-queue chaining, raw delivery enabled —
+no SNS envelope):
+
+```json
+{"orderId":"ORD-10042","status":"validated"}
+```
+
+**5. The workflow then hands off the durable fulfillment work to its own SQS queue** directly
+from a Task state (a native integration, no Lambda needed):
+
+```json
+{
+  "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/fulfillment-queue",
+  "MessageBody": "{\"orderId\":\"ORD-10042\",\"total\":750,\"region\":\"EU\"}",
+  "MessageAttributes": {
+    "priority": { "DataType": "Number", "StringValue": "1" }
+  }
+}
+```
+
+**6. A fulfillment worker eventually polls, processes, and deletes that message** — standard
+SQS consumer mechanics (see `sqs.md`'s worked flow for the full receive/delete cycle) — and,
+once fulfillment completes, the worker publishes a final `OrderFulfilled` event back onto the
+EventBridge bus, closing the loop without any component polling another directly:
+
+```json
+{
+  "Entries": [
+    {
+      "Source": "custom.fulfillment",
+      "DetailType": "OrderFulfilled",
+      "EventBusName": "orders-bus",
+      "Detail": "{\"orderId\":\"ORD-10042\",\"shippedAt\":\"2026-11-20T18:30:00Z\"}"
+    }
+  ]
+}
+```
+
+This six-step trace is the entire point of this document: four services, each doing exactly
+one job, composed through plain JSON hand-offs — no component ever needs to know how the next
+one is implemented, only what shape of message to send it.
+
+## Retry, DLQ & Failure Semantics — Compared Across All Four
+
+A failure anywhere in this chain behaves differently depending on which service is involved —
+knowing which failure-handling model applies at each hop is one of the most exam-relevant
+details in the whole integration picture.
+
+| Service | What "failure" means | Default behavior if unhandled | How to make it durable |
+|---|---|---|---|
+| **SQS** | Consumer never calls `DeleteMessage` (crash, timeout, exception) | Message becomes visible again after visibility timeout, retried indefinitely | Attach a redrive policy + DLQ (`maxReceiveCount`) |
+| **SNS** | SNS can't deliver to a subscriber's endpoint after retries | Message is dropped for that subscription only (other subscribers unaffected) | Attach a `RedrivePolicy` (DLQ) per subscription |
+| **EventBridge** | A rule's target invocation fails after retries | Event is **silently dropped** — no DLQ, no automatic record, unless one is configured | Attach a `DeadLetterConfig` per target in `PutTargets` |
+| **Step Functions** | A Task state's underlying call throws an error | Execution fails and halts at that state (or further up, if uncaught) unless `Retry`/`Catch` is configured | Define `Retry` (retry same state) and `Catch` (fallback state) per Task/Parallel/Map state in the ASL definition |
+
+The single most important row to memorize for both exams: **EventBridge is the only one of the
+four that drops a failed delivery with literally nothing left behind unless you explicitly wire
+a DLQ** — SQS and SNS both have a DLQ-by-default *mental model* even though SNS's lives on the
+subscription rather than the topic, and Step Functions keeps a full execution history either way.
+
+### Failure handling flow, compared, visually
+
+```mermaid
+flowchart TD
+    subgraph SQS Flow
+        SQSMSG[Message not deleted] --> SQSVIS[Visibility timeout expires]
+        SQSVIS --> SQSCHECK{maxReceiveCount exceeded?}
+        SQSCHECK -->|No| SQSMSG
+        SQSCHECK -->|Yes, DLQ configured| SQSDLQ[(SQS DLQ)]
+    end
+    subgraph SNS Flow
+        SNSPUSH[Push to subscriber fails] --> SNSRETRY[SNS retries per protocol policy]
+        SNSRETRY -->|exhausted, DLQ configured| SNSDLQ[(Subscription DLQ)]
+        SNSRETRY -->|exhausted, no DLQ| SNSDROP[Dropped for this subscriber only]
+    end
+    subgraph EventBridge Flow
+        EBMATCH[Rule matches, target invoked] --> EBFAIL{Invocation fails}
+        EBFAIL -->|retries exhausted, DLQ configured| EBDLQ[(Target DLQ)]
+        EBFAIL -->|retries exhausted, NO DLQ| EBDROP[Event silently dropped]
+    end
+    subgraph Step Functions Flow
+        SFTASK[Task throws error] --> SFRETRY{Retry configured and attempts remain?}
+        SFRETRY -->|Yes| SFTASK
+        SFRETRY -->|No| SFCATCH{Catch configured?}
+        SFCATCH -->|Yes| SFFALLBACK[Transition to fallback state]
+        SFCATCH -->|No| SFFAIL[Execution fails, full history retained]
+    end
+```
+
+## Pattern Deep Dive — Choosing the Right Combination
+
+### Point-to-point only (plain SQS)
+
+```mermaid
+flowchart LR
+    P[One Producer] -->|SendMessage| Q[(SQS Queue)]
+    Q -->|poll| C[One Consumer Fleet]
+```
+Use when there's exactly one logical type of background job and no routing/broadcast
+requirement — the simplest, cheapest, and most restrained answer when a scenario doesn't
+actually need fan-out or content-based routing.
+
+### Fan-out only (SNS, no durability requirement)
+
+```mermaid
+flowchart LR
+    P[Publisher] -->|Publish| T{{SNS Topic}}
+    T --> E1[Email]
+    T --> E2[SMS]
+    T --> E3[Webhook]
+```
+Use for "notify several things right now" with no need to durably hold the message if a
+subscriber is briefly unavailable beyond SNS's own retry policy.
+
+### Durable fan-out (topic-queue chaining: SNS → multiple SQS)
+
+```mermaid
+flowchart LR
+    P[Publisher] -->|Publish| T{{SNS Topic}}
+    T --> Q1[(SQS - Service A)]
+    T --> Q2[(SQS - Service B)]
+    T --> Q3[(SQS - Service C)]
+    Q1 --> W1[Worker A]
+    Q2 --> W2[Worker B]
+    Q3 --> W3[Worker C]
+```
+Use when multiple independent consumers each need the event *and* each needs it held durably
+with its own retry/DLQ — the combination, not either service alone.
+
+### Content-based routing (EventBridge)
+
+```mermaid
+flowchart TD
+    SRC[Many Sources: AWS services, apps, SaaS, schedules] --> BUS{{EventBridge Bus}}
+    BUS -->|rule A| T1[Target 1]
+    BUS -->|rule B| T2[Target 2]
+    BUS -->|rule C, matches everything| T3[Target 3 - e.g. audit log]
+```
+Use when routing depends on the event's *content* (value, type, source) rather than a flat
+broadcast — and especially when sources include AWS service activity, SaaS partners, or
+schedules, not just your own application's publishes.
+
+### Orchestration (Step Functions, triggered by EventBridge)
+
+```mermaid
+flowchart LR
+    EB{{EventBridge Rule}} -->|StartExecution| SF[[Step Functions State Machine]]
+    SF -->|Task| SVC1[Service Call 1]
+    SF -->|Task, w/ Retry/Catch| SVC2[Service Call 2]
+    SF -->|on failure| COMP[Compensating Action]
+```
+Use when the requirement is a specific, ordered, branching, retryable sequence of steps for one
+business process — not a broadcast and not a generic queue, but a *process* with a visible
+execution history.
+
+### The combined pattern (all four together)
+
+```mermaid
+flowchart TD
+    EVENT[Any Event] --> EB{{EventBridge: routes by content}}
+    EB --> SF[[Step Functions: orchestrates the process]]
+    SF --> SNS{{SNS: broadcasts status to interested parties}}
+    SF --> SQS[(SQS: durable handoff to worker fleet)]
+    SNS --> SQS2[(SQS: per-subscriber durability)]
+```
+Most production systems combine at least two of these four — the exam rewards recognizing
+*which combination* fits a described scenario, not picking just one service in isolation.
+
 ## Key Features / Components (cross-service cheat sheet)
 
 | Need | Service | Why |
@@ -99,6 +317,9 @@ replace each other — each covers a distinct piece of the event-driven puzzle.
 | Route events by content, from many different sources (AWS + custom + SaaS + schedule) | **EventBridge** | Declarative rules engine, 200+ native sources |
 | Coordinate a specific multi-step process with branching/retries/history | **Step Functions** | Visual state machine, native service integrations |
 | Durable fan-out (many consumers, each needing the message held reliably) | **SNS → multiple SQS** | Combines push broadcast with pull durability |
+| Guarantee strict message order for a specific key (e.g., per customer/order) | **SQS FIFO** (or FIFO SNS topic → FIFO SQS) | Message-group-based ordering, exactly-once within a group |
+| Human-in-the-loop approval mid-process | **Step Functions task token** | Pauses execution until an external callback resumes it |
+| Replay historical events to a newly built consumer | **EventBridge archive & replay** | Captures events from when archiving was enabled, replayable on demand |
 
 ## Use Cases — When to Use Which (or Combine Them)
 
@@ -110,6 +331,8 @@ replace each other — each covers a distinct piece of the event-driven puzzle.
   specific execution currently is"** → Step Functions, usually triggered by an EventBridge rule.
 - **"One producer, one type of background job, workers just need to pull it and do it"** →
   plain SQS, no fan-out or routing needed.
+- **"A mobile client needs a single API call that returns live-updating data from multiple
+  backends"** → that's outside this queue/topic/bus family entirely — see `appsync.md`.
 - **Most production systems use at least two of these together** — the exam rewards
   recognizing *which combination* fits a scenario, not picking just one service in isolation.
 
@@ -128,6 +351,58 @@ replace each other — each covers a distinct piece of the event-driven puzzle.
   surface area for no real resilience gain — match the pattern's complexity to the actual
   coupling/scale problem you have.
 
+## Common Architectures
+
+### 1. The full order lifecycle (the running example in this doc)
+
+```mermaid
+flowchart TD
+    APP[Client App] -->|PutEvents: OrderPlaced| EB{{EventBridge}}
+    EB -->|rule| SF[[Step Functions: Order Saga]]
+    EB -->|rule: audit everything| AUDIT[(SQS - Audit Queue)]
+    SF -->|Task| SNS{{SNS: order-status}}
+    SF -->|Task| FQ[(SQS - Fulfillment Queue)]
+    SNS --> BILL[(SQS - Billing)]
+    SNS --> EMAIL[Email Receipt]
+    FQ --> WORKER[Fulfillment Worker Fleet]
+    WORKER -->|PutEvents: OrderFulfilled| EB
+```
+
+### 2. Multi-tenant SaaS event platform
+
+```mermaid
+flowchart LR
+    T1[Tenant A Events] --> EB{{Shared EventBridge Bus}}
+    T2[Tenant B Events] --> EB
+    EB -->|rule: tenant=A, type=billing| SF1[[Step Functions: Tenant A Billing]]
+    EB -->|rule: tenant=B, type=billing| SF2[[Step Functions: Tenant B Billing]]
+    EB -->|rule: ALL tenants, type=audit| AUDITQ[(SQS - Shared Audit Log)]
+```
+
+### 3. Security event aggregation + automated response
+
+```mermaid
+flowchart TD
+    GD[GuardDuty Findings] --> EB{{Security EventBridge Bus}}
+    CT[CloudTrail Anomalies] --> EB
+    EB -->|rule: severity=HIGH| SF[[Step Functions: Auto-Remediation Workflow]]
+    EB -->|rule: ALL findings| SNS{{SNS: Security Alerts}}
+    SNS --> ONCALL[Email/SMS On-call]
+    SNS --> SIEM[(SQS - SIEM Ingestion)]
+    SF -->|Task: isolate instance, notify| SNS
+```
+
+### 4. IoT telemetry pipeline with priority routing
+
+```mermaid
+flowchart LR
+    IOT[IoT Devices - millions/day] --> EB{{EventBridge}}
+    EB -->|rule: critical alert| SF[[Step Functions: Incident Workflow]]
+    EB -->|rule: all telemetry| SQS[(SQS - Telemetry Buffer)]
+    SQS --> WORKER[Stream Processing Workers]
+    SF -->|Task| SNS{{SNS: Page On-call Engineer}}
+```
+
 ## Why It's Important
 
 **Real-world**: event-driven architecture — decoupling producers from consumers via queues,
@@ -141,11 +416,15 @@ separates "I know what SQS is" from "I can design a resilient system."
 - **SAA-C03 Domain 2 (Design Resilient Architectures), Task 2.1 — "Design scalable and loosely
   coupled architectures"** is, almost word for word, this entire document: recognizing which
   combination of SQS/SNS/EventBridge/Step Functions removes tight coupling and single points of
-  failure from a described system.
+  failure from a described system. Practice extended scenario reading: a paragraph describing a
+  retail order pipeline, a security event aggregation system, or a multi-tenant SaaS platform
+  should resolve into "this part is fan-out, this part is routing, this part is orchestration,
+  this part is a durable queue" before you even look at the answer choices.
 - **DVA-C03 Domain 1 (Development with AWS Services), Task 1.1 — "Develop code for Lambda... and
   event-driven applications"** tests the developer's side of the same picture: wiring Lambda
-  event source mappings to SQS/SNS/EventBridge, and structuring multi-step logic as Step
-  Functions instead of monolithic functions.
+  event source mappings to SQS/SNS/EventBridge, handling partial batch failures, writing ASL
+  `Retry`/`Catch` blocks, and structuring multi-step logic as Step Functions instead of
+  monolithic functions.
 - Scenario questions on both exams frequently describe a system in prose and expect you to
   identify the *correct combination*, not just one service — this overview is the fastest way
   to build that pattern-matching instinct before the exam.
@@ -159,6 +438,48 @@ workflow type). The practical cost lesson: **every hop in a chain is a separate 
 an event that goes EventBridge → Step Functions → SNS → SQS incurs charges at every arrow, which
 is a real argument for not adding hops you don't need. See each service's own pricing page
 (linked in its doc) for exact current numbers.
+
+## Limits & Quotas (cross-service summary)
+
+| Service | Key limit to remember | Why it matters when combining services |
+|---|---|---|
+| SQS | 256 KB max message size; 14-day max retention | Pass references (S3 keys), not large blobs, through any chained message |
+| SNS | 256 KB max message size; DLQ is per-subscription | A fan-out with 5 subscribers needs up to 5 separate DLQs if full coverage is wanted |
+| EventBridge | 256 KB max event size; 5 targets per rule | A rule needing more than 5 reactions needs an intermediate fan-out (e.g., into SNS) |
+| Step Functions | 256 KB max state input/output; 25,000 history events (Standard) | Very large payloads or extremely long-running loops need references and/or Distributed Map, not inline data |
+
+Because every hop shares roughly the same 256 KB payload ceiling, the **claim-check pattern**
+(store the large object in S3, pass only a pointer through SQS/SNS/EventBridge/Step Functions)
+is a recurring, reusable answer across all four services whenever a scenario mentions large
+payloads anywhere in an event-driven chain.
+
+## Troubleshooting / Common Issues
+
+- **"An event seems to vanish somewhere in a multi-service chain, with no error anywhere."**
+  Walk the chain hop by hop and check each service's *specific* failure model from the table
+  above — the prime suspect is almost always an EventBridge target with no `DeadLetterConfig`,
+  since that's the only hop in this family that drops silently by default.
+- **"Downstream services are processing the same business event more than once."** At-least-once
+  delivery applies at multiple hops (SQS Standard, EventBridge, SNS retries) — idempotency has
+  to be designed into consumers throughout the chain, not assumed away at any single hop.
+- **"A Step Functions execution triggered by EventBridge never starts."** Confirm the EventBridge
+  rule's target IAM role actually has `states:StartExecution` permission on the specific state
+  machine ARN — a silently-failing target invocation (with no DLQ) looks identical to "nothing
+  happened" from the outside.
+- **"A message that passed through SNS into SQS has an unexpected extra JSON wrapper."** Check
+  whether raw message delivery is enabled on the SNS→SQS subscription — without it, consumers
+  must unwrap the SNS envelope before reaching the original payload (see `sns.md`'s worked
+  example).
+- **"Ordering guarantees are breaking down somewhere in a fan-out chain."** FIFO ordering only
+  survives end-to-end if *every* hop in the chain is FIFO-aware — a FIFO SQS queue feeding a
+  Standard SNS topic (or vice versa) breaks the guarantee; EventBridge does not guarantee
+  ordering at all, so any chain that routes through it cannot claim strict ordering downstream
+  without re-establishing it (e.g., re-deriving a FIFO `MessageGroupId` at the SQS target).
+- **"Costs are higher than expected for a seemingly simple workflow."** Count the hops: a chain
+  that unnecessarily routes through EventBridge *and* Step Functions *and* SNS *and* SQS for a
+  single producer/single consumer scenario pays for four separate billing models when one SQS
+  queue would have sufficed — this is the "over-engineering" trap called out above, and it shows
+  up as a real AWS bill, not just an exam distractor.
 
 ## Hands-on Lab (Floci)
 
@@ -190,10 +511,46 @@ awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/audi
 awslocal sns publish --topic-arn arn:aws:sns:us-east-1:000000000000:order-status \
   --message '{"orderId": "5001", "status": "shipped"}'
 awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/billing-queue
+
+# 5. Tie in Step Functions: a minimal state machine EventBridge can start
+cat <<'EOF' > /tmp/order-saga.json
+{
+  "Comment": "Order saga triggered by EventBridge",
+  "StartAt": "PublishStatus",
+  "States": {
+    "PublishStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:000000000000:order-status",
+        "Message.$": "$.orderId"
+      },
+      "Next": "HandOffToFulfillment"
+    },
+    "HandOffToFulfillment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "http://localhost:4566/000000000000/billing-queue",
+        "MessageBody.$": "$"
+      },
+      "End": true
+    }
+  }
+}
+EOF
+awslocal stepfunctions create-state-machine \
+  --name order-saga \
+  --definition file:///tmp/order-saga.json \
+  --role-arn arn:aws:iam::000000000000:role/floci-stepfunctions-role \
+  --type STANDARD
+
+# 6. Wire EventBridge to start that state machine for every OrderPlaced event
+awslocal events put-targets --rule audit-all-orders --event-bus-name orders-bus \
+  --targets "Id"="2","Arn"="arn:aws:states:us-east-1:000000000000:stateMachine:order-saga","RoleArn"="arn:aws:iam::000000000000:role/floci-events-role"
 ```
-See each individual service doc's lab section for the Step Functions piece (orchestrating the
-steps between these messaging calls) and the full combined walkthrough in
-`labs-floci/README.md` lab index → application-integration section.
+See each individual service doc's lab section for deeper per-service walkthroughs, and the full
+combined walkthrough in `labs-floci/README.md` lab index → application-integration section.
 
 ## Exam Tips
 
@@ -211,9 +568,28 @@ steps between these messaging calls) and the full combined walkthrough in
   Functions calls OUT to SQS/SNS/other services as part of its orchestration; SNS pushes OUT to
   subscribers (including SQS); SQS is a terminal, pull-based holding point. Getting an arrow
   backwards is a common wrong-answer trap in diagram-based questions.
+- **Memorize the one failure-handling exception**: of the four, only EventBridge silently drops
+  a failed delivery with no DLQ by default — a scenario describing "events occasionally go
+  missing with no trace" in an EventBridge-involved pipeline is pointing at a missing
+  `DeadLetterConfig` on a target, not a bug in SQS or SNS.
+- **End-to-end ordering is only as strong as its weakest hop** — a chain is only strictly
+  ordered if every hop (FIFO SQS, FIFO SNS topic, a deliberately-ordered Step Functions
+  sequence) preserves it; EventBridge in the middle of a chain breaks any ordering guarantee
+  unless re-established downstream.
+- **The claim-check pattern** (payload in S3, pointer through the messaging chain) is a reusable
+  answer across all four services whenever large payloads are mentioned in a multi-hop scenario.
 - Exam domains: **SAA-C03 Domain 2 Task 2.1** (architecture design), **DVA-C03 Domain 1 Task 1.1**
   (implementation) — this overview maps to both simultaneously, which is exactly why it exists
   as a separate doc from the four individual service pages.
+
+## Further Reading
+
+- [Event-driven architectures — AWS Well-Architected Serverless Applications Lens](https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/event-driven-architectures.html)
+- [Creating event-driven architectures with Lambda](https://docs.aws.amazon.com/lambda/latest/dg/concepts-event-driven-architectures.html)
+- [Application integration patterns for microservices: Fan-out strategies (AWS Compute Blog)](https://aws.amazon.com/blogs/compute/application-integration-patterns-for-microservices-fan-out-strategies/)
+- [Implement event-driven invoice processing for resilient financial monitoring at scale (AWS Architecture Blog)](https://aws.amazon.com/blogs/architecture/implement-event-driven-invoice-processing-for-resilient-financial-monitoring-at-scale/)
+- Individual service docs in this folder for authoritative per-service quotas, pricing, and
+  troubleshooting detail: `sqs.md`, `sns.md`, `eventbridge.md`, `step-functions.md`.
 
 ## Related Terms
 

@@ -18,6 +18,13 @@ expensive?" is unanswerable without manual, error-prone tracking. AWS built this
 visibility, forecasting, alerting, and attribution are native capabilities, not something every
 company has to build themselves from raw billing exports.
 
+The deeper reason this matters at scale: cloud cost is fundamentally different from traditional
+IT spend because it's **variable and attributable at a granularity traditional finance tooling
+was never built for** — a single shared account can have a thousand teams each spinning resources
+up and down continuously. Without tag-based attribution and proactive budget alerting, "who
+caused this cost and is it under control" becomes a forensic exercise instead of a routine
+report, which is precisely the gap this toolset closes.
+
 ## How It Works
 
 Every resource's usage generates a line item in AWS's underlying billing data. **Cost
@@ -53,6 +60,102 @@ reactive; (5) the **CUR** delivers the same underlying data at full granularity 
 for teams that want to build custom dashboards or feed a dedicated cost-analysis tool rather than
 relying on the console's built-in views.
 
+### Budget alert and action flow, in detail
+
+```mermaid
+sequenceDiagram
+    participant Billing as AWS Billing Engine
+    participant Budget as AWS Budgets
+    participant SNS as Amazon SNS
+    participant IAM as IAM Policy (optional action)
+    participant Eng as Engineering Team
+
+    Billing->>Budget: Daily actual spend update
+    Budget->>Budget: Compare actual + forecast vs. threshold (e.g. 80% of $10,000/mo)
+    Budget->>Budget: Threshold crossed
+    Budget->>SNS: Publish alert notification
+    SNS->>Eng: Email/Slack/Chatbot notification
+    opt Budget Action configured
+        Budget->>IAM: Apply restrictive IAM policy to a target role
+        Budget->>Eng: "Automated action taken: role restricted"
+    end
+    Eng->>Eng: Investigate and remediate before month-end invoice
+```
+
+Walking through it: (1) AWS's billing engine updates actual and forecasted spend roughly daily;
+(2) Budgets compares this against the threshold(s) you defined — note you can alert on **actual**
+spend, **forecasted** spend, or both, and forecasted alerts give earlier warning since they
+predict you'll breach before you actually have; (3) crossing a threshold fires a notification
+immediately, not at month-end; (4) optionally, a **Budget Action** goes beyond notification into
+automated enforcement — attaching a restrictive IAM policy to a role, or even stopping/stopping
+further provisioning for certain resource types, when a budget is exceeded, turning a *warning*
+into an actual *guardrail*.
+
+## Worked Example: A Full Cost Explorer Investigation (Monthly Spend Spike)
+
+A realistic finance-review scenario: this month's bill is 35% higher than last month. Walk the
+investigation step by step using the CLI equivalents of what you'd click through in the console:
+
+```bash
+# 1. Confirm the overall trend — total cost by month for the last 4 months
+aws ce get-cost-and-usage \
+  --time-period Start=2026-08-01,End=2026-12-01 \
+  --granularity MONTHLY \
+  --metrics "UnblendedCost"
+
+# 2. Break the spike month down by service to find the driver
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-12-01 \
+  --granularity MONTHLY \
+  --group-by Type=DIMENSION,Key=SERVICE \
+  --metrics "UnblendedCost"
+# Suppose this shows Amazon EC2 jumped from $4,200 to $7,100 — now drill further.
+
+# 3. Break EC2 cost down by usage type to find exactly what changed
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-12-01 \
+  --granularity MONTHLY \
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Elastic Compute Cloud - Compute"]}}' \
+  --group-by Type=DIMENSION,Key=USAGE_TYPE \
+  --metrics "UnblendedCost"
+# Suppose this shows "BoxUsage:m5.2xlarge" went from near-zero to $2,400 — a new instance type
+# appeared that wasn't running last month.
+
+# 4. Attribute that specific usage type by cost allocation tag to find the responsible team
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-12-01 \
+  --granularity MONTHLY \
+  --filter '{
+    "And": [
+      {"Dimensions": {"Key": "SERVICE", "Values": ["Amazon Elastic Compute Cloud - Compute"]}},
+      {"Dimensions": {"Key": "USAGE_TYPE", "Values": ["BoxUsage:m5.2xlarge"]}}
+    ]
+  }' \
+  --group-by Type=TAG,Key=Team \
+  --metrics "UnblendedCost"
+# Result: Team=ML accounts for nearly all of it — a training job left running on a large
+# instance type over a long weekend, as it turns out.
+```
+
+This exact drill-down pattern — **total → by service → by usage type → by tag** — is the standard
+shape of a real cost investigation, and it's only possible because cost allocation tags were
+activated *before* the spike occurred; tags applied after the fact don't retroactively populate
+historical billing data.
+
+### Forecasting a future spend trajectory
+
+```bash
+aws ce get-cost-forecast \
+  --time-period Start=2026-12-01,End=2027-02-01 \
+  --metric UNBLENDED_COST \
+  --granularity MONTHLY
+```
+
+Cost Explorer's forecast uses recent historical trend (typically the preceding several months) to
+project forward — useful for an early warning that a currently-fine budget trajectory is about to
+breach before it actually does, which is exactly the signal a forecasted-spend Budget alert acts
+on automatically rather than requiring someone to run this command manually every week.
+
 ## Key Features / Components
 
 - **Cost Explorer** — interactive visualization with grouping/filtering by service, account, tag,
@@ -70,6 +173,70 @@ relying on the console's built-in views.
   threshold budget wouldn't catch (a sudden unexpected spike within an otherwise normal budget).
 - **Savings Plans / Reserved Instance recommendations** — Cost Explorer surfaces commitment-based
   discount opportunities based on your actual historical usage pattern.
+- **Budget Actions** — the enforcement layer beyond notification: automatically attach a
+  restrictive IAM/SCP policy, or target an EC2/RDS resource for a stop action, when a budget is
+  breached, without requiring a human to act first.
+
+## Logs Insights-Style Query: Cross-Referencing Cost Anomalies With CloudTrail
+
+Cost Anomaly Detection flags *that* spend was unusual; it doesn't tell you *who* launched the
+resource causing it. Pairing it with CloudTrail closes that gap:
+
+```bash
+# 1. Get the anomaly detail (resource/service/time window) from Cost Anomaly Detection
+aws ce get-anomalies \
+  --date-interval Start=2026-11-15,End=2026-11-22 \
+  --monitor-arn arn:aws:ce::123456789012:anomalymonitor/abc-123
+
+# 2. Using the time window and service from the anomaly, search CloudTrail for who launched
+#    the matching resource
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=RunInstances \
+  --start-time "2026-11-15T00:00:00Z" \
+  --end-time "2026-11-16T00:00:00Z"
+```
+
+This combination — **Cost Anomaly Detection for "what and how much," CloudTrail for "who and
+when"** — mirrors the exact same "detective tool + audit tool" pairing used throughout this
+category (Config + CloudTrail, CloudWatch + CloudTrail), and is worth recognizing as a repeating
+pattern across Domain 4 material.
+
+## Common Architectures
+
+**1. Tag-enforced chargeback across a multi-team shared account**
+
+```mermaid
+flowchart TD
+    A[Resources tagged Team, Project, Environment at creation<br/>enforced via SCP or Config rule] --> B[Cost allocation tags activated]
+    B --> C[Cost Explorer grouped by Team]
+    C --> D[Monthly chargeback report per team]
+    B --> E[CUR exported to Athena]
+    E --> F[Custom per-team dashboard in QuickSight]
+```
+
+Tag enforcement is usually paired with a preventive control (an SCP or Config rule requiring the
+tag at resource creation) — without enforcement, chargeback reporting silently degrades as
+untagged resources accumulate in an "unattributed" bucket that nobody is accountable for.
+
+**2. Tiered Budgets: team-level warning, org-level hard stop**
+
+A per-team Budget alerts at 80%/100% of a small monthly allocation (early warning, no automated
+action); a top-level organization Budget has a Budget Action attached that restricts further
+provisioning if total org spend crosses a hard ceiling — giving teams room to self-correct before
+an account-wide enforcement action ever triggers.
+
+**3. CUR → Athena → QuickSight self-service cost dashboard**
+
+For organizations needing dashboards the built-in Cost Explorer UI doesn't support (custom
+groupings, blending CUR data with non-AWS spend, year-over-year comparisons with custom
+calculated fields), the CUR delivered to S3, queried via Athena, visualized in QuickSight is the
+standard DIY FinOps stack — all AWS-native, no third-party tool required.
+
+**4. Savings Plans purchase informed directly by Cost Explorer's recommendation engine**
+
+Rather than guessing at a commitment level, teams pull Cost Explorer's Savings Plans
+recommendation (based on trailing 7/30/60-day actual usage) before purchasing a 1- or 3-year
+commitment — reducing the risk of over- or under-committing relative to actual, sustained usage.
 
 ## Use Cases — When to Use It
 
@@ -121,7 +288,8 @@ makes a shared multi-team AWS bill actually explainable rather than a mystery lu
 - A recurring exam pattern: given a scenario needing proactive alerting before a spend threshold
   is hit, the answer is **Budgets**; given a scenario needing historical analysis/attribution,
   the answer is **Cost Explorer**; given a scenario needing raw, custom analysis at full
-  granularity, the answer is the **CUR**.
+  granularity, the answer is the **CUR**. Expect a worked numeric scenario requiring you to
+  identify which usage type or tag group is driving an unexpected cost increase.
 
 ## Pricing Model (summary)
 
@@ -132,6 +300,63 @@ first two budgets created per account are free; additional budgets are billed pe
 style service fee** — you pay standard **S3 storage** for the delivered report files, and if you
 query it via **Athena**, standard Athena per-query/per-TB-scanned pricing applies. See:
 https://aws.amazon.com/aws-cost-management/pricing/
+
+## Limits & Quotas
+
+| Limit | Default Value | Practical Impact |
+|---|---|---|
+| Free budgets per account | 2 | Beyond this, each additional budget is billed per budget per day — worth consolidating granular per-project budgets where feasible |
+| Cost Explorer historical data | 12 months by default in the console, longer via API with CUR | Multi-year trend analysis typically needs CUR + Athena, not the console UI alone |
+| Cost allocation tag activation lag | Up to 24 hours after activation | Tags activated today won't retroactively populate historical cost breakdowns from before activation |
+| CUR report delivery frequency | Hourly, daily, or monthly | Hourly granularity multiplies S3 storage and Athena scan costs — choose the coarsest granularity that still answers your actual questions |
+| Cost Anomaly Detection monitors | Several per account (soft limit, raisable) | Large organizations monitoring many services/linked accounts separately can approach this |
+| Budget Actions per budget | 5 | Rarely a practical constraint, but complex staged-enforcement budgets should plan within it |
+
+## Troubleshooting / Common Issues
+
+- **Tagged resources not appearing in cost breakdowns** — the single most common real-world
+  support issue in this category: tags must be **activated** as cost allocation tags in the
+  Billing and Cost Management console; applying a tag to a resource alone does not make it appear
+  in Cost Explorer/CUR breakdowns.
+- **Cost Explorer numbers don't match the actual invoice total** — check whether you're viewing
+  **unblended** vs. **blended** vs. **amortized** cost; these are legitimately different metrics
+  (unblended = actual charge as billed; blended = averaged across linked accounts sharing RI/
+  Savings Plans discounts; amortized = upfront Reserved Instance/Savings Plans costs spread evenly
+  over the commitment term) and comparing the wrong one against the invoice looks like a
+  discrepancy but isn't.
+- **A budget alert never fires despite clearly exceeding the threshold** — confirm the budget's
+  **filters/scope** actually include the spend in question (a budget scoped to one linked account
+  won't alert on spend in a different account) and that SNS/email notification subscriptions were
+  actually confirmed (an unconfirmed SNS subscription silently receives nothing).
+- **Forecasted-spend alerts seem wildly inaccurate** — forecasts are based on recent historical
+  trend; a genuinely new, large one-time cost (e.g., a planned migration) with no prior trend to
+  extrapolate from will produce a forecast that under- or overshoots until enough new history
+  accumulates.
+- **CUR data missing expected columns** — confirm the CUR version/format (Legacy CUR, CUR 2.0,
+  FOCUS) actually includes the column you're querying; column availability differs meaningfully
+  between report versions.
+- **Savings Plans recommendation looks too aggressive/conservative** — the recommendation is based
+  on a specific trailing lookback window (7/30/60 days); a recent, temporary spike or dip in usage
+  skews the recommendation until you explicitly choose a longer, more representative lookback.
+
+## Further Reading
+
+- AWS Cost Management User Guide: https://docs.aws.amazon.com/cost-management/latest/userguide/
+- Getting started with Cost Explorer:
+  https://docs.aws.amazon.com/cost-management/latest/userguide/ce-getting-started.html
+- AWS Budgets — Creating a budget:
+  https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-create.html
+- AWS Cost Management pricing: https://aws.amazon.com/aws-cost-management/pricing/
+- Cost and Usage Report User Guide: https://docs.aws.amazon.com/cur/latest/userguide/
+
+![Cost Explorer showing daily cost and usage data, analyzed by service usage type](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/images/ce.png)
+*The Cost Explorer interface grouped by usage type — the standard drill-down view for
+identifying exactly which usage type is driving a cost change. Source: Amazon CloudWatch User
+Guide (Cost Explorer integration), docs.aws.amazon.com (official AWS documentation).*
+
+![Setting up a cost budget in the AWS Billing and Cost Management console](https://docs.aws.amazon.com/hands-on/latest/control-your-costs-free-tier-budgets/images/set-up-a-cost-budget.jpg)
+*Creating an AWS Budget with a monthly cost threshold and email alert recipient. Source: AWS
+Hands-On Tutorials, docs.aws.amazon.com (official AWS documentation).*
 
 ## Hands-on Lab (Floci)
 
@@ -197,10 +422,85 @@ created in your local environment rather than being a disconnected stub.
 - **Savings Plans / Reserved Instance recommendations surface inside Cost Explorer**, based on
   actual historical usage — a cost-optimization question about committing to a discount tier
   often expects you to know where that recommendation comes from.
+- **Don't confuse unblended, blended, and amortized cost** — a question presenting slightly
+  different numbers for "the same" spend is testing whether you know these are legitimately
+  different cost metrics, not a bug.
+- **Budget Actions can automatically enforce, not just notify** — a question about automatically
+  restricting further spend when a threshold is breached (not just alerting a human) points to
+  Budget Actions specifically.
 - Don't confuse this category with **Trusted Advisor's cost-optimization checks** — Trusted
   Advisor flags specific best-practice violations (idle load balancers, underutilized instances)
   across five pillars including cost; the Cost Management tools here are about *spend visibility
   and control*, a related but distinct concern.
+
+## Exam Scenario Walkthroughs (SAA-C03 / DVA-C03 / MLA-C02)
+
+**Scenario 1 (SAA-C03, Domain 4).** A finance team wants to be notified *before* the month's
+spend exceeds $10,000, not after the invoice arrives, and also wants a breakdown of which team is
+responsible once a threshold is crossed. Which two tools, used together, satisfy this?
+> **Answer: AWS Budgets for the proactive threshold alert, Cost Explorer (grouped by cost
+> allocation tag) for the attribution.** Budgets alone tells you *that* you're approaching the
+> limit; it doesn't inherently answer "whose spend is driving it" without being paired with
+> tag-based Cost Explorer analysis — a two-tool combination the exam tests directly.
+
+**Scenario 2 (SAA-C03, Domain 4).** A team tagged all their resources `Team=Analytics` three
+months ago but the tag has never appeared in any Cost Explorer report. What's the fix?
+> **Answer: Activate the tag as a cost allocation tag in the Billing and Cost Management
+> console.** Tagging a resource and activating that tag key for cost allocation are two separate,
+> required steps — this is the single most common trap in this exam topic.
+
+**Scenario 3 (DVA-C03, Domain 4 — Task 4.3, Optimize applications on AWS).** After switching a
+Lambda function's memory allocation from 128 MB to 1024 MB, a developer needs to confirm whether
+the change actually reduced cost (faster execution can offset higher per-GB-second pricing). What
+tool answers this with actual billing data, not an estimate?
+> **Answer: Cost Explorer**, filtered to the Lambda service and grouped by usage type, comparing
+> before/after billing periods — this is the authoritative, actual-dollars answer, distinct from
+> a theoretical estimate based on the Lambda pricing calculator alone.
+
+**Scenario 4 (MLA-C02, Domain 4).** An ML platform team runs GPU training jobs with highly
+variable, bursty usage and wants to know whether committing to a 1-year Savings Plan would
+actually save money given their specific usage pattern, without guessing.
+> **Answer: Cost Explorer's Savings Plans recommendation**, based on trailing historical usage —
+> this is the named, built-in mechanism for exactly this question, distinct from Trusted Advisor
+> (which flags idle resources, not commitment-sizing recommendations) and distinct from manually
+> estimating from the pricing page.
+
+**Scenario 5 (Cross-cert — distinguishing the right granularity of tool).** A question lists
+four needs: (a) alert before a monthly cap is hit, (b) understand historical spend trends by
+service, (c) run a custom SQL query joining cost data with internal project metadata, (d) get an
+automated flag for a specific idle resource. Match each to Budgets, Cost Explorer, CUR, or
+Trusted Advisor.
+> **Answer: (a) Budgets, (b) Cost Explorer, (c) CUR (via Athena), (d) Trusted Advisor.** This
+> four-way split is the complete mental model for this entire tool category — each need maps to
+> exactly one tool's core strength, and the exam frequently tests whether you can make this exact
+> match under a disguised scenario description.
+
+## Quick Reference: Which Tool Answers Which Question
+
+A condensed lookup table worth memorizing, since so much of this domain's testing is about
+correctly routing a described need to the right tool:
+
+| Question Being Asked | Tool |
+|---|---|
+| "How much will we spend this month, and can we see it broken down by team?" | Cost Explorer + activated cost allocation tags |
+| "Alert me before we blow past a spending cap" | AWS Budgets |
+| "I need every line-item billing detail for a custom BI dashboard" | Cost and Usage Report (CUR) |
+| "Flag unusual spending that doesn't fit a simple threshold" | Cost Anomaly Detection |
+| "Should we commit to a 1-year Savings Plan, and how much?" | Cost Explorer's Savings Plans recommendations |
+| "Automatically restrict spend once a hard cap is breached" | AWS Budgets with a Budget Action |
+| "Is this specific EC2 instance idle and wasting money?" | Trusted Advisor (Cost Optimization category) — a different tool entirely |
+
+## Further Note on Linked Accounts and Consolidated Billing
+
+In an AWS Organizations setup with multiple linked accounts, cost allocation tags, Budgets, and
+Cost Explorer all operate with an important nuance: the **management account** can see and filter
+by every linked account's spend, while an individual **member account** typically only sees its
+own spend unless explicitly granted broader visibility. This matters for a common exam scenario:
+a question describing a member-account user who "can't see the whole organization's cost
+breakdown" isn't necessarily facing a misconfiguration — restricted visibility into sibling
+accounts' spend is the default, expected behavior for a non-management-account user, and the fix
+is either granting appropriate IAM/Billing permissions at the management account level or having
+the right person run the query from the management account itself.
 
 ## Related Terms
 
@@ -210,4 +510,5 @@ created in your local environment rather than being a disconnected stub.
   these same tools as evidence/practice
 - [AWS Config](aws-config.md) — configuration compliance is a separate concern from cost, though
   both inform overall account hygiene
-- Glossary: Cost Allocation Tag, Reserved Instance, Savings Plan, FinOps, Chargeback/Showback
+- Glossary: Cost Allocation Tag, Reserved Instance, Savings Plan, FinOps, Chargeback/Showback,
+  Unblended/Blended/Amortized Cost, Budget Action

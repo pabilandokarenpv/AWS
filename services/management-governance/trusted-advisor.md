@@ -19,6 +19,14 @@ customers discover these issues the hard way (an outage, a bill surprise, a secu
 AWS built Trusted Advisor to surface them proactively, continuously, for free (at a basic level)
 in every account.
 
+The underlying design tradeoff worth understanding: Trusted Advisor is deliberately a **fixed,
+curated checklist**, not an extensible rules engine. That's a feature, not a limitation — it
+means every check reflects AWS's own accumulated operational judgment about what "good" looks
+like, maintained centrally and updated as practices evolve, rather than something each customer
+has to author and keep current themselves. The cost of that tradeoff is that you can't add a
+company-specific check (that's what Config custom rules are for) — Trusted Advisor is breadth
+and zero-effort, not depth and customization.
+
 ## How It Works
 
 Trusted Advisor runs a library of automated checks against your account's resources on a regular
@@ -52,6 +60,102 @@ confusion; (4) on a paid Business/Enterprise support plan, the full set of check
 continuously and can notify you proactively (weekly digest email) rather than requiring you to
 log in and look.
 
+### Check evaluation and remediation flow
+
+```mermaid
+sequenceDiagram
+    participant TA as Trusted Advisor Engine
+    participant Acct as Your AWS Account
+    participant Console as Console/API
+    participant Eng as Engineer
+
+    loop Scheduled scan
+        TA->>Acct: Inspect resources against check library
+        Acct-->>TA: Resource configuration data
+        TA->>TA: Evaluate each check: Green / Yellow / Red
+    end
+    TA->>Console: Update findings dashboard
+    alt Business/Enterprise support
+        TA->>Eng: Weekly digest email
+    end
+    Eng->>Console: Review Red findings, sorted by category
+    Eng->>Acct: Manually remediate (e.g. delete unattached EBS volume)
+    TA->>Acct: Re-scan on next cycle
+    TA->>Console: Status updates to Green
+```
+
+Walking through it: (1) Trusted Advisor's checks run on AWS's own schedule (some near-real-time,
+others periodic); (2) results populate a dashboard, organized by category and severity; (3) on
+Business/Enterprise support, a weekly digest proactively surfaces new/ongoing Red findings instead
+of relying on someone remembering to check the console; (4) remediation itself is **manual** —
+Trusted Advisor does not auto-fix findings (unlike AWS Config, which can); it only identifies and
+recommends; (5) the next scheduled scan picks up whether the fix actually resolved the
+finding, flipping the status back to green.
+
+## Worked Example: Reading and Prioritizing a Realistic Findings Set
+
+A Business-support account's Trusted Advisor dashboard after a quarter of organic growth might
+show something like this (illustrative, not a live API call since findings depend on your actual
+account):
+
+| Category | Check | Status | Resources Affected |
+|---|---|---|---|
+| Cost Optimization | Low Utilization Amazon EC2 Instances | Red | 14 instances averaging <10% CPU over 14 days |
+| Cost Optimization | Idle Load Balancers | Yellow | 2 ALBs with zero requests in 7 days |
+| Security | Security Groups - Specific Ports Unrestricted | Red | 3 security groups allow 0.0.0.0/0 on port 3389 (RDP) |
+| Security | MFA on Root Account | Red | Root account has no MFA device |
+| Fault Tolerance | Amazon RDS Backups | Yellow | 1 RDS instance with automated backups disabled |
+| Fault Tolerance | Amazon EBS Snapshots | Yellow | 1 volume with no recent snapshot |
+| Service Limits | VPCs per Region | Yellow | 4 of 5 default VPC limit used in us-east-1 |
+
+A disciplined triage order, and the reasoning behind it:
+
+1. **Root MFA first** — a single-point-of-failure security gap affecting the entire account; the
+   fix (enabling MFA) takes minutes and closes a catastrophic risk.
+2. **Open RDP to the world** second — actively exploitable right now, highest real-world risk of
+   the set.
+3. **RDS backups disabled** third — a silent data-loss risk; if that database fails before this
+   is fixed, there's no recovery path.
+4. **Cost findings last** — real money, but not an active risk; appropriate to batch into a
+   scheduled cleanup rather than an emergency fix.
+
+This ordering — **active security risk > data-loss risk > cost waste** — is the kind of
+judgment call Domain 4 scenario questions expect you to make when a question presents multiple
+Trusted Advisor findings and asks which to address first.
+
+## Logs Insights Cross-Reference: Confirming an "Idle" Finding Before Acting
+
+Trusted Advisor's "Low Utilization" finding is based on CloudWatch CPU metrics over a lookback
+window — before terminating an instance flagged as idle, it's worth confirming with a direct
+query rather than trusting the label blindly (a batch job that runs one night a month would show
+as "idle" most days):
+
+```
+fields @timestamp, @message
+| filter @logStream like /i-0abc123456789def0/
+| stats count() as invocations by bin(1d)
+| sort @timestamp desc
+```
+
+Paired with a direct CloudWatch metric check:
+
+```bash
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/EC2 \
+  --metric-name CPUUtilization \
+  --dimensions Name=InstanceId,Value=i-0abc123456789def0 \
+  --start-time "$(date -u -d '-30 days' +%Y-%m-%dT%H:%M:%S)" \
+  --end-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
+  --period 86400 \
+  --statistics Maximum
+```
+
+If the 30-day maximum CPU shows a single spike day each month (consistent with a scheduled batch
+job) rather than genuinely flat near-zero utilization throughout, that's a case for excluding the
+instance from Trusted Advisor's recommended action rather than blindly terminating it — Trusted
+Advisor flags *patterns*, a human still needs to confirm *intent* before acting on a finding that
+would destroy a resource.
+
 ## Key Features / Components
 
 - **Five Check Categories** — Cost Optimization, Performance, Security, Fault Tolerance, Service
@@ -67,6 +171,70 @@ log in and look.
   account in an AWS Organization, for a central team to track fleet-wide health.
 - **Trusted Advisor API** — programmatic retrieval of check results, for feeding into your own
   dashboards or ticketing automation (Business support plan and above).
+- **Refresh on demand** — most checks can be manually refreshed from the console rather than
+  waiting for the next scheduled scan, useful immediately after remediating a finding to confirm
+  the fix took effect without waiting out the full cycle.
+
+## Cost Worked Example: Quantifying Trusted Advisor's Cost Findings
+
+A realistic exercise in translating Trusted Advisor's Cost Optimization findings into actual
+dollar impact, cross-referenced with Cost Explorer:
+
+```bash
+# Trusted Advisor flags 14 EC2 instances as "Low Utilization" — confirm the actual
+# monthly cost of just those instances via Cost Explorer, filtered by resource
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-12-01 \
+  --granularity MONTHLY \
+  --filter '{
+    "Dimensions": {"Key": "SERVICE", "Values": ["Amazon Elastic Compute Cloud - Compute"]}
+  }' \
+  --group-by Type=DIMENSION,Key=INSTANCE_TYPE \
+  --metrics "UnblendedCost"
+```
+
+If the 14 flagged instances are a mix of `m5.2xlarge` running at under 10% average CPU, a
+reasonable remediation path is: rightsize to `m5.large` or `t3.large` (roughly a 50-75% per-hour
+cost reduction depending on the target size) or move to Spot/Savings Plans if the workload
+tolerates interruption — Trusted Advisor's finding identifies *which* resources, but **Cost
+Explorer and the Compute Optimizer recommendations quantify exactly how much rightsizing would
+actually save**, which is the number that justifies the engineering time to act.
+
+## Common Architectures
+
+**1. Organization-wide Trusted Advisor rollup for a central platform team**
+
+```mermaid
+flowchart TD
+    A[Account 1 Trusted Advisor] --> D[Organization View<br/>Enterprise Support]
+    B[Account 2 Trusted Advisor] --> D
+    C[Account N Trusted Advisor] --> D
+    D --> E[Central Platform Team Dashboard]
+    E --> F[Weekly triage meeting across all accounts]
+```
+
+On Enterprise Support, the Organization view gives one team visibility across every member
+account without needing individual console access into each — the standard pattern for a
+platform/FinOps/security team responsible for fleet-wide hygiene in a large multi-account
+Organization.
+
+**2. Trusted Advisor findings piped into Security Hub alongside Config/GuardDuty**
+
+Trusted Advisor's Security category findings can feed into **Security Hub** as one of several
+normalized finding sources, letting a SOC team triage Trusted Advisor security findings in the
+same console as GuardDuty and Config findings, rather than checking five separate dashboards.
+
+**3. Trusted Advisor API feeding a ticketing system automatically**
+
+On Business/Enterprise support, the Trusted Advisor API lets a platform team auto-create Jira/
+ServiceNow tickets for new Red findings on a schedule, rather than relying on someone manually
+reviewing the console weekly — turning a passive dashboard into an actively tracked backlog.
+
+**4. New-account onboarding checklist using Trusted Advisor as the first stop**
+
+For a freshly created AWS account, Trusted Advisor is often the very first tool checked — even on
+Basic support, the free security and service-limit checks catch the most embarrassing possible
+gaps (no root MFA, a default VPC approaching its limit) before any real workload is deployed.
 
 ## Use Cases — When to Use It
 
@@ -118,6 +286,8 @@ reading the report.
 - A very commonly tested fact: **which checks you get depends on your Support Plan tier** — a
   question describing "I don't see most Trusted Advisor checks" is almost always answered with
   "upgrade to Business or Enterprise Support," not a technical Trusted Advisor configuration fix.
+  Expect a scenario question asking you to prioritize among several simultaneous findings — the
+  expected reasoning order is active security risk, then data-loss/resilience risk, then cost.
 
 ## Pricing Model (summary)
 
@@ -128,6 +298,58 @@ low-cost) unlocks only a handful of core checks (service limits, a few critical 
 Enterprise Support** unlock the full check library, API access, and Organization-wide
 aggregation. In effect, "full Trusted Advisor" is a benefit bundled into a paid AWS Support tier,
 not purchased standalone. See: https://aws.amazon.com/premiumsupport/pricing/
+
+## Limits & Quotas
+
+| Limit | Default Value | Practical Impact |
+|---|---|---|
+| Checks visible on Basic/Developer support | A small fixed subset (Service Limits + select Security/Fault Tolerance checks) | Most of the value of Trusted Advisor is invisible without a paid Support plan |
+| Checks visible on Business/Enterprise support | Full library (100+ checks across all categories) | The realistic "real" Trusted Advisor experience most guidance assumes |
+| Refresh frequency (manual) | Most checks refreshable on demand, rate-limited per check | Can't force-refresh the same check repeatedly in rapid succession |
+| Organization view availability | Enterprise Support only | Business support gets per-account views but not the consolidated Organization rollup |
+| API access | Business support and above | Basic/Developer support cannot programmatically pull findings at all |
+
+## Troubleshooting / Common Issues
+
+- **"Most of my Trusted Advisor checks are grayed out / missing"** — this is almost always the
+  AWS Support plan tier, not a configuration problem; confirm the account's current Support plan
+  before assuming something is broken.
+- **A finding shows Red but the resource is intentionally configured that way** — Trusted
+  Advisor has no concept of "intentional exception" built in; teams typically track accepted
+  exceptions in an external list (a wiki page, a ticket) rather than expecting the check itself to
+  suppress, since there's no native per-resource "ignore this finding" flag.
+- **"Low Utilization" finding doesn't match what I observe** — confirm the lookback window and
+  statistic Trusted Advisor uses for that specific check; a workload with a legitimate periodic
+  spike (nightly batch job) can still show as "idle" most of the time by the check's own metric
+  window, as discussed in the Logs Insights cross-reference worked example above.
+- **Organization view shows stale data for a member account** — confirm that account hasn't left
+  the Organization or had its Trusted Advisor-relevant permissions altered; Organization view
+  depends on cross-account access remaining intact.
+- **Refreshing a check seems to have no effect** — some checks refresh near-instantly, others are
+  only recalculated on a longer internal cadence regardless of a manual refresh request; not every
+  check is equally responsive to an on-demand refresh.
+
+## Further Reading
+
+- AWS Trusted Advisor documentation:
+  https://docs.aws.amazon.com/awssupport/latest/user/trusted-advisor.html
+- Trusted Advisor check reference (full list of checks by category):
+  https://docs.aws.amazon.com/awssupport/latest/user/trusted-advisor-check-reference.html
+- AWS Support plan comparison/pricing: https://aws.amazon.com/premiumsupport/pricing/
+- Using other AWS services to view Trusted Advisor reports (Athena/QuickSight):
+  https://docs.aws.amazon.com/awssupport/latest/user/use-other-aws-services-with-trusted-advisor-reports.html
+- Trusted Advisor Organizational (TAO) Dashboard guidance:
+  https://docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/trusted-advisor-dashboard.html
+
+![Trusted Advisor Organizational (TAO) Dashboard architecture, aggregating findings across accounts](https://docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/images/images/architecture/ta.png)
+*Architecture for aggregating Trusted Advisor findings across an entire AWS Organization into a
+QuickSight dashboard. Source: AWS Cloud Intelligence Dashboards guidance, docs.aws.amazon.com
+(official AWS documentation).*
+
+![Example Trusted Advisor Organizational dashboard in Amazon QuickSight, showing findings by category and account](https://docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/images/tao_demo.png)
+*A live demo of the Trusted Advisor Organizational dashboard, visualizing findings across
+multiple accounts by category and severity. Source: AWS Cloud Intelligence Dashboards guidance,
+docs.aws.amazon.com (official AWS documentation).*
 
 ## Hands-on Lab (Floci)
 
@@ -167,9 +389,144 @@ itself.
   checks with no customization; Config is an extensible, rule-based compliance engine with full
   history you can write custom rules for. If a question mentions "custom rule" or "historical
   compliance timeline," it's Config, not Trusted Advisor.
+- **Trusted Advisor does not auto-remediate** — unlike Config, which can trigger SSM Automation to
+  fix a finding automatically, Trusted Advisor only identifies and recommends; remediation is a
+  manual step. A question about automatic fixing points to Config, not Trusted Advisor.
 - Service Limit checks are available on **every support plan including Basic** — a question
   asking "will I see quota warnings without paying for support" has the answer "yes, for service
   limits specifically."
+- **Prioritization questions**: when a scenario lists multiple simultaneous findings, the expected
+  triage order is active security risk first, data-loss/fault-tolerance risk second, cost findings
+  last — reflecting real operational judgment, not an arbitrary category order.
+
+## Exam Scenario Walkthroughs (SAA-C03 / DVA-C03 / MLA-C02)
+
+**Scenario 1 (SAA-C03, Domain 4 — Cost-Optimized Architectures).** A newly onboarded team asks
+why they can't see most Trusted Advisor checks even though the console clearly advertises five
+categories. They're on the account's default Basic support plan. What's the fix?
+> **Answer: Upgrade to Business (or higher) AWS Support.** This is purely a Support plan gating
+> issue, not a configuration problem — Basic/Developer support only exposes Service Limits checks
+> plus a small set of core Security checks. No amount of IAM permission changes or console
+> settings unlocks the rest; it requires a different Support plan tier entirely.
+
+**Scenario 2 (SAA-C03, Domain 1 — Secure Architectures).** Trusted Advisor flags a security group
+as "Red" for unrestricted access on port 3389 (RDP). A question asks whether Trusted Advisor will
+automatically close this port.
+> **Answer: No.** Trusted Advisor only identifies and recommends — it does not auto-remediate.
+> If the requirement is automatic remediation, the correct tool is **AWS Config** with a
+> remediation action attached to an equivalent rule (e.g., `restricted-rdp`), backed by an SSM
+> Automation document. This exact "detects vs. fixes" distinction between Trusted Advisor and
+> Config is one of the most frequently tested facts in this category.
+
+**Scenario 3 (DVA-C03, Domain 4 — Troubleshooting and Optimization).** A developer notices
+Trusted Advisor flags an EC2 instance as "Low Utilization" but knows it runs a critical monthly
+batch job. How should they validate before acting on the finding?
+> **Answer: Cross-reference actual CloudWatch CPU/network metrics over a longer lookback window**
+> (e.g., 30-60 days) rather than trusting the label at face value. A workload with a legitimate,
+> infrequent but critical usage pattern can still show as "idle" by Trusted Advisor's shorter
+> default lookback — the finding is a signal to investigate, not an instruction to immediately
+> terminate the resource.
+
+**Scenario 4 (MLA-C02, Domain 4 — Operating, Monitoring, and Securing ML and AI Solutions).** An
+ML team wants ongoing, zero-effort visibility into whether their SageMaker training instances are
+appropriately sized and whether any are idle between training runs, without building custom
+tooling. Which tool, at minimum support tier, addresses this?
+> **Answer: Trusted Advisor's Cost Optimization category, available in full on Business support
+> or above.** The "zero additional tooling" framing is the signal — Trusted Advisor requires no
+> custom Lambda rules or dashboards (unlike Config) and no manual questionnaire (unlike the
+> Well-Architected Tool); it's the lowest-effort automated option for this specific ask.
+
+**Scenario 5 (Cross-cert — prioritization under multiple simultaneous findings).** A question
+presents a Trusted Advisor dashboard showing: root account has no MFA (Red, Security), two idle
+load balancers (Yellow, Cost Optimization), and an RDS instance with backups disabled (Yellow,
+Fault Tolerance). Which should be addressed first, and why?
+> **Answer: Root MFA first.** The reasoning hierarchy tested here is active security risk >
+> data-loss/resilience risk > cost waste. An unprotected root account is a catastrophic,
+> actively exploitable risk right now; disabled RDS backups is a silent data-loss risk that
+> matters only if/when the database fails; idle load balancers are real but non-urgent cost
+> waste. This ordering recurs across nearly every multi-finding prioritization question in this
+> domain, regardless of which specific tool generated the findings.
+
+## Check Reference Deep Dive: Commonly Tested Checks by Category
+
+A table of the checks that appear most often in real exam scenarios and real-world usage, worth
+knowing by name and category:
+
+| Category | Check Name | What It Flags | Available on Basic Support? |
+|---|---|---|---|
+| Cost Optimization | Low Utilization Amazon EC2 Instances | Instances averaging low CPU over a lookback window | No |
+| Cost Optimization | Idle Load Balancers | ELB/ALB/NLB with no requests over a period | No |
+| Cost Optimization | Underutilized Amazon EBS Volumes | Attached volumes with minimal read/write activity | No |
+| Security | MFA on Root Account | Root account has no MFA device configured | Yes |
+| Security | Security Groups - Specific Ports Unrestricted | SG allows 0.0.0.0/0 on high-risk ports (22, 3389, etc.) | Yes (subset) |
+| Security | IAM Access Key Rotation | Access keys not rotated within a recommended window | No |
+| Security | Exposed Access Keys | Access keys publicly visible (e.g., committed to a public repo) | Yes |
+| Fault Tolerance | Amazon RDS Backups | RDS instances with automated backups disabled | No |
+| Fault Tolerance | Amazon EBS Snapshots | Volumes lacking a recent snapshot | No |
+| Fault Tolerance | Auto Scaling Group Health Check | ASG not configured with ELB health checks | No |
+| Performance | High Utilization Amazon EC2 Instances | Instances consistently near capacity, candidate for upsizing | No |
+| Performance | CloudFront Content Delivery Optimization | Suboptimal CloudFront configuration for a given distribution | No |
+| Service Limits | Multiple checks across EC2, VPC, IAM, RDS, etc. | Usage approaching a default service quota | Yes |
+
+Notice that **"Exposed Access Keys"** is available even on Basic support — AWS treats a publicly
+leaked credential as severe enough to surface for free to every customer regardless of support
+tier, distinct from the general pattern that most Security checks require Business support.
+
+## Building an Internal Severity Matrix
+
+Teams that operationalize Trusted Advisor findings into a ticketing workflow typically define an
+explicit severity-to-SLA mapping up front, rather than triaging ad hoc each time:
+
+| Trusted Advisor Status | Category | Internal SLA |
+|---|---|---|
+| Red | Security | Fix within 24 hours, page on-call if public-facing |
+| Red | Fault Tolerance | Fix within 1 week |
+| Red | Cost Optimization | Fix within 1 sprint (2 weeks) |
+| Yellow | Any category | Triage within 1 week, schedule a fix |
+| Green | Any category | No action — periodic re-confirmation only |
+
+This mirrors exactly the exam's implicit prioritization logic (security first, resilience second,
+cost last) but turns it into an actual operational commitment a team can be held to, rather than
+a one-time judgment call made during a single review session.
+
+## Real-World Case Study: A Trusted Advisor-Driven Cost Cleanup
+
+A composite but realistic narrative, useful for grounding the abstract categories in an actual
+before/after:
+
+**Starting state.** A 200-person company's shared AWS account, three years old, has accumulated:
+22 EBS volumes with no attached instance (leftover from terminated EC2 instances that didn't
+clean up their volumes), 6 Elastic IPs not associated with a running instance (billed hourly once
+unassociated), 3 "Idle Load Balancers" flagged Yellow, and 9 EC2 instances flagged "Low
+Utilization" averaging under 5% CPU over 14 days.
+
+**Investigation.** Before acting, the platform team cross-references Cost Explorer (as shown in
+the [Cost Management Tools](cost-management-tools.md) worked example) to quantify each finding's
+actual dollar cost rather than treating every Red/Yellow finding as equally urgent:
+
+```bash
+aws ce get-cost-and-usage \
+  --time-period Start=2026-10-01,End=2026-11-01 \
+  --granularity MONTHLY \
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Elastic Block Store"]}}' \
+  --metrics "UnblendedCost"
+```
+
+**Findings, quantified:**
+
+| Finding | Monthly Cost (approx.) | Action Taken |
+|---|---|---|
+| 22 unattached EBS volumes | $340 | Snapshotted (for safety), then deleted |
+| 6 unassociated Elastic IPs | $22 | Released immediately — no snapshot needed, trivial to re-allocate if ever needed |
+| 3 idle load balancers | $65 | Investigated with the owning teams; 2 were genuinely abandoned test environments, 1 was pre-provisioned for a launch scheduled next month and kept |
+| 9 low-utilization EC2 instances | $1,850 | Rightsized to smaller instance types after confirming with Cost Explorer + CloudWatch that none had periodic batch-job spikes |
+
+**Outcome.** Roughly $2,277/month in recovered spend, achieved entirely from a Trusted Advisor
+dashboard review plus straightforward cross-referencing with Cost Explorer and CloudWatch — no
+custom tooling, no Config rules, no new infrastructure. This is the realistic shape of what
+"Trusted Advisor's Cost Optimization category is often the highest-ROI-per-minute-spent review a
+team can do" actually looks like in practice, and the kind of concrete before/after exam questions
+in this domain are modeling when they ask you to compute savings from a described finding set.
 
 ## Related Terms
 
@@ -179,4 +536,4 @@ itself.
   category findings are a subset of the broader cost visibility/control story
 - [AWS Well-Architected Tool](well-architected-tool.md) — a structured, deeper self-assessment
   framework; Trusted Advisor is faster/automated but shallower
-- Glossary: AWS Support Plan, Service Quota, GuardDuty, Security Hub
+- Glossary: AWS Support Plan, Service Quota, GuardDuty, Security Hub, Finding, Remediation

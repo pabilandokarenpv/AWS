@@ -687,4 +687,7 @@ used throughout this document's pipeline diagrams. Source: AWS Well-Architected 
 
 [`glossary/README.md`](../../glossary/README.md) · [`glue.md`](glue.md) ·
 [`athena.md`](athena.md) · [`data-lake-concepts.md`](data-lake-concepts.md) ·
+[`data-firehose.md`](data-firehose.md) — a dedicated deep dive on Amazon Data Firehose
+specifically (newer destinations like Apache Iceberg Tables/Snowflake, the Direct PUT path, and
+the Firehose-vs-Data-Streams trap in more depth than the summary above) ·
 `services/storage/s3.md` · `services/application-integration/sqs-sns.md`

@@ -78,6 +78,78 @@ Why this matters: a launch template is what an Auto Scaling group actually scale
 its structure is the foundation for understanding target-tracking scaling policies described in
 `ec2-auto-scaling.md` and `compute-performance-decision-framework.md`.
 
+## Lab 4 — Cache-aside pattern with ElastiCache in front of DynamoDB (Task 3.3)
+
+Goal: practice the read-through caching pattern from the domain README's cache-aside diagram —
+check the cache first, fall back to the database on a miss, then populate the cache.
+
+```bash
+# 1. Create the "database" table
+awslocal dynamodb create-table --table-name UserProfiles \
+  --attribute-definitions AttributeName=userId,AttributeType=S \
+  --key-schema AttributeName=userId,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+
+# 2. Seed a row representing a user profile
+awslocal dynamodb put-item --table-name UserProfiles \
+  --item '{"userId": {"S": "u-42"}, "name": {"S": "Dana"}, "plan": {"S": "pro"}}'
+
+# 3. Create a Redis-compatible cache cluster (Floci emulates ElastiCache control-plane APIs;
+#    for the actual read/write cache behavior, a local Redis container stands in — see
+#    labs-floci/README.md for the exact setup)
+awslocal elasticache create-cache-cluster --cache-cluster-id study-app-cache \
+  --cache-node-type cache.t3.micro --engine redis --num-cache-nodes 1
+
+# 4. Simulate the cache-aside read path in application pseudocode:
+#      GET user:u-42 from Redis
+#      IF miss: DynamoDB GetItem userId=u-42, then SET user:u-42 in Redis with a TTL
+#      IF hit: return cached value directly, skip DynamoDB entirely
+awslocal dynamodb get-item --table-name UserProfiles --key '{"userId": {"S": "u-42"}}'
+```
+
+Why this matters: this is the exact pattern tested whenever a scenario describes "read-heavy
+traffic overwhelming the database" — the cache absorbs repeated reads for the same key, and only
+a cache miss ever reaches the database at all.
+
+## Lab 5 — Capstone: ingestion-to-query pipeline matching the domain architecture (Task 3.5)
+
+Goal: chain Kinesis ingestion through to a DynamoDB-backed "query layer," mirroring (at small
+scale) the Kinesis → Glue → S3 → Athena pipeline from the domain README's architecture diagram.
+
+```bash
+# 1. Create the stream and a table to hold processed results
+awslocal kinesis create-stream --stream-name sensor-readings --shard-count 1
+awslocal dynamodb create-table --table-name ProcessedReadings \
+  --attribute-definitions AttributeName=deviceId,AttributeType=S \
+  --key-schema AttributeName=deviceId,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+
+# 2. Put several raw records into the stream
+awslocal kinesis put-record --stream-name sensor-readings --partition-key device-7 \
+  --data '{"deviceId": "device-7", "tempC": 24.1, "ts": "2026-01-01T00:00:00Z"}'
+awslocal kinesis put-record --stream-name sensor-readings --partition-key device-7 \
+  --data '{"deviceId": "device-7", "tempC": 24.6, "ts": "2026-01-01T00:01:00Z"}'
+
+# 3. Read the records back (simulating a Lambda consumer reading from the stream) and write
+#    the latest reading per device into the "query layer" table
+awslocal kinesis get-shard-iterator --stream-name sensor-readings --shard-id shardId-000000000000 \
+  --shard-iterator-type TRIM_HORIZON
+awslocal kinesis get-records --shard-iterator <iterator-from-previous-step>
+awslocal dynamodb put-item --table-name ProcessedReadings \
+  --item '{"deviceId": {"S": "device-7"}, "latestTempC": {"N": "24.6"}, "ts": {"S": "2026-01-01T00:01:00Z"}}'
+
+# 4. Query the processed table the way a dashboard would — fast, single-digit-millisecond
+#    lookups instead of re-scanning raw stream data every time
+awslocal dynamodb get-item --table-name ProcessedReadings --key '{"deviceId": {"S": "device-7"}}'
+```
+
+Why this matters: this capstone demonstrates the core performance lesson of Task 3.5 — raw
+streamed/ingested data is rarely queried directly at scale; a processing step (here, a simple
+Lambda-style consumer; in the real architecture, Glue transforming CSV to Parquet) produces a
+query-optimized shape that a dashboard or API can read quickly and cheaply, which is the entire
+reason the PixelForge Analytics case study in the domain README moves off scanning raw CSV
+directly.
+
 ## Honest limitation
 
 Floci does not model real network latency, true multi-shard Kinesis throughput limits, or

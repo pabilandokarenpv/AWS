@@ -88,6 +88,63 @@ Why this matters: this is the concrete fix for the "NAT Gateway data processing 
 largest line item, mostly traffic to S3" exam scenario — a Gateway endpoint for S3/DynamoDB costs
 nothing and keeps that traffic off the metered NAT path entirely.
 
+## Lab 4 — Finding and cleaning up unattached EBS volumes (Task 4.1)
+
+Goal: practice the Trusted Advisor-style audit action behind "idle resources quietly adding to
+the bill" — a direct, mechanical cost leak distinct from any purchasing-model decision.
+
+```bash
+# 1. Create a volume and attach it to a (simulated) instance, then detach it — mimicking the
+#    common real-world leftover from a terminated instance
+awslocal ec2 create-volume --availability-zone us-east-1a --size 20 --volume-type gp3
+
+# 2. List all volumes and filter for ones with no attachments — the exact audit query
+#    Trusted Advisor/Cost Explorer effectively automates
+awslocal ec2 describe-volumes --query 'Volumes[?length(Attachments)==`0`].{Id:VolumeId,Size:Size,State:State}'
+
+# 3. Snapshot it first in case it's still needed (cheap, incremental, safe) before deleting
+awslocal ec2 create-snapshot --volume-id <volume-id> --description "pre-deletion safety snapshot"
+
+# 4. Delete the unattached volume once the snapshot confirms successfully
+awslocal ec2 delete-volume --volume-id <volume-id>
+```
+
+Why this matters: unattached EBS volumes billing for their full provisioned size regardless of
+use is one of the most common, easiest-to-miss real-world cost leaks — snapshotting before
+deleting captures the "safety net" behavior a careful cost-optimization pass should always follow
+rather than deleting data outright.
+
+## Lab 5 — Capstone: a mini cost audit across storage, database, and network (Tasks 4.1, 4.3, 4.4)
+
+Goal: chain the previous labs into one scenario resembling the domain README's GreenLedger
+Logistics case study — tier aging data, right-size database billing mode, and remove a NAT
+Gateway dependency, in one pass.
+
+```bash
+# 1. Storage: confirm the lifecycle policy from Lab 1 is active on the archive bucket
+awslocal s3api get-bucket-lifecycle-configuration --bucket cost-optimized-archive
+
+# 2. Database: confirm the billing-mode switch from Lab 2 took effect
+awslocal dynamodb describe-table --table-name UserProfiles --query 'Table.BillingModeSummary'
+
+# 3. Network: confirm the VPC endpoint from Lab 3 is attached and associated with the right
+#    route table
+awslocal ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=<vpc-id> \
+  --query 'VpcEndpoints[].{Service:ServiceName,State:State,RouteTables:RouteTableIds}'
+
+# 4. Storage cleanup: confirm no unattached volumes remain after Lab 4's cleanup
+awslocal ec2 describe-volumes --query 'Volumes[?length(Attachments)==`0`]'
+
+# 5. Summarize the audit the way a real cost review would — one table per lever checked
+echo "Audit complete: lifecycle=OK, billing-mode=OK, VPC-endpoint=OK, orphaned-volumes=0"
+```
+
+Why this matters: real cost-optimization work is rarely one dramatic fix — it's a checklist pass
+across storage tiering, database billing mode, and network routing, exactly mirroring this
+domain's four task statements (4.1 storage, 4.2 compute, 4.3 database, 4.4 network) applied
+together to one system, the same synthesis the domain README's case study walks through in
+narrative form.
+
 ## Honest limitation
 
 Floci does not model actual AWS billing, Spot interruption behavior, or Reserved

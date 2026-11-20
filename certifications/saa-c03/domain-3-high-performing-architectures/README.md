@@ -5,6 +5,20 @@ networking, resiliency) and asks a different question about each one — "given 
 blocks, how do you squeeze the most performance out of them, and which one is fastest for this
 specific access pattern?"
 
+Performance questions on SAA-C03 almost always reduce to one of four repeating levers, and
+recognizing which lever a scenario is pulling on is most of the battle: **(1) match the storage/
+database shape to the access pattern** (object vs. file vs. block; relational vs. key-value vs.
+cache), **(2) get the request physically closer to the user or the data** (CDN, Global
+Accelerator, placement groups, same-AZ placement), **(3) remove a bottleneck by parallelizing or
+offloading** (read replicas, caching, more Auto Scaling capacity), and **(4) pick the compute/
+network primitive built for the specific throughput/latency profile described** (NLB over ALB for
+raw throughput, Provisioned IOPS over gp3, Kinesis over polling). Every topic doc in this folder
+is really just one of these four levers applied to a specific service category.
+
+![Storage options for Amazon EC2 instances, showing instance store, EBS volumes, and Amazon S3 as the three distinct storage shapes available to an EC2 instance.](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/images/architecture_storage.png)
+
+*Source: [Amazon EC2 User Guide — Storage options for your Amazon EC2 instances](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Storage.html)*
+
 ## Task 3.1 — Determine high-performing and/or scalable storage solutions
 
 > S3, EFS, EBS — object/file/block tradeoffs
@@ -43,6 +57,15 @@ specific access pattern?"
 | DocumentDB | [`services/database/documentdb.md`](../../../services/database/documentdb.md) |
 | Neptune | [`services/database/neptune.md`](../../../services/database/neptune.md) |
 | Redshift | [`services/database/redshift.md`](../../../services/database/redshift.md) |
+
+Task 3.3 is primarily "cache-aside first, then pick the right engine": the single biggest lever
+for database *read* performance is not picking a faster database at all, it's putting
+**ElastiCache** in front of the hottest keys so the database is never asked for them repeatedly.
+Only after caching is accounted for does engine choice matter — DynamoDB for single-digit-
+millisecond key-value access at any scale, Aurora for relational workloads needing the highest
+MySQL/PostgreSQL-compatible throughput available, Redshift for OLAP/analytical queries across
+huge datasets, Neptune/DocumentDB for graph/document-shaped access patterns a relational engine
+handles poorly.
 
 ## Task 3.4 — Determine high-performing and/or scalable network architectures
 
@@ -108,6 +131,97 @@ efficiency, and exposes it to **Athena** for ad-hoc SQL and **EMR** for heavier,
 processing — two different performance tools for two different query shapes against the same
 underlying data lake.
 
+## Architecture: The Cache-Aside Read Path, in Detail
+
+```mermaid
+sequenceDiagram
+    participant App as App tier
+    participant Cache as ElastiCache
+    participant DB as Aurora/RDS
+
+    App->>Cache: GET user:1234
+    alt Cache HIT
+        Cache-->>App: cached value (sub-ms)
+    else Cache MISS
+        Cache-->>App: nil
+        App->>DB: SELECT * FROM users WHERE id=1234
+        DB-->>App: row
+        App->>Cache: SET user:1234 (with TTL)
+        Cache-->>App: OK
+    end
+```
+
+This is the mechanism behind every "add caching to speed up reads" exam scenario — the
+application code (not the database) is responsible for checking the cache first and populating it
+on a miss, with a TTL to bound how stale cached data can get. A scenario describing cached data
+that's gone stale and causing bugs is usually pointing at a TTL/invalidation design problem, not
+a reason to abandon caching.
+
+## Architecture: Cluster Placement Group for Tightly-Coupled Compute
+
+![A cluster placement group, showing EC2 instances packed close together within a single Availability Zone on the same low-latency, high-bisection-bandwidth network segment.](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/images/placement-group-cluster.png)
+
+*Source: [Amazon EC2 User Guide — Placement strategies for your placement groups](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-strategies.html)*
+
+```mermaid
+flowchart TB
+    subgraph PG["Cluster Placement Group — single AZ"]
+        I1["Instance 1"] <-->|"high-bisection<br/>bandwidth, low latency"| I2["Instance 2"]
+        I2 <--> I3["Instance 3"]
+        I1 <--> I3
+    end
+```
+
+Cluster placement groups trade availability for raw inter-instance network performance — all
+instances land in one AZ, physically close together, specifically so tightly-coupled workloads
+(HPC, distributed training, in-memory databases replicating heavily between nodes) get the lowest
+possible latency and highest possible throughput between them. This is the opposite tradeoff from
+a *spread* placement group (which maximizes fault isolation by spreading instances across distinct
+hardware), so a scenario naming "lowest latency between nodes" versus "maximum fault tolerance for
+a small number of critical instances" is choosing between cluster and spread, not between
+placement groups and no placement group.
+
+## Full Worked Case Study: PixelForge Analytics — From Slow Dashboard to Sub-Second Queries
+
+**Company requirements.** PixelForge runs an internal analytics dashboard used by 200 employees.
+Three complaints have reached the architecture team: (1) the dashboard's "top products this week"
+query takes 8-12 seconds because it scans millions of raw CSV log files directly from S3 every
+time it's run; (2) the API backend serving user profile lookups is CPU-bound and falling behind
+during the morning login rush; (3) global sales offices in Tokyo and London report the dashboard
+feels sluggish compared to the US office where it's hosted.
+
+**Solution design.**
+
+1. **Ingestion and transformation (Task 3.5).** Raw application logs, previously dumped as CSV
+   directly into S3, are instead streamed through **Kinesis Data Streams**, processed by a
+   **Glue ETL job** that converts them into partitioned, columnar **Parquet** files in a
+   dedicated S3 data lake prefix (partitioned by date). The "top products" dashboard query is
+   rewritten to run through **Athena** against the Parquet data lake instead of scanning raw CSV
+   directly — Parquet's columnar format combined with partition pruning cuts the scanned data
+   (and the query time) dramatically, bringing the query from 8-12 seconds to sub-second.
+2. **Compute bottleneck (Task 3.2 + 3.3).** Profiling shows the user-profile API is CPU-bound, not
+   I/O-bound, so the fix is a **C-family (compute-optimized) instance type** behind the existing
+   Auto Scaling group, with the scaling policy switched from a flat CPU-utilization target to one
+   that also accounts for request count per target — ensuring the fleet scales *before* CPU
+   saturates, not after. A read-through **ElastiCache** layer is added in front of the profile
+   database for the (heavily repeated) morning-rush profile lookups, cutting direct database load
+   substantially.
+3. **Global latency (Task 3.4).** The dashboard's static assets (JS/CSS/images) move behind
+   **CloudFront**, instantly helping Tokyo/London load times for anything cacheable. For the
+   dashboard's live API calls (not cacheable — they're per-user, dynamic), **Global Accelerator**
+   is added in front of the ALB, routing London/Tokyo traffic onto the AWS backbone at the nearest
+   edge location instead of the public internet the whole way, measurably cutting round-trip time
+   for the non-cacheable portion of the traffic.
+
+**Why this design, not a simpler one.** The team considered simply "making the S3 bucket bigger"
+or switching to a larger EC2 instance type across the board as a first instinct, but diagnosed
+that the actual bottleneck in point 1 was *query shape* (row-based CSV scanned in full) rather
+than storage capacity — no amount of a bigger S3 bucket changes how much data Athena has to scan
+per query; only the Parquet conversion and partitioning do. Similarly, in point 2, blindly scaling
+the Auto Scaling group's *size* without first identifying the CPU-bound nature of the workload
+could have thrown money at more of the wrong instance family; profiling first to confirm "CPU-
+bound, not memory- or I/O-bound" is what justified the C-family switch specifically.
+
 ## Common exam scenarios
 
 - *"Multiple EC2 instances need concurrent read/write access to the same set of files."* → EFS,
@@ -126,7 +240,39 @@ underlying data lake.
   analytics."* → Glue ETL job converting CSV to Parquet, landing in S3.
 - *"Ad-hoc SQL queries need to run directly against files sitting in S3 without standing up a
   database."* → Athena.
+- *"A tightly-coupled HPC workload needs the lowest possible latency between a cluster of EC2
+  instances."* → Cluster placement group.
+- *"A small set of critical instances must never share the same underlying hardware, to avoid a
+  single hardware failure taking down more than one at once."* → Spread placement group.
+- *"A workload needs millions of requests per second at the lowest possible latency, with no need
+  for HTTP-layer (Layer 7) routing features."* → Network Load Balancer, not Application Load
+  Balancer.
+- *"An EC2 instance needs ultra-low-latency, non-persistent scratch storage and durability is not
+  required for this specific data."* → Instance Store (NVMe), not EBS.
+- *"A Kinesis Data Streams application is falling behind the incoming data rate and records are
+  expiring before being processed."* → Increase the shard count (each shard has a fixed
+  read/write throughput ceiling) or switch to on-demand capacity mode.
+- *"An application needs to query data across both its data lake in S3 and its data warehouse,
+  for a large-scale historical analysis involving complex joins."* → Redshift (with Redshift
+  Spectrum querying S3 data directly) rather than Athena alone, once query complexity and data
+  volume exceed what ad-hoc serverless querying handles well.
+- *"A new database workload is pure key-value, needs single-digit-millisecond latency at any
+  scale, with access patterns known in advance."* → DynamoDB, not RDS/Aurora — the exam frames
+  this as a performance decision (DynamoDB's latency profile at scale), not just a cost decision.
 
 ## Hands-on Labs
 
-See [`labs.md`](labs.md) for runnable Floci exercises covering this domain.
+See [`labs.md`](labs.md) for runnable Floci exercises covering this domain — expanded to 5 labs
+covering Kinesis ingestion, DynamoDB throughput modes, EC2/Auto Scaling mechanics, ElastiCache
+cache-aside, and a capstone data-pipeline lab chaining ingestion through to query.
+
+## Where This Domain Connects
+
+- Domain 1 (`../domain-1-secure-architectures/`) — the VPC endpoint pattern from that domain's
+  `vpc-security-architecture-patterns.md` is also this domain's answer for low-latency,
+  no-NAT-hop access to S3/DynamoDB from a performance-sensitive app tier.
+- Domain 2 (`../domain-2-resilient-architectures/`) — read replicas and Auto Scaling groups are
+  the same services, viewed through a resilience lens there and a raw-throughput lens here.
+- Domain 4 (`../domain-4-cost-optimized-architectures/`) — nearly every performance lever in this
+  domain (bigger instance family, more read replicas, Provisioned IOPS) has a direct cost
+  consequence worked through from the opposite angle in that domain's decision frameworks.

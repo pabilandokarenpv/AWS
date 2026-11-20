@@ -101,6 +101,79 @@ endpoint, never the primary's — this offloads read traffic exactly as Task 2.1
 (a separate RDS setting, not a separate instance you connect to) is the distinct high-availability
 failover mechanism covered conceptually in `disaster-recovery-strategies.md`.
 
+## Lab 4 — SNS fan-out to multiple SQS queues (Task 2.1)
+
+Goal: build the "one event, many independent subscribers, each durably buffered" pattern from
+`event-driven-microservice-architecture-patterns.md` — the combined SNS+SQS pattern that shows up
+constantly in real decoupled systems.
+
+```bash
+# 1. Create an SNS topic representing "OrderPlaced" events
+awslocal sns create-topic --name order-placed-topic
+
+# 2. Create two separate SQS queues representing two independent subscriber services
+awslocal sqs create-queue --queue-name inventory-service-queue
+awslocal sqs create-queue --queue-name notification-service-queue
+
+# 3. Subscribe both queues to the topic (each gets its own durable copy of every message)
+awslocal sns subscribe --topic-arn arn:aws:sns:us-east-1:000000000000:order-placed-topic \
+  --protocol sqs --notification-endpoint arn:aws:sqs:us-east-1:000000000000:inventory-service-queue
+awslocal sns subscribe --topic-arn arn:aws:sns:us-east-1:000000000000:order-placed-topic \
+  --protocol sqs --notification-endpoint arn:aws:sqs:us-east-1:000000000000:notification-service-queue
+
+# 4. Publish one message to the topic
+awslocal sns publish --topic-arn arn:aws:sns:us-east-1:000000000000:order-placed-topic \
+  --message '{"orderId": "A-1003", "status": "placed"}'
+
+# 5. Confirm BOTH queues received their own independent copy of the message
+awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/inventory-service-queue
+awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/notification-service-queue
+```
+
+Why this matters: this is the exact mechanism behind "many independent teams' services all react
+to the same event" — a new third subscriber can be added later by subscribing one more queue to
+the topic, with zero change to the publisher or the existing subscribers.
+
+## Lab 5 — Capstone: decouple, auto-scale, and add a dead-letter queue (Task 2.1 + 2.2)
+
+Goal: combine queue-based decoupling, scale-on-depth reasoning, and failure handling into one
+mini-architecture resembling the domain README's StreamVista case study.
+
+```bash
+# 1. Create a dead-letter queue first
+awslocal sqs create-queue --queue-name order-processing-dlq
+
+# 2. Create the main queue with a redrive policy pointing failed messages at the DLQ after
+#    3 failed receive attempts
+DLQ_ARN=$(awslocal sqs get-queue-attributes \
+  --queue-url http://localhost:4566/000000000000/order-processing-dlq \
+  --attribute-names QueueArn --query Attributes.QueueArn --output text)
+awslocal sqs create-queue --queue-name order-processing-queue \
+  --attributes "RedrivePolicy={\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"3\"}"
+
+# 3. Send a normal message and a deliberately "poison" message (e.g., malformed JSON an
+#    application would reject every time)
+awslocal sqs send-message --queue-url http://localhost:4566/000000000000/order-processing-queue \
+  --message-body '{"orderId": "A-2001", "status": "placed"}'
+awslocal sqs send-message --queue-url http://localhost:4566/000000000000/order-processing-queue \
+  --message-body 'not-valid-json{{{'
+
+# 4. Simulate a worker repeatedly failing to process the poison message by receiving it without
+#    deleting it 3 times in a row (each receive increments its receive count)
+for i in 1 2 3; do
+  awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/order-processing-queue \
+    --attribute-names ApproximateReceiveCount
+done
+
+# 5. Confirm the poison message has moved to the DLQ instead of looping forever
+awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/order-processing-dlq
+```
+
+Why this matters: this is the production-grade pattern this domain's README calls out as missing
+from a naive queue setup — without a DLQ, one malformed message can consume worker capacity
+indefinitely (constantly retried, never succeeding, never cleared), silently degrading the whole
+pipeline's throughput exactly like the tight-coupling failures this domain is built to prevent.
+
 ## Honest limitation
 
 Floci does not simulate true cross-AZ network failure, Route 53 health-check-driven failover, or

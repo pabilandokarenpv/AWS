@@ -25,6 +25,14 @@ each other; two unrelated pieces of text get embeddings that are far apart. This
 trick that makes RAG work: "find text similar in meaning" becomes "find vectors that are close
 together," which is a fast, well-understood math problem (nearest-neighbor search).
 
+A simple mental model, no math required: imagine plotting every sentence you've ever read as a
+single dot on a huge map, where sentences about "returns and refunds" all cluster in one
+neighborhood of the map, sentences about "shipping times" cluster in a different neighborhood, and
+so on. An embedding is just that sentence's coordinates on the map. Finding "what's relevant to
+this question" becomes "what dots are closest to the question's own coordinates on the same map"
+— nothing more exotic than that, even though the real map has hundreds of dimensions instead of
+two.
+
 ## Purpose
 
 Foundation models (the large pretrained models behind Bedrock, ChatGPT-style assistants, etc.)
@@ -40,6 +48,20 @@ pasting everything into the prompt. It also solves a real accuracy problem calle
 **hallucination** (a model confidently generating a plausible-sounding but false answer) by
 grounding the model's answer in actual retrieved text instead of asking it to recall facts from
 memory alone.
+
+### RAG vs. fine-tuning vs. prompting — a direct comparison
+
+This three-way comparison is tested constantly, because the exam's favorite trap is applying the
+wrong one of these three to a scenario that clearly calls for a different one:
+
+| Dimension | Prompting alone | RAG | Fine-tuning |
+|---|---|---|---|
+| What it changes | Nothing about the model — just gives it instructions/examples in the prompt | What *facts* the model has access to at answer time | How the model *behaves* (tone, format, domain vocabulary, task-specific skill) |
+| Good for | Simple tasks, small amount of context, quick iteration | Grounding answers in current/private documents, needing citations | Teaching a consistent output format, a persona, or a narrow skill not well covered out of the box |
+| Bad for | Large private knowledge bases — doesn't scale | Changing *how* the model writes/behaves, not just what it knows | Injecting frequently-changing facts — requires retraining every time data changes |
+| Update cost when data changes | N/A (no stored data) | Cheap — re-embed and re-index changed documents | Expensive — requires a new fine-tuning run |
+| Gives you citations/source attribution | No | Yes, naturally (you know which chunk was retrieved) | No |
+| Typical AWS implementation | Just the model invocation itself | Bedrock Knowledge Bases / OpenSearch + Bedrock | Bedrock fine-tuning / SageMaker JumpStart fine-tuning |
 
 ## How It Works
 
@@ -91,6 +113,53 @@ Step by step:
    context and produces an answer that's tied to the actual retrieved text, not just whatever it
    memorized during pretraining.
 
+![Pre-processing data for retrieval-augmented generation](https://docs.aws.amazon.com/bedrock/latest/userguide/images/kb/rag-preprocess.png)
+
+*Figure: AWS's own illustration of the pre-processing (indexing) half of RAG — documents are
+chunked, converted to embeddings, and written to a vector index while keeping a pointer back to
+the original document. This is steps 1-4 above, in AWS's own diagram form. Source: Amazon Bedrock
+User Guide, "How Amazon Bedrock knowledge bases work" —
+docs.aws.amazon.com/bedrock/latest/userguide/kb-how-it-works.html.*
+
+![Retrieval-augmented generation at runtime](https://docs.aws.amazon.com/bedrock/latest/userguide/images/kb/rag-runtime.png)
+
+*Figure: the runtime half — the user's query is embedded with the same model, the vector index is
+searched for semantically similar chunks, and the retrieved context augments the prompt sent to
+the foundation model. This is steps 5-8 above. Source: same Bedrock User Guide page.*
+
+### A second diagram — Bedrock Knowledge Bases wired into an Agent
+
+RAG rarely stands alone in a real deployment; it's commonly one capability inside a larger
+Bedrock Agent that can also call tools/APIs. Seeing where RAG sits in that bigger picture avoids
+a common exam confusion between "Knowledge Bases" (the RAG piece) and "Agents" (the broader
+orchestration piece, covered fully in Domain 3):
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Agent as Bedrock Agent
+    participant KB as Knowledge Base<br/>(RAG)
+    participant Tool as External API/Lambda
+    participant FM as Foundation Model
+
+    User->>Agent: "What's my order status and<br/>what's the return policy?"
+    Agent->>FM: Plan: this needs two lookups
+    FM-->>Agent: Step 1: call order-status API<br/>Step 2: query Knowledge Base
+    Agent->>Tool: GetOrderStatus(order_id)
+    Tool-->>Agent: "Shipped, arriving Thursday"
+    Agent->>KB: Retrieve("return policy")
+    KB-->>Agent: Top-K policy chunks
+    Agent->>FM: Synthesize final answer<br/>from both results
+    FM-->>Agent: Combined, grounded answer
+    Agent-->>User: "Your order ships Thursday.<br/>Electronics can be returned within 30 days..."
+```
+
+The exam-relevant distinction: a Knowledge Base alone answers "what does our documentation say" —
+it has no ability to call an external system. An Agent is the layer that can combine a Knowledge
+Base lookup *and* a live API call (like checking real order status) into one multi-step answer.
+A scenario describing only "answer questions from our documents" is Knowledge Bases; a scenario
+describing "also take an action or look up live system state" needs an Agent on top.
+
 ## Key Features / Components
 
 - **Chunking strategies** — fixed-size (simplest, same token count every time), sentence/
@@ -110,6 +179,81 @@ Step by step:
 - **Bedrock Knowledge Bases** — AWS's managed end-to-end RAG pipeline: point it at an S3 data
   source, it handles chunking, embedding, vector storage, and retrieval, and exposes a simple
   "ask a question, get a grounded answer with citations" API.
+- **Multimodal embeddings** — some embedding models (and Bedrock Knowledge Bases' newer "smart
+  parsing" features) can embed images and tables extracted from documents alongside text, so a
+  question can retrieve a relevant diagram or table, not only prose paragraphs.
+- **Hybrid search** — combining traditional keyword search (exact-term matching, useful for
+  product codes, names, or acronyms that embeddings alone might blur together) with vector
+  similarity search in the same query, improving recall for queries that mix a precise term with
+  a conceptual question.
+- **Re-ranking** — an optional second pass after the initial top-K similarity search, using a
+  more expensive but more accurate model to re-order the retrieved candidates by true relevance
+  before they're sent to the generation step — a lever for improving answer quality when plain
+  vector similarity alone surfaces technically-close-but-not-actually-useful chunks.
+
+### Choosing a vector store — a decision guide
+
+A recurring scenario shape asks you to pick the right vector store backend for a given
+constraint. A quick reference:
+
+| If the scenario says... | Consider |
+|---|---|
+| "Want the whole RAG pipeline (chunk/embed/store/retrieve) managed end-to-end with minimal setup" | Bedrock Knowledge Bases |
+| "Already running OpenSearch for log/search workloads, want vector search alongside it" | Amazon OpenSearch Service/Serverless with the k-NN plugin |
+| "Already running Aurora PostgreSQL, want vectors alongside existing relational data with joins" | Aurora PostgreSQL + `pgvector` |
+| "Need serverless, pay-per-use vector search with no cluster management" | OpenSearch Serverless or Bedrock Knowledge Bases (both scale down automatically) |
+| "Need hybrid keyword + vector search in one query" | OpenSearch (supports both natively) |
+| "Experimenting locally, no AWS account/cost yet" | FAISS (free, local, in-memory — see `labs.md`) |
+
+### Worked example — sizing a RAG pipeline for a real company
+
+To make the abstract cost/chunking tradeoffs concrete, walk through actual numbers. Suppose
+"MegaMart" (same company as the Domain 1 README's case study) wants to index its 2,000-page
+policy and product-manual corpus for the support chatbot.
+
+1. **Chunking:** at ~400 tokens per chunk with 15% overlap, 2,000 pages (roughly 1,000,000 words,
+   ~1.3M tokens) produces on the order of 3,500-4,000 chunks.
+2. **Embedding cost:** at a representative Bedrock Titan Embeddings rate of a few cents per
+   million input tokens, embedding the entire initial corpus is a one-time cost measured in
+   single-digit dollars — trivially cheap compared to a fine-tuning run over the same corpus,
+   which would be priced as a full training job.
+3. **Ongoing cost:** when the returns policy page changes, only that one document's chunks (a
+   handful, not the full corpus) need re-embedding and re-indexing — this incremental-update
+   property is the single biggest operational reason RAG wins over fine-tuning for frequently
+   changing source material.
+4. **Storage:** ~4,000 chunks at a 1,536-dimension embedding (a common Titan Embeddings output
+   size) is a small vector index by any vector database's standards — well within OpenSearch
+   Serverless's or Bedrock Knowledge Bases' baseline capacity, meaning this specific workload's
+   bottleneck is almost never storage cost, it's getting chunking and retrieval quality right.
+
+This is the shape of math a "most cost-effective way to keep a chatbot's knowledge current"
+exam question is testing — not exact numbers, but the *qualitative* fact that RAG's incremental
+update cost scales with how much content changed, while fine-tuning's cost resets to "the whole
+training job" regardless of how small the change was.
+
+## Troubleshooting / Common Issues
+
+- **Retrieved chunks are relevant by topic but the generated answer is still wrong or vague.**
+  Check prompt assembly and top-K count before assuming retrieval failed — too few retrieved
+  chunks (K too small) can starve the model of needed context; too many can bury the genuinely
+  relevant chunk among irrelevant ones.
+- **The same question returns different top chunks on different days with no data changes.**
+  Check whether the vector store's index was rebuilt or the embedding model version changed —
+  switching embedding model versions silently invalidates the geometric relationship between old
+  stored vectors and newly embedded queries; a full re-embedding of the corpus is required after
+  any embedding model change, not just new documents.
+- **A multi-tenant RAG system occasionally returns another tenant's content.** This is a metadata
+  filtering bug, not a retrieval-quality issue — audit that every query path (not just the "happy
+  path" UI) enforces the `tenant_id` (or equivalent) filter before the similarity search runs.
+- **Embedding costs are higher than expected for a corpus that "shouldn't have changed much."**
+  Check whether the ingestion pipeline is re-embedding the *entire* corpus on every scheduled run
+  instead of only new/changed documents — this is a common, expensive default to leave
+  unconfigured in a hand-rolled pipeline (Bedrock Knowledge Bases handles incremental sync
+  automatically when pointed at a versioned S3 data source).
+- **Chunking at a fixed token count cuts tables and code blocks in half, producing unusable
+  chunks.** Switch to a structure-aware or semantic chunking strategy for content types where
+  fixed-size splitting breaks meaningful structural units (tables, numbered lists, code) rather
+  than forcing every document type through the same naive splitter.
 
 ## Use Cases — When to Use It
 
@@ -120,6 +264,12 @@ Step by step:
   citations).
 - You need the model to reason about data created *after* its training cutoff → RAG (fine-tuning
   can't inject genuinely new facts efficiently; it's better for teaching style/format/behavior).
+- A multi-tenant SaaS product needs each customer's chatbot answers grounded only in that
+  customer's own documents → RAG with metadata filtering (e.g., `tenant_id`) scoping every
+  similarity search to the requesting customer's data only.
+- An internal search tool needs to let employees find the right internal wiki page using natural
+  language rather than exact keyword matches → RAG's retrieval half alone (without necessarily
+  generating a synthesized answer) is a legitimate standalone use case.
 
 ## When NOT to Use It / Alternatives
 
@@ -132,6 +282,13 @@ Step by step:
   complexity with no benefit if there's nothing to filter down.
 - **You need exact-match lookups** (customer ID → order history) → use a regular database query,
   not similarity search; vector search finds things that are *similar in meaning*, not identical.
+- **The underlying facts never change and are small in volume** (a fixed set of 10 FAQ answers)
+  → a simple rules-based lookup or even a static prompt may outperform a full RAG pipeline on
+  both cost and latency, with far less operational surface area to maintain.
+- **Answers need to be guaranteed deterministic and auditable to the letter** (e.g., a regulated
+  numeric calculation) → RAG still generates text probabilistically; a deterministic calculation
+  belongs in actual code/business logic, with the foundation model only explaining the result in
+  natural language, not computing it.
 
 ## Why It's Important
 
@@ -152,6 +309,13 @@ and embedding calls it makes on your behalf. See
 [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md)
 and the official Bedrock pricing page for current numbers.
 
+**Worked cost-shape comparison:** re-embedding a 10,000-document corpus after every minor policy
+update is far cheaper than fine-tuning a foundation model on the same corpus every time it
+changes — embedding is billed per token processed once per document (and only changed documents
+need re-embedding), while a fine-tuning run bills for the full training compute job regardless of
+how small the change was. This cost asymmetry is exactly why RAG, not fine-tuning, is the default
+answer whenever a scenario describes frequently-changing source documents.
+
 ## Hands-on Lab (Floci)
 
 See [`labs.md`](labs.md) in this folder — Floci does not emulate Bedrock or vector embedding
@@ -168,6 +332,35 @@ FAISS or `pgvector`-on-Docker index instead, with Floci only staging the source 
   incoming query — a common wrong-answer trap is mixing two different embedding models.
 - Chunk size and overlap are plain-English concepts the exam tests without requiring math —
   you just need to reason about "too big loses precision, too small loses context."
+- Distinguish Knowledge Bases (the RAG/retrieval piece) from Agents (the broader multi-step,
+  tool-using orchestration layer) — a scenario needing only "answer from our documents" is
+  Knowledge Bases; a scenario needing "also take an action" needs an Agent.
+- Metadata filtering is the specific mechanism for multi-tenant data isolation in a shared vector
+  store — if a scenario says "customer A must never see customer B's retrieved content," this is
+  the keyword answer, not a separate vector store per customer (though that's also valid, just
+  usually more operationally expensive than the exam's expected answer).
+
+### More sample exam scenarios, worked
+
+**Scenario 1:** "A company's product manual is 400 pages and changes every time a new product
+ships. Customer support wants a chatbot that always reflects the latest manual." *Answer:* RAG —
+chunk and re-embed only the changed sections of the manual as it's updated, rather than
+retraining a model on 400 pages every release cycle.
+
+**Scenario 2:** "A legal team requires every chatbot answer to show exactly which paragraph of
+which source document it came from." *Answer:* RAG, specifically because retrieval naturally
+preserves a pointer back to the original chunk/document — fine-tuning has no equivalent
+traceability mechanism.
+
+**Scenario 3:** "A multi-tenant HR SaaS platform's chatbot must answer each customer's employees
+using only that customer's own HR policy documents, never another customer's." *Answer:*
+metadata filtering on the vector store (e.g., filter by `tenant_id` at query time), not a
+company-wide shared index with no isolation.
+
+**Scenario 4:** "An engineering team wants a model that always outputs valid JSON matching a
+specific internal schema for every response, regardless of what's asked." *Answer:* fine-tuning
+(or strict prompt engineering with output validation) — this is a behavior/format requirement,
+not a factual-grounding requirement, so RAG alone doesn't solve it.
 
 ## Related Terms
 
@@ -175,5 +368,11 @@ FAISS or `pgvector`-on-Docker index instead, with Floci only staging the source 
   — foundation models, Knowledge Bases, Agents.
 - [`services/analytics/opensearch.md`](../../../services/analytics/opensearch.md) — one of the
   vector store backends.
+- [`../domain-2-model-development/README.md`](../domain-2-model-development/README.md) — the
+  RAG-vs-fine-tuning decision continues directly into this domain's foundation-model development
+  task statements.
+- [`../domain-3-deployment-orchestration/README.md`](../domain-3-deployment-orchestration/README.md)
+  — how Knowledge Bases and Agents get deployed/orchestrated as production components.
 - [`responsible-ai-and-guardrails.md`](../domain-4-monitoring-security/responsible-ai-and-guardrails.md)
   — filtering/validating what a RAG-grounded model is allowed to output.
+- [`labs.md`](labs.md) — the local, free hands-on exercise for this exact pipeline.

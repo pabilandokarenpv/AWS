@@ -122,3 +122,166 @@ deployment config — the exam expects you to recognize these naming patterns
 (`LambdaCanary10Percent5Minutes`, `LambdaLinear10PercentEvery1Minute`,
 `LambdaAllAtOnce`) and pick the one matching a scenario's described risk tolerance, not to
 memorize every parameter from scratch.
+
+## Lab 4 — Externalized config read at runtime (Task 3.1)
+
+Builds the "same artifact, different environments" discipline from the
+[README's Task 3.1 diagram](README.md#task-31-in-one-picture-what-actually-goes-into-a-deployable-artifact).
+
+```bash
+# 1. Store different config per environment, same parameter path pattern
+awslocal ssm put-parameter --name /staging/app/db-host --value "staging-db.local" --type String
+awslocal ssm put-parameter --name /prod/app/db-host --value "prod-db.local" --type String
+
+# 2. ONE Lambda function, reads its environment from an env var, then reads the matching parameter
+cat > config_handler.py <<'EOF'
+import os, boto3
+ssm = boto3.client("ssm", endpoint_url="http://host.docker.internal:4566", region_name="us-east-1")
+
+def handler(event, context):
+    env = os.environ.get("APP_ENV", "staging")  # set per-deployment, NOT baked into the code
+    param = ssm.get_parameter(Name=f"/{env}/app/db-host")
+    return {"statusCode": 200, "body": f"Connecting to: {param['Parameter']['Value']}"}
+EOF
+zip config_function.zip config_handler.py
+
+# 3. Deploy the SAME zip twice, differing only by the APP_ENV environment variable
+awslocal lambda create-function --function-name app-staging \
+  --runtime python3.12 --handler config_handler.handler \
+  --zip-file fileb://config_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --environment "Variables={APP_ENV=staging}"
+
+awslocal lambda create-function --function-name app-prod \
+  --runtime python3.12 --handler config_handler.handler \
+  --zip-file fileb://config_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --environment "Variables={APP_ENV=prod}"
+
+# 4. Confirm each resolves to its own environment's config, despite being the SAME deployed code
+awslocal lambda invoke --function-name app-staging out_staging.json; cat out_staging.json
+awslocal lambda invoke --function-name app-prod out_prod.json; cat out_prod.json
+```
+
+**What to notice:** `config_function.zip` is byte-for-byte identical in both deployments — only the
+environment variable and the parameter it then looks up differ. This is the concrete mechanism
+behind Task 3.1's "externalize configuration" bullet, and it's exactly what a question describing
+"the same build artifact must be promotable across environments without rebuilding" is testing.
+
+## Lab 5 — CloudWatch alarm driving a deployment rollback decision (Task 3.3)
+
+```bash
+# 1. Create a metric filter that counts ERROR log lines as a custom metric
+awslocal logs put-metric-filter \
+  --log-group-name /aws/lambda/checkout-service \
+  --filter-name error-count \
+  --filter-pattern "ERROR" \
+  --metric-transformations \
+    metricName=CheckoutErrors,metricNamespace=CheckoutApp,metricValue=1,defaultValue=0
+
+# 2. Create an alarm on that metric — this is the alarm CodeDeploy would associate with a deployment group
+awslocal cloudwatch put-metric-alarm \
+  --alarm-name checkout-high-error-rate \
+  --namespace CheckoutApp \
+  --metric-name CheckoutErrors \
+  --statistic Sum \
+  --period 300 \
+  --evaluation-periods 1 \
+  --threshold 5 \
+  --comparison-operator GreaterThanThreshold
+
+# 3. Simulate error log lines that would breach the alarm
+cat > error_handler.py <<'EOF'
+import logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+def handler(event, context):
+    logger.error("ERROR: payment gateway timeout")
+    return {"statusCode": 500}
+EOF
+zip error_function.zip error_handler.py
+awslocal lambda create-function --function-name checkout-service \
+  --runtime python3.12 --handler error_handler.handler \
+  --zip-file fileb://error_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role
+
+for i in $(seq 1 6); do awslocal lambda invoke --function-name checkout-service out.json; done
+
+# 4. Check the alarm state — in a real deployment, ALARM state here is what triggers CodeDeploy's
+#    automatic rollback, per the README's "Rollback mechanics" section
+awslocal cloudwatch describe-alarms --alarm-names checkout-high-error-rate
+```
+
+**What to notice:** nothing about this alarm is Lambda-specific or CodeDeploy-specific — it's a
+plain CloudWatch metric filter + alarm. CodeDeploy's "alarm-based rollback" is just a deployment
+group configuration that *watches* an alarm like this one; the alarm itself doesn't know or care
+that a deployment is in progress. Understanding that separation is exactly what the README's
+[Rollback mechanics](README.md#rollback-mechanics-how-automatic-rollback-actually-triggers)
+section is testing.
+
+## Lab 6 — ECS task definition and Fargate service (Task 3.3's container emphasis)
+
+```bash
+# 1. Register a task definition for the checkout microservice from the case study
+cat > task-def.json <<'EOF'
+{
+  "family": "checkout-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [{
+    "name": "checkout",
+    "image": "public.ecr.aws/docker/library/httpd:latest",
+    "portMappings": [{"containerPort": 80, "protocol": "tcp"}],
+    "environment": [{"name": "APP_ENV", "value": "staging"}]
+  }]
+}
+EOF
+awslocal ecs register-task-definition --cli-input-json file://task-def.json
+
+# 2. Create a cluster and a Fargate service running that task definition
+awslocal ecs create-cluster --cluster-name demo-cluster
+
+awslocal ecs create-service \
+  --cluster demo-cluster \
+  --service-name checkout-service \
+  --task-definition checkout-service \
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-12345],securityGroups=[sg-12345],assignPublicIp=ENABLED}"
+
+# 3. Confirm the service is running the expected number of tasks
+awslocal ecs describe-services --cluster demo-cluster --services checkout-service
+
+# 4. Register a NEW task definition revision (simulating a deploy) and update the service to it
+sed 's/staging/prod/' task-def.json > task-def-v2.json
+awslocal ecs register-task-definition --cli-input-json file://task-def-v2.json
+awslocal ecs update-service --cluster demo-cluster --service checkout-service \
+  --task-definition checkout-service
+```
+
+**What to notice:** `register-task-definition` never overwrites the old revision — each call
+creates a new numbered revision of the same family, and `update-service` is what actually shifts
+the running service to the new revision. This immutable-revision model is exactly the ECS
+equivalent of the "never rebuild the artifact, promote the exact tested one" discipline from
+Task 3.1 — a bad deploy is "point the service back at the previous task definition revision," not
+"re-run a build with the old code."
+
+## Lab wrap-up and cross-links
+
+| Lab | Task(s) reinforced | README section |
+|---|---|---|
+| 1 | 3.1 (ECR images, lifecycle policies) | [Task 3.1 in one picture](README.md#task-31-in-one-picture-what-actually-goes-into-a-deployable-artifact) |
+| 2 | 3.2 (template validation, mock events), 3.3 (deployment) | [Task 3.2 in practice](README.md#task-32-in-practice-validating-before-you-ever-deploy) |
+| 3 | 3.3 (CodeDeploy configs, canary) | [Deployment strategies compared](README.md#deployment-strategies-compared) |
+| 4 | 3.1 (externalized config) | [Task 3.1 in one picture](README.md#task-31-in-one-picture-what-actually-goes-into-a-deployable-artifact) |
+| 5 | 3.3 (alarm-based rollback) | [Rollback mechanics](README.md#rollback-mechanics-how-automatic-rollback-actually-triggers) |
+| 6 | 3.3 (ECS/Fargate deployment) | [Full worked case study](README.md#full-worked-case-study-cicd-for-a-containerized-checkout-microservice) |
+
+For the fullest picture of how all six labs connect into one pipeline, re-read the
+[case study](README.md#full-worked-case-study-cicd-for-a-containerized-checkout-microservice)
+after finishing Lab 6 — every piece of that architecture diagram has now been exercised locally at
+least once, just not wired together into a single literal CodePipeline (which Floci doesn't fully
+emulate end to end).
+

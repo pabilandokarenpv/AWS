@@ -1,5 +1,8 @@
 # DVA-C03 — AWS Certified Developer – Associate
 
+![AWS Certified Developer - Associate badge](https://d1.awsstatic.com/onedam/marketing-channels/website/aws/en_US/certification/approved/images/certification-badges/1268_AWS_Cert_Template_badges_Developer.ce4746ac480f7d808aebe43789d17f9b3b6d23f6.png)
+*Source: [AWS Certification](https://aws.amazon.com/certification/). The official digital badge earned on passing — same artwork AWS issues through Credly on certification.*
+
 > **Exam transition:** DVA-C03 registration opened Oct 27, 2026. DVA-C02 retires Nov 30, 2026.
 > DVA-C03 is live from **Dec 1, 2026**. This repo targets DVA-C03 since that's the version en
 > will actually sit.
@@ -30,6 +33,29 @@
   AWS PrivateLink**. SageMaker AI and Strands Agents are explicitly **out of scope** (that's
   MLA-C02 territory).
 
+## The exam in one picture: how the four domains relate
+
+```mermaid
+flowchart LR
+    D1["Domain 1: Development (30%)\nWrite the code"] --> D2["Domain 2: Security (26%)\nMake it safe"]
+    D2 --> D3["Domain 3: Testing & Deployment (22%)\nShip it reliably"]
+    D3 --> D4["Domain 4: Troubleshooting & Optimization (22%)\nFix and tune what's live"]
+    D4 -.feeds lessons back into.-> D1
+    AI["AI-assisted development\n(cross-cutting pattern)"] -.touches.-> D1
+    AI -.touches.-> D3
+    AI -.touches.-> D4
+    AISEC["AI service security\n(Task 2.3, new)"] -.sits inside.-> D2
+```
+
+Each domain assumes the previous one happened correctly: Domain 2's security controls protect code
+that Domain 1 already wrote; Domain 3's pipeline deploys code that Domain 2 already secured;
+Domain 4 troubleshoots and tunes what Domain 3 already shipped. The two cross-cutting new topics —
+AI-assisted development and AI service security — don't get their own domain weight; they're woven
+into the existing four, which is exactly why this repo gives each one a canonical doc
+([`domain-1-development/ai-assisted-development.md`](domain-1-development/ai-assisted-development.md),
+[`domain-2-security/ai-service-security-risks.md`](domain-2-security/ai-service-security-risks.md))
+that every other domain cross-links into instead of repeating.
+
 ## Domains & Weights
 
 | # | Domain | Weight | Folder |
@@ -39,6 +65,15 @@
 | 3 | Testing and Deployment | **22%** | [`domain-3-testing-deployment/`](domain-3-testing-deployment) |
 | 4 | Troubleshooting and Optimization | **22%** | [`domain-4-troubleshooting-optimization/`](domain-4-troubleshooting-optimization) |
 
+```mermaid
+pie showData
+    title DVA-C03 exam weight by domain
+    "Domain 1: Development (30%)" : 30
+    "Domain 2: Security (26%)" : 26
+    "Domain 3: Testing & Deployment (22%)" : 22
+    "Domain 4: Troubleshooting & Optimization (22%)" : 22
+```
+
 ## Domain 1: Development with AWS Services (30%)
 
 - **Task 1.1** — Develop code for applications hosted on AWS (AWS SDKs/APIs, streaming data,
@@ -46,11 +81,18 @@
 - **Task 1.2** — Develop code for AWS Lambda (VPC access to private resources, layers, concurrency, triggers)
 - **Task 1.3** — Use data stores in application development (DynamoDB, S3, RDS/Aurora — access patterns, consistency models, SDK integration)
 
+See [`domain-1-development/README.md`](domain-1-development/README.md) for the full breakdown,
+including a worked flash-sale order API case study, the Lambda trigger models, and 15 common exam
+scenarios.
+
 ## Domain 2: Security (26%)
 
 - **Task 2.1** — Implement authentication/authorization for apps and AWS services (IAM, Cognito, STS)
 - **Task 2.2** — Implement encryption and manage sensitive data (at-rest/in-transit encryption, ACM/Private CA, KMS, PII masking)
 - **Task 2.3** *(new)* — Identify and mitigate security risks of using/integrating AI services (access control, data privacy via VPC endpoints, content filtering, agent security, log hygiene)
+
+See [`domain-2-security/README.md`](domain-2-security/README.md) for the full breakdown, including
+IAM policy evaluation logic, envelope encryption, and a multi-tenant SaaS + AI chatbot case study.
 
 ## Domain 3: Testing and Deployment (22%)
 
@@ -58,11 +100,47 @@
 - **Task 3.2** — Implement and automate application testing (SAM/CDK/CloudFormation test validation, mock APIs, test events, AI-assisted test generation/regression automation)
 - **Task 3.3** — Deploy code via CI/CD (Lambda packaging, ECS/EKS/Fargate deployment, IaC templates, CodeDeploy, CodePipeline, blue/green/canary/rolling strategies, rollback, AI-assisted deployment approvals)
 
+See [`domain-3-testing-deployment/README.md`](domain-3-testing-deployment/README.md) for the full
+breakdown, including deployment strategy comparisons and a containerized checkout microservice
+CI/CD case study.
+
 ## Domain 4: Troubleshooting and Optimization (22%)
 
 - **Task 4.1** — Assist in root cause analysis (CloudWatch Logs/Metrics, X-Ray tracing, CloudTrail, AI-assisted error analysis)
 - **Task 4.2** — Instrument code for observability
 - **Task 4.3** — Optimize applications on AWS (Lambda performance tuning, cost/performance tradeoffs, AI-assisted optimization recommendations)
+
+See [`domain-4-troubleshooting-optimization/README.md`](domain-4-troubleshooting-optimization/README.md)
+for the full breakdown, including the symptom-to-tool lookup, Lambda cost math, and a slow-checkout
+diagnosis case study.
+
+## The two cross-cutting new topics, side by side
+
+| | AI-assisted development | AI service security |
+|---|---|---|
+| Where it lives | [`domain-1-development/ai-assisted-development.md`](domain-1-development/ai-assisted-development.md) | [`domain-2-security/ai-service-security-risks.md`](domain-2-security/ai-service-security-risks.md) |
+| What it's about | Humans using an AI tool (Amazon Q Developer, Kiro) to help *build* software | Securing an AI *service* (Bedrock, Amazon Q) that your *application* calls |
+| Tasks it touches | 1.1, 3.2, 3.3, 4.1, 4.3 | 2.3 specifically |
+| The one rule that answers most questions | AI proposes, a human verifies before anything irreversible happens | Least privilege + private network path + don't trust model input/output by default |
+
+These get confused with each other constantly on first read because both involve "AI" — the fast
+disambiguator: if the question is about a *developer* using a tool to write/test/deploy/debug
+code, it's the first column; if it's about an *application feature* built on a generative AI
+model that end users interact with, it's the second.
+
+## How to use this repo day to day
+
+```mermaid
+flowchart TD
+    START[Start a study session] --> READ[Read one domain README fully,\nincluding the case study]
+    READ --> TOPIC[Read that domain's standalone topic doc, if any]
+    TOPIC --> SERVICE[Follow the doc-mapping table's links into\nservices/ for any unfamiliar service]
+    SERVICE --> LAB[Run that domain's labs.md against Floci]
+    LAB --> PRACTICE[Attempt that domain's practice-questions/]
+    PRACTICE --> REVIEW{Scored below target?}
+    REVIEW -->|yes| READ
+    REVIEW -->|no| NEXT[Move to the next domain]
+```
 
 ## Study order
 
@@ -72,6 +150,26 @@
 4. Domain 3 (testing/deployment — assumes you can already write the code from Domains 1-2)
 5. Domain 4 (troubleshooting — the "something's wrong with what I built in 1-3" layer)
 
+## Practice questions
+
+Each domain has a dedicated question set under [`practice-questions/`](practice-questions/index.md),
+weighted roughly in proportion to the domain's exam weight. Use them *after* finishing a domain's
+README, topic docs, and labs — not as a substitute for reading the material, since the questions
+assume you've already internalized the case studies and diagrams, not just the task-statement list.
+
+## What "done" looks like for this repo
+
+- [ ] Every domain README's "Common exam scenarios" section can be explained out loud without
+      re-reading it.
+- [ ] Every domain's full worked case study can be redrawn from memory (architecture diagram +
+      the "why" for each component choice).
+- [ ] Every lab in every domain's `labs.md` has actually been run against Floci at least once.
+- [ ] Every practice question set scores above your personal target threshold on a second attempt.
+- [ ] You can explain, without looking it up, the difference between AI-assisted development
+      (Domain 1 cross-cutting) and AI service security (Task 2.3) on demand.
+
 ## Status
 
-🚧 Scaffolded — domain folders contain topic checklists; full topic docs being filled in.
+✅ All four domain folders (README, topic docs, labs) are fully expanded with worked case studies,
+Mermaid diagrams, and cross-links into `services/`. Practice question sets remain under
+[`practice-questions/`](practice-questions/index.md) for drilling after each domain.

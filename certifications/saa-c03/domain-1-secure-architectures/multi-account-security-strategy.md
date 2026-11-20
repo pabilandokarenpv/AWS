@@ -2,16 +2,22 @@
 
 ![AWS Organizations icon](../../../diagrams/assets/icons/awsorganizations.png)
 
+![Example AWS Control Tower landing zone account structure, showing a Management account at the top, with Security OU (Log Archive, Audit accounts), Sandbox OU, Infrastructure OU (Backup, Identity, Monitoring, Network, Operations Tooling, Shared Services accounts), Policy Staging OU, Individual Business Users OU, Exceptions OU, Workloads OU, and Deployments OU branching below it.](https://docs.aws.amazon.com/prescriptive-guidance/latest/designing-control-tower-landing-zone/images/guide-img/156d118c-ed00-4c5b-9a02-63c2673a3342/images/101dd11a-d8b3-49fd-ae5f-5480a1c91607.png)
+
+*Source: [AWS Prescriptive Guidance — Designing an AWS Control Tower Landing Zone](https://docs.aws.amazon.com/prescriptive-guidance/latest/designing-control-tower-landing-zone/account-structure.html)*
+
 ## Definition
 
 A multi-account security strategy is the practice of splitting workloads across **many separate
 AWS accounts** (instead of one big account with everything in it) and tying them together with
 AWS Organizations, Control Tower, IAM Identity Center, and a small set of shared "security"
 accounts — so that a mistake or breach in one account can't spread into another. This doc is the
-architectural decision layer that sits on top of `organizations-and-scps.md`,
-`iam-identity-center-sso.md`, and `sts-and-role-switching.md` — those docs explain the individual
-mechanisms; this one explains how real organizations assemble them into a working account
-structure (a "landing zone").
+architectural decision layer that sits on top of
+[`organizations-and-scps.md`](../../../services/security-identity-compliance/organizations-and-scps.md),
+[`iam-identity-center-sso.md`](../../../services/security-identity-compliance/iam-identity-center-sso.md),
+and [`sts-and-role-switching.md`](../../../services/security-identity-compliance/sts-and-role-switching.md)
+— those docs explain the individual mechanisms; this one explains how real organizations assemble
+them into a working account structure (a "landing zone").
 
 ## Purpose
 
@@ -70,6 +76,25 @@ from every account are automatically centralized into the Log Archive and Securi
 accounts, so a compromised workload account can't delete evidence of its own breach — the logs
 never lived there in the first place.
 
+## Account vesting order — how a landing zone actually gets built
+
+Teams new to this pattern often ask "what order do we even do this in?" The practical sequence
+the exam implicitly assumes:
+
+```mermaid
+flowchart LR
+    A["1. Create Management account<br/>(or designate existing payer account)"] --> B["2. Enable Control Tower<br/>(auto-creates Log Archive + Audit accounts)"]
+    B --> C["3. Define OU structure<br/>(Security / Infra / Workloads / Sandbox)"]
+    C --> D["4. Attach baseline SCPs per OU"]
+    D --> E["5. Enable IAM Identity Center,<br/>connect corporate IdP"]
+    E --> F["6. Define permission sets,<br/>map to IdP groups"]
+    F --> G["7. Use Account Factory to<br/>vend new workload accounts,<br/>already inside an OU"]
+```
+
+Note that Control Tower's enrollment *itself* creates the Log Archive and Audit (security
+tooling) accounts automatically — you don't hand-build those two; everything after step 2 is
+customization of the baseline Control Tower already gave you.
+
 ## Key Components
 
 - **Management account** — owns Organizations, consolidated billing, Control Tower; best
@@ -86,6 +111,8 @@ never lived there in the first place.
   users inside workload accounts.
 - **Guardrails** — Control Tower's pre-built SCP/Config-rule bundles (preventive = SCP,
   detective = Config rule) enforcing the baseline.
+- **Cross-account roles** — the mechanism that lets a workload in one account (not just a human)
+  reach a resource in another, via STS `AssumeRole`, always scoped to the minimum needed.
 
 ## Use Cases — When to Use It
 
@@ -98,6 +125,10 @@ never lived there in the first place.
   cross-account role.
 - Mergers/acquisitions or multi-team companies — each business unit gets its own account(s) for
   independent billing and blast-radius control, united under one Organization.
+- Independent compliance boundaries — isolating a HIPAA-regulated workload in its own account so
+  its audit, monitoring, and access review scope doesn't entangle with unrelated workloads.
+- Experimentation without risk — a Sandbox OU lets individual engineers try services freely,
+  guarded by an SCP that caps spend/service availability, without any path to production data.
 
 ## When NOT to Use It / Alternatives
 
@@ -106,6 +137,10 @@ never lived there in the first place.
   pressure justifies the operational overhead of a landing zone.
 - If you need fine-grained permission differences *within* the same workload/team, that's still
   IAM policy design inside one account, not a new account boundary.
+- A short-lived proof-of-concept that will be torn down in weeks rarely justifies the Control
+  Tower setup overhead — a single sandboxed account with a strict IAM boundary is pragmatic here,
+  though even short projects benefit from being born inside an existing Sandbox OU if one already
+  exists.
 
 ## Why It's Important
 
@@ -124,6 +159,24 @@ resources each member account consumes, rolled into one consolidated bill (which
 shared volume discounts on Savings Plans/S3 tiers across accounts). Official pricing:
 https://aws.amazon.com/controltower/pricing/
 
+## Common Mistakes (what wrong answers on the exam look like)
+
+- Running production workloads in the management account "because it already exists" — the
+  management account should have zero workloads; a question describing this is describing an
+  anti-pattern to fix.
+- Granting broad IAM Identity Center permission sets "to keep things simple" instead of scoping
+  one permission set per role/environment — this reintroduces the exact over-permissioning
+  multi-account design is meant to prevent.
+- Storing CloudTrail logs only in the account being logged — if that account is compromised, the
+  attacker can delete the evidence; centralizing into a dedicated Log Archive account is the fix.
+- Using VPC peering or a shared security group as a substitute for a true account boundary when a
+  scenario asks for the *strongest* isolation available — peering/SGs are network controls inside
+  a weaker boundary than a separate account.
+- Treating SCPs as a replacement for IAM policies — SCPs only ever remove permissions (a ceiling);
+  they never grant anything. An SCP with no matching IAM/permission-set grant underneath still
+  results in "access denied," which is a common exam trap testing whether you understand SCPs
+  are a ceiling, not a grant mechanism.
+
 ## Hands-on Lab (Floci)
 
 Floci runs as a single emulated account, so it cannot fully reproduce Organizations/Control
@@ -141,6 +194,12 @@ approximation (simulating account-boundary-style isolation with IAM role boundar
   the management account is describing an anti-pattern.
 - Centralized logging (Log Archive account) matters because it survives a compromise of the
   account being logged — a recurring "why not just keep logs in the same account" exam trap.
+- Effective permission = IAM/permission-set grant ∩ SCP ceiling, always the intersection — never
+  assume an administrator's broad IAM policy wins over a more restrictive SCP; the SCP always
+  wins when the two disagree.
+- Delegated administrator (for GuardDuty/Security Hub/Macie) lets a *non-management* account
+  manage a service org-wide — a subtle but recurring exam distinction from the management
+  account itself needing to hold every admin privilege.
 
 ## Related Terms
 
@@ -148,3 +207,10 @@ approximation (simulating account-boundary-style isolation with IAM role boundar
 - [`../../../services/security-identity-compliance/iam-identity-center-sso.md`](../../../services/security-identity-compliance/iam-identity-center-sso.md)
 - [`../../../services/security-identity-compliance/sts-and-role-switching.md`](../../../services/security-identity-compliance/sts-and-role-switching.md)
 - [`../../../services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md)
+- [`../../../services/security-identity-compliance/guardduty.md`](../../../services/security-identity-compliance/guardduty.md),
+  [`../../../services/security-identity-compliance/macie.md`](../../../services/security-identity-compliance/macie.md),
+  [`../../../services/security-identity-compliance/security-hub-and-inspector.md`](../../../services/security-identity-compliance/security-hub-and-inspector.md) — the delegated-admin services this landing zone centralizes
+- [`vpc-security-architecture-patterns.md`](vpc-security-architecture-patterns.md) — the
+  network-level security layer that lives *inside* each workload account this doc describes
+- [`../domain-4-cost-optimized-architectures/README.md`](../domain-4-cost-optimized-architectures/README.md)
+  — multi-account billing also unlocks shared Savings Plan/Reserved Instance discounts

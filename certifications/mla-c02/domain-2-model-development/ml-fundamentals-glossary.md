@@ -1,11 +1,29 @@
 # ML Fundamentals Glossary
 
+![Underfitting vs. Overfitting — approximating a cosine function with polynomials of increasing degree](https://scikit-learn.org/stable/_images/sphx_glr_plot_underfitting_overfitting_001.png)
+
+*Figure: a real, rendered example of underfitting (degree 1, too simple a curve to fit the data),
+a good fit (degree 4), and overfitting (degree 15, chasing noise instead of the true pattern) —
+the single clearest visual explanation of this document's most important concept. Source:
+scikit-learn documentation, "Underfitting vs. Overfitting" —
+scikit-learn.org/stable/auto_examples/model_selection/plot_underfitting_overfitting.html.*
+
 *Machine Learning concept · MLA-C02 Domain 2, Task Statements 2.2–2.3 — this is the single most
 foundational, most exam-tested vocabulary in the entire MLA-C02 cert. These terms are
 algorithm-agnostic (they apply whether you're using SageMaker's XGBoost, a PyTorch script, or
 fine-tuning a Bedrock foundation model), which is why they get their own doc instead of living
 inside a SageMaker service page. Every term below is explained in plain English first, then
 with the technical/mathematical detail, in that order, deliberately.*
+
+## How to use this document
+
+This glossary is organized in the order a model actually moves through its life: how it sees
+data during training → whether it learned the right thing → why you can't just make it bigger →
+how you deliberately handicap it to generalize better → how you measure whether it's actually
+good → which metric for which problem. Read it in order once, then use the tables throughout as
+quick lookups during review. Every term also appears, cross-linked, wherever it's used elsewhere
+in this repo — this document is the canonical definition; other docs link here rather than
+re-explaining.
 
 ## Epoch and Batch — how a model actually "sees" data during training
 
@@ -35,6 +53,20 @@ the same data repeatedly), because one pass usually isn't enough to learn the pa
 - **Too many epochs** → the model starts memorizing noise/quirks specific to the training set
   instead of the general pattern (contributes to overfitting, below) — this is exactly what
   **early stopping** (halting training once validation performance stops improving) prevents.
+
+### Learning rate — the lever that works alongside epoch and batch
+
+**Plain English:** if epochs and batches are "how much studying," the **learning rate** is "how
+drastically you rewrite your notes after each quiz." A learning rate that's too high means you
+overreact to every new piece of information (rewriting your whole understanding of a topic after
+one practice question); too low means you barely update at all, no matter how much you study.
+
+**Technical:** the learning rate scales how large a step the model's parameters take in the
+direction that reduces loss, on every update. Too high and training can **diverge** (loss
+oscillates wildly or explodes to `NaN`); too low and training **converges** extremely slowly,
+potentially needing far more epochs than is practical to reach a good result. A **learning rate
+schedule** (starting higher, decreasing over time) is a common practical compromise — fast
+early progress, fine-grained refinement later.
 
 ## Overfitting and Underfitting — is the model actually learning the right thing?
 
@@ -66,6 +98,14 @@ validation accuracy/loss) and asks what's wrong and how to fix it — match the 
 the table above. A huge gap between the two numbers (train much better than validation) is the
 overfitting signature; both numbers being mediocre is the underfitting signature.
 
+**Learning curves — the visual version of the same diagnosis:** plotting training loss and
+validation loss against epoch number on the same chart is the standard way this is diagnosed in
+practice, not just read off two final numbers. Three recognizable shapes:
+- Both curves decrease and converge close together, flattening out → good fit, training can stop.
+- Training loss keeps dropping while validation loss flattens, then starts *rising* → overfitting
+  began at the epoch where validation loss started rising; early stopping should have fired there.
+- Both curves stay high and flat from early on → underfitting; more epochs alone won't help.
+
 ## Bias–Variance Tradeoff — why you can't just always make the model "bigger"
 
 **Plain English:** **Bias** is "the model's basic assumptions are too simple to capture reality"
@@ -85,6 +125,15 @@ variance. The practical goal is finding the sweet spot — a model complex enoug
 real pattern (low bias) but not so flexible that it chases noise (low variance) — which is
 exactly what regularization and proper hyperparameter tuning are trying to achieve.
 
+```mermaid
+flowchart LR
+    A["Model complexity: LOW<br/>(e.g., linear regression)"] -->|"risk"| B["High bias<br/>Underfitting"]
+    C["Model complexity: HIGH<br/>(e.g., deep tree, large network)"] -->|"risk"| D["High variance<br/>Overfitting"]
+    E["Sweet spot:<br/>complexity matched to<br/>data size and true pattern"] --> F["Good fit"]
+    B -.->|"increase complexity"| E
+    D -.->|"decrease complexity /<br/>regularize / add data"| E
+```
+
 ## Regularization — the deliberate "handicap" that prevents overfitting
 
 **Plain English:** Regularization is like giving the student a rule: "you're not allowed to use
@@ -103,6 +152,27 @@ Common forms:
 - **Early stopping** — halting training once validation performance stops improving, even if
   training performance would keep improving further — a simple, very commonly tested form of
   regularization that doesn't require changing the loss function at all.
+- **Data augmentation** — artificially expanding the effective training set (e.g., rotating/
+  flipping images, paraphrasing text) so the model sees more variation without collecting new
+  real data; this reduces overfitting by making memorization harder and the general pattern
+  relatively easier to learn than any one specific example.
+
+## Cross-validation — getting a trustworthy estimate of generalization
+
+**Plain English:** instead of one single train/validation split (which might, by chance, put an
+unusually easy or unusually hard subset into validation), **k-fold cross-validation** splits the
+data into k equal parts, trains k times (each time holding out a different part as validation),
+and averages the results — giving a more reliable performance estimate than any single split.
+
+**Technical:** with k=5 (a common choice), the data is split into 5 folds; 5 separate training
+runs each use 4 folds for training and 1 (a different one each time) for validation; the final
+reported metric is the average across all 5 runs, along with its variance across folds (a high
+variance across folds is itself informative — it suggests the model's performance is sensitive
+to which specific data it sees, a variance-related red flag). This matters for the exam mainly as
+a vocabulary item — recognizing "cross-validation" as the answer to "get a more robust estimate
+of model performance than a single train/test split" rather than confusing it with hyperparameter
+tuning itself (cross-validation is often used *inside* a tuning loop to score each candidate
+hyperparameter combination, but the two concepts are distinct).
 
 ## Evaluation Metrics — how do you know if the model is actually good?
 
@@ -119,6 +189,13 @@ The **confusion matrix** is just this 2×2 (or larger, for multi-class) table of
 called that because it shows you exactly *where* the model gets confused, not just a single
 "percent correct" number that can hide serious problems.
 
+![A real rendered confusion matrix for a multi-class classifier, with and without normalization](https://scikit-learn.org/stable/_images/sphx_glr_plot_confusion_matrix_001.png)
+
+*Figure: an actual confusion matrix plotted for a 3-class classification problem (the classic
+Iris dataset) — the diagonal cells are correct predictions, every off-diagonal cell shows
+specifically which class got confused with which other class. Source: scikit-learn documentation,
+"Confusion matrix" — scikit-learn.org/stable/auto_examples/model_selection/plot_confusion_matrix.html.*
+
 - **Accuracy** = (TP + TN) / (everything). Plain English: "what fraction of all predictions were
   correct." **The trap**: with imbalanced classes (e.g., 99% of emails are legitimate), a model
   that predicts "not spam" for literally everything scores 99% accuracy while catching zero spam
@@ -130,6 +207,11 @@ called that because it shows you exactly *where* the model gets confused, not ju
   all the actual spam that existed, what fraction did the model catch?" High recall means few
   misses. Matters most when a false negative is costly (e.g., a cancer-screening model missing an
   actual case is far worse than a false alarm that gets double-checked).
+- **Specificity** (True Negative Rate) = TN / (TN + FP). Plain English: "of all the actual
+  legitimate emails, what fraction did the model correctly leave alone?" The mirror image of
+  recall, focused on the negative class instead of the positive class — less commonly the
+  headline metric, but it's what's being traded away when you push recall very high (a model that
+  flags *everything* as spam has perfect recall and terrible specificity).
 - **Precision/Recall tradeoff**: raising the model's decision threshold (requiring more
   confidence before flagging "spam") generally increases precision but decreases recall, and
   vice versa — you cannot usually maximize both at once; which one matters more is a business
@@ -150,6 +232,17 @@ called that because it shows you exactly *where* the model gets confused, not ju
   predictions). Technical: square each prediction's error (so bigger misses are punished
   disproportionately more than small ones), average those squared errors, then take the square
   root to bring the units back to the original scale.
+- **MAE (Mean Absolute Error)**: also regression-only. Plain English: "the average size of the
+  error, treating every miss the same regardless of direction or size." Technical: average the
+  absolute value of each prediction's error, with no squaring — a large single outlier error
+  doesn't dominate MAE the way it dominates RMSE, which is why MAE is preferred when you don't
+  want a few extreme misses to drive the whole metric.
+- **R² (coefficient of determination)**: also regression. Plain English: "what fraction of the
+  variation in the target variable does the model actually explain, compared to just always
+  guessing the average." R² = 1.0 is a perfect model; R² = 0 means the model does no better than
+  always predicting the mean; negative R² means the model does *worse* than that trivial baseline
+  — a useful sanity-check number precisely because "worse than guessing the average" is such an
+  unambiguous red flag.
 
 ### Which metric for which problem — the exam's favorite trap
 
@@ -159,7 +252,280 @@ called that because it shows you exactly *where* the model gets confused, not ju
 | Classification | Imbalanced | Precision, Recall, F1, or AUC — NOT plain accuracy |
 | Classification, false positives very costly | — | Optimize for Precision |
 | Classification, false negatives very costly (missed fraud, missed disease) | — | Optimize for Recall |
-| Regression (predicting a number) | n/a | RMSE (or MAE — Mean Absolute Error, a simpler, less-outlier-sensitive cousin) |
+| Regression (predicting a number) | n/a | RMSE (sensitive to large errors) or MAE (robust to outliers) |
+| Regression, need an interpretable "how much of the variance is explained" number | n/a | R² |
+| Ranking / threshold-independent comparison of two classifiers | n/a | AUC |
+
+## Classic ML algorithm families — a plain-English map
+
+Domain 2's decision tree (in the domain README) assumes you can place an algorithm family in the
+right conceptual bucket. A short map, in plain English, of what each family is actually doing:
+
+- **Linear models** (linear/logistic regression, Linear Learner) — fit a straight line/plane
+  through the data; fast, interpretable, high bias/low variance; a strong first baseline before
+  reaching for anything more complex.
+- **Tree-based models** (decision trees, random forests, XGBoost/gradient boosting) — learn a
+  series of "if this, then that" splits; handle non-linear relationships and mixed data types
+  well without manual feature engineering; XGBoost in particular is the strongest default
+  baseline for tabular data on both SageMaker and in general ML practice.
+- **Neural networks / deep learning** — layers of simple mathimatical units that combine to learn
+  very complex, non-linear patterns; shine on unstructured data (images, audio, raw text) where
+  hand-engineering features is impractical; need more data and compute than the two families
+  above, and are more prone to overfitting without careful regularization.
+- **Clustering (unsupervised, no labels)** — K-Means and similar algorithms group similar records
+  together without being told the "correct" grouping in advance; useful for customer segmentation
+  or exploratory structure-finding, not prediction against a known label.
+- **Anomaly detection** — Random Cut Forest and similar algorithms learn what "normal" looks like
+  and flag records that don't fit, without needing labeled "anomalous" examples in advance — the
+  right family when fraud/defect examples are too rare or too varied to label comprehensively.
+
+## Classic ML algorithm families — a plain-English map
+
+Domain 2's decision tree (in the domain README) assumes you can place an algorithm family in the
+right conceptual bucket. A short map, in plain English, of what each family is actually doing:
+
+- **Linear models** (linear/logistic regression, Linear Learner) — fit a straight line/plane
+  through the data; fast, interpretable, high bias/low variance; a strong first baseline before
+  reaching for anything more complex.
+- **Tree-based models** (decision trees, random forests, XGBoost/gradient boosting) — learn a
+  series of "if this, then that" splits; handle non-linear relationships and mixed data types
+  well without manual feature engineering; XGBoost in particular is the strongest default
+  baseline for tabular data on both SageMaker and in general ML practice.
+- **Neural networks / deep learning** — layers of simple mathimatical units that combine to learn
+  very complex, non-linear patterns; shine on unstructured data (images, audio, raw text) where
+  hand-engineering features is impractical; need more data and compute than the two families
+  above, and are more prone to overfitting without careful regularization.
+- **Clustering (unsupervised, no labels)** — K-Means and similar algorithms group similar records
+  together without being told the "correct" grouping in advance; useful for customer segmentation
+  or exploratory structure-finding, not prediction against a known label.
+- **Anomaly detection** — Random Cut Forest and similar algorithms learn what "normal" looks like
+  and flag records that don't fit, without needing labeled "anomalous" examples in advance — the
+  right family when fraud/defect examples are too rare or too varied to label comprehensively.
+
+## Ensemble methods — why "many weak models" often beats "one strong model"
+
+**Plain English:** asking one expert for an opinion is useful; averaging the independent opinions
+of several different experts, each with their own blind spots, is usually more reliable — the
+individual mistakes tend to cancel out rather than compound. Ensemble methods are this idea
+applied to models.
+
+**Technical:**
+- **Bagging** (Bootstrap Aggregating) — train many copies of the same algorithm on different
+  random subsets of the training data, then average (regression) or vote (classification) their
+  predictions. **Random Forest** is the canonical example: many decision trees, each trained on
+  a bootstrapped sample with a random subset of features considered at each split, reduces the
+  high variance any single deep tree would have on its own.
+- **Boosting** — train models *sequentially*, where each new model focuses specifically on
+  correcting the mistakes of the ensemble so far, rather than training independently. **XGBoost**
+  (Extreme Gradient Boosting) is the canonical example and SageMaker's strongest default tabular
+  baseline — it builds trees one at a time, each one targeting the residual error left by the
+  trees before it.
+- **Stacking** — train several different *kinds* of models (e.g., a linear model, a tree model,
+  a neural network) and train a final "meta-model" that learns how to best combine their
+  predictions — less common in SageMaker built-in workflows but a recognized technique if a
+  scenario describes combining heterogeneous model types.
+
+The exam-relevant distinction between bagging and boosting: bagging trains independently and in
+parallel (reduces variance, helps overfitting); boosting trains sequentially and adaptively
+(reduces bias, helps underfitting) — if a question frames "models that learn from each other's
+mistakes, trained one after another," that's boosting; "many independent models voting together,"
+that's bagging.
+
+## Transfer learning and feature scaling — two practical prerequisites often skipped
+
+**Transfer learning, plain English:** instead of teaching someone a skill from absolute zero,
+start from someone who already has broad, related experience and teach them only what's specific
+to the new task. **Technical:** take a model already trained on a large, general dataset (e.g.,
+an image classifier trained on millions of general photos, or a foundation model pretrained on
+huge text corpora) and continue training (fine-tune) it on your smaller, specific dataset — this
+is the exact same underlying idea as Domain 2's foundation-model fine-tuning, just the
+classic-ML-era name for the technique; JumpStart's pretrained-model catalog exists specifically
+to make transfer learning the default starting point rather than training any image/text model
+completely from scratch.
+
+**Feature scaling, plain English:** if one input feature is measured in dollars (0 to 1,000,000)
+and another in a 0-to-1 ratio, many algorithms (especially linear models, neural networks, and
+distance-based methods like K-Means) will be dominated by whichever feature happens to have
+larger raw numbers, regardless of which one is actually more predictive. **Technical:**
+**normalization** (rescaling to a fixed range, e.g., 0 to 1) and **standardization** (rescaling
+to zero mean, unit variance) are the two standard fixes, applied during Domain 1's feature
+engineering step, before training — tree-based models (XGBoost, random forests) are a notable
+exception that generally don't require feature scaling, since they split on raw thresholds rather
+than computing distances or weighted sums.
+
+## A fully worked numeric example — computing every metric by hand
+
+Rather than trusting the formulas alone, work through one concrete confusion matrix end to end.
+Suppose a fraud-detection model is tested against 1,000 real transactions, of which 50 are
+actually fraudulent (a realistic 5% fraud rate), and the model produces this confusion matrix:
+
+| | Predicted: Fraud | Predicted: Not Fraud |
+|---|---|---|
+| **Actually Fraud** | TP = 35 | FN = 15 |
+| **Actually Not Fraud** | FP = 20 | TN = 930 |
+
+Computing every metric from this table directly:
+- **Accuracy** = (35 + 930) / 1000 = 965 / 1000 = **96.5%** — sounds great in isolation.
+- **Precision** = 35 / (35 + 20) = 35 / 55 ≈ **63.6%** — of everything flagged as fraud, about
+  64% actually was fraud; the other 36% were false alarms sent to a human reviewer.
+- **Recall** = 35 / (35 + 15) = 35 / 50 = **70%** — the model caught 70% of actual fraud, missing
+  the other 30% (15 cases) entirely.
+- **F1** = 2 × (0.636 × 0.70) / (0.636 + 0.70) ≈ 2 × 0.445 / 1.336 ≈ **66.6%**.
+- **A trivial "always predict not-fraud" baseline**, for comparison, would score accuracy = 950 /
+  1000 = **95%** — only 1.5 points lower than the real model's 96.5%, while catching precisely
+  zero fraud (recall = 0%). This single comparison is the entire reason accuracy is flagged as a
+  dangerous metric for imbalanced problems throughout this document — a 1.5-point accuracy
+  difference is hiding the entire difference between "catches 70% of fraud" and "catches none."
+
+Reproduce this exact calculation yourself with `sklearn.metrics.confusion_matrix` and
+`classification_report` in `labs.md` — recomputing it independently, rather than trusting the
+formula alone, is the fastest way to make these definitions stick before exam day.
+
+## Loss functions — what training is actually trying to minimize
+
+**Plain English:** the loss function is the textbook's answer key — the precise rule for scoring
+"how wrong was this one prediction," which the training process is mechanically trying to make as
+small as possible, averaged across all examples.
+
+- **Mean Squared Error (MSE)** — the standard loss for regression; squares each error before
+  averaging (same squaring behavior as RMSE, just not square-rooted back to the original units) —
+  used *during* training, while RMSE is typically how you *report* the final result to a human
+  audience in interpretable units.
+- **Cross-entropy loss (log loss)** — the standard loss for classification; penalizes a
+  confidently wrong prediction far more heavily than a mildly wrong one (predicting 99% confidence
+  in the wrong class is penalized much more than 55% confidence in the wrong class) — this
+  "confidently wrong is punished harder" property is what pushes a classifier toward well-
+  calibrated probability outputs, not just correct top-1 guesses.
+- **Hinge loss** — used by Support Vector Machines; focuses specifically on getting the decision
+  boundary right with a margin, rather than calibrated probabilities.
+
+The exam rarely asks you to compute a loss function by hand, but does test recognizing that
+"MSE/RMSE pairs with regression" and "cross-entropy pairs with classification" — mismatching a
+loss function to the wrong problem type is a conceptual error a well-designed distractor answer
+will test.
+
+## Gradient descent variants — how the "nudge" in each training step actually works
+
+**Plain English:** recall from the Epoch and Batch section that training nudges the model's
+parameters after each batch to reduce the loss. Different **optimizers** are different rules for
+exactly how big and in what direction that nudge should be — all pursuing the same goal (reduce
+loss fastest and most reliably) with different tradeoffs.
+
+- **Stochastic Gradient Descent (SGD)** — the simplest version: move directly opposite the
+  direction of steepest loss increase, scaled by the learning rate. Simple, well-understood, but
+  can be slow and can get stuck oscillating in narrow valleys of the loss landscape.
+- **SGD with Momentum** — adds a "velocity" term that accumulates across steps, so the optimizer
+  keeps moving in a consistent direction rather than reacting only to the current step's gradient
+  — like a ball rolling downhill building up speed rather than stopping and recalculating direction
+  at every single point.
+- **Adam (Adaptive Moment Estimation)** — the most common default optimizer for deep learning in
+  practice; adapts the effective learning rate per-parameter based on recent gradient history,
+  generally converging faster and more reliably than plain SGD with less manual learning-rate
+  tuning required. If a scenario doesn't specify an optimizer and just says "train a neural
+  network," Adam is the reasonable default assumption.
+
+The exam rarely asks you to choose between optimizers directly, but does expect you to recognize
+that the optimizer is a distinct concept from the learning rate itself (the optimizer is the
+*rule* for using the gradient; the learning rate is one *input* to that rule) and from the loss
+function (the loss function defines what "wrong" means; the optimizer defines how to act on that
+information).
+
+## Activation functions — why neural networks aren't just stacked linear regressions
+
+**Plain English:** if every layer of a neural network only did simple weighted averaging (linear
+math), stacking many layers would mathematically collapse into the equivalent of one single
+layer — depth would buy you nothing. Activation functions are the small non-linear "twist"
+inserted between layers that's exactly what allows depth to actually capture more complex
+patterns than a single layer could.
+
+- **ReLU (Rectified Linear Unit)** — outputs the input directly if positive, zero otherwise; the
+  most common default in modern deep networks because it's cheap to compute and trains reliably.
+- **Sigmoid** — squashes any input into a 0-to-1 range; the standard choice for a *binary*
+  classifier's final output layer, since the result is directly interpretable as a probability.
+- **Softmax** — the multi-class generalization of sigmoid; squashes a vector of raw scores into a
+  probability distribution across all classes that sums to 1 — the standard final-layer choice
+  for multi-class classification.
+
+Exam-relevant takeaway: recognizing *why* depth needs non-linearity (without it, many layers
+behave like one) is the conceptual point tested, not memorizing every activation function's exact
+formula.
+
+## Hyperparameter tuning strategies — grid, random, and Bayesian search, explained plainly
+
+Referenced throughout Domain 2's README as "Automatic Model Tuning," worth defining the three
+underlying search strategies explicitly here since they're tested as distinct vocabulary:
+
+- **Grid search** — plain English: try every single combination of hyperparameter values from a
+  predefined list, exhaustively, like checking every square on a grid. Guaranteed to find the
+  best combination *within the grid you defined*, but the number of combinations explodes
+  multiplicatively as you add more hyperparameters or more values per hyperparameter — expensive
+  and slow for anything beyond a small search space.
+- **Random search** — plain English: instead of trying every combination, randomly sample a fixed
+  number of combinations from the possible ranges. Often finds a comparably good result to grid
+  search with far fewer total training jobs, because in practice only a few hyperparameters
+  usually matter a lot, and random sampling covers the *important* ones' range more efficiently
+  than grid search's exhaustive-but-evenly-spread approach.
+- **Bayesian search** — plain English: use the results of *already-completed* trials to
+  intelligently guess which untried combination is most likely to improve on the best result so
+  far, rather than guessing blindly (random) or checking everything (grid). This makes it the
+  most sample-efficient strategy — it typically needs the fewest total training jobs to find a
+  good result, which matters most when each individual training job is expensive or slow.
+
+| Strategy | Sample efficiency | Guarantees | Best when |
+|---|---|---|---|
+| Grid | Low (exhaustive) | Finds best within the defined grid | Search space is small and training jobs are cheap |
+| Random | Medium | No guarantee, but good coverage in practice | A quick, reasonable search without heavy compute commitment |
+| Bayesian | High | No guarantee, but learns from prior trials | Training jobs are expensive/slow and total job count must be minimized |
+
+## Model interpretability, in plain English — a preview of Domain 4's deeper treatment
+
+**Plain English:** a model that's 95% accurate but can't explain *why* it made any individual
+decision is a black box — useful for some purposes, unacceptable for others (a loan denial, a
+medical risk score). **Interpretability** is the umbrella term for techniques that answer "why
+did the model predict this," at two different levels:
+
+- **Global interpretability** — which features matter most *overall*, across the whole model
+  (e.g., "income is the single most important feature driving this model's predictions in
+  general").
+- **Local interpretability** — why the model made *this one specific* prediction for *this one
+  specific* record (e.g., "for this specific applicant, income contributed +0.3 toward approval,
+  while a short credit history contributed -0.2").
+
+**SHAP (SHapley Additive exPlanations)** is the technique SageMaker Clarify uses for local
+interpretability — it answers the local question above for any individual prediction, and is
+covered in full implementation depth in
+[`../domain-4-monitoring-security/responsible-ai-and-guardrails.md`](../domain-4-monitoring-security/responsible-ai-and-guardrails.md).
+It's introduced here, in the glossary, specifically because "explainability" as a concept belongs
+alongside accuracy/bias as one of the three questions you should always be able to answer about
+a finished model: is it accurate, is it fair, and can it explain itself.
+
+## A quick self-test — can you answer these without looking back?
+
+Before moving to `labs.md`, these five questions are a fast way to check whether the plain-
+English explanations above actually stuck, independent of the formulas:
+
+1. A friend says "my model's training accuracy and validation accuracy are both around 55%, and
+   neither is improving no matter how many more epochs I run." What's wrong, and what are two
+   fixes that do NOT involve adding more epochs?
+2. Why does a model that always predicts the majority class score high accuracy on an imbalanced
+   dataset, and what metric exposes the problem that accuracy hides?
+3. In one sentence, what's the actual difference between bagging and boosting?
+4. Why would a scenario describing "an expensive, slow-to-train model, and we need to minimize
+   the total number of training jobs run during tuning" point you toward Bayesian search instead
+   of grid or random search?
+5. Why doesn't a tree-based model like XGBoost usually need its input features scaled/normalized,
+   while a neural network or linear model generally does?
+
+(Answers: 1 — underfitting; increase model capacity or add/engineer better features, not more
+epochs. 2 — because the correct-prediction rate on the dominant class alone can be near 100%,
+masking near-zero recall on the rare class; recall or F1 exposes it. 3 — bagging trains many
+models independently/in parallel and averages them to reduce variance; boosting trains models
+sequentially, each correcting the previous ones' errors, to reduce bias. 4 — Bayesian search uses
+prior trial results to intelligently pick the next candidate, needing far fewer total trials than
+exhaustively grid-searching or blindly random-sampling. 5 — tree-based models split on raw
+threshold comparisons per feature independently, which are unaffected by each feature's scale,
+whereas neural networks and linear models compute weighted sums/distances across all features
+together, where a feature with a naturally larger numeric range would dominate unless rescaled.)
 
 ## Common exam scenarios
 
@@ -184,6 +550,32 @@ called that because it shows you exactly *where* the model gets confused, not ju
 8. **"Batch size was increased and training got faster but final model accuracy slightly dropped"**
    → expected tradeoff; larger batches speed up training (more parallel compute per update) but
    can mildly hurt generalization — not a bug, a known tradeoff to reason about.
+9. **"A regression model's errors should be reported in a way that isn't dominated by a few
+   extreme outlier properties in the dataset"** → MAE, not RMSE — RMSE's squaring is exactly the
+   property that over-weights outliers, which is undesirable here.
+10. **"A model's training loss becomes `NaN` and training halts"** → learning rate too high (or
+    unnormalized input features causing extreme values) — lower the learning rate, not a hardware
+    issue, as the first thing to check.
+11. **"Model performance varies a lot depending on which random train/validation split is used"**
+    → use k-fold cross-validation to get a more reliable, averaged performance estimate rather
+    than trusting any single split.
+12. **"A model has strong recall but the business is now complaining about too many false
+    alarms being escalated to a human review team"** → this is a precision complaint; the fix is
+    raising the decision threshold, which the team should recognize will simultaneously lower
+    recall — a tradeoff decision, not a free improvement.
+13. **"A linear regression model systematically underperforms a gradient-boosted tree model on
+    the exact same tabular dataset, across many different hyperparameter settings"** → likely a
+    genuine non-linear relationship in the data that a linear model's high bias can't capture
+    regardless of tuning — this points toward switching algorithm families (XGBoost), not more
+    hyperparameter search on the linear model.
+14. **"A newly fine-tuned foundation model now performs worse on tasks unrelated to the
+    fine-tuning dataset, despite performing better on the fine-tuned task itself"** → catastrophic
+    forgetting; this is the foundation-model-era analog of overfitting to a narrow dataset at the
+    expense of general capability — see Domain 2's README for the full fine-tuning discussion.
+15. **"Two models score identically on accuracy but one has a much higher recall and lower
+    precision than the other"** → accuracy alone can't distinguish genuinely different
+    error-tradeoff profiles; always check precision/recall (or F1/AUC) before declaring two
+    models "equally good" based on accuracy alone.
 
 ## Related Terms
 
@@ -195,3 +587,8 @@ called that because it shows you exactly *where* the model gets confused, not ju
 - [`services/machine-learning-ai/sagemaker-model-monitor-and-registry.md`](../../../services/machine-learning-ai/sagemaker-model-monitor-and-registry.md)
   — these same metrics are what SageMaker Model Monitor watches for *drift* after deployment
   (Domain 4).
+- [`../domain-4-monitoring-security/responsible-ai-and-guardrails.md`](../domain-4-monitoring-security/responsible-ai-and-guardrails.md)
+  — bias metrics (a different axis than the accuracy-style metrics in this document) covered in
+  full depth there.
+- [`labs.md`](labs.md) — hands-on exercises that reproduce several of this document's concepts
+  (overfitting curves, confusion matrices, cross-validation) with real, runnable code.

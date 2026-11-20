@@ -2,6 +2,10 @@
 
 ![S3 Glacier icon](../../../diagrams/assets/icons/simplestorageserviceglacier.png)
 
+![Amazon S3 Lifecycle's supported storage class transitions as a waterfall diagram, moving from Standard through Standard-IA, One Zone-IA, Intelligent-Tiering, both Glacier Instant and Flexible Retrieval, and finally Glacier Deep Archive.](https://docs.aws.amazon.com/AmazonS3/latest/userguide/images/lifecycle-transitions-v4.png)
+
+*Source: [Amazon S3 User Guide — Transitioning objects using Amazon S3 Lifecycle](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-transition-general-considerations.html)*
+
 ## Definition
 
 A decision framework for minimizing storage spend without losing data you actually need — on
@@ -43,6 +47,40 @@ policy (daily backups kept 7 days, weekly kept a month, monthly kept a year, wit
 transition to cold storage) across many resource types at once instead of hand-rolling lifecycle
 rules per service.
 
+## Architecture: S3 Lifecycle Rule, End to End
+
+```mermaid
+flowchart TB
+    Upload["Object uploaded<br/>(day 0, S3 Standard)"] --> Day30{"Day 30:<br/>any access since upload?"}
+    Day30 -->|"Rule fires regardless<br/>of actual access unless<br/>Intelligent-Tiering is used"| IA2["Transition to Standard-IA"]
+    IA2 --> Day90{"Day 90"}
+    Day90 --> Glacier2["Transition to Glacier<br/>Flexible Retrieval"]
+    Glacier2 --> Day180{"Day 180"}
+    Day180 --> Deep2["Transition to<br/>Glacier Deep Archive"]
+    Deep2 --> Day2555{"Day 2555 (~7 years)"}
+    Day2555 --> Expire["Expiration action:<br/>permanently delete"]
+```
+
+A detail that trips candidates up: a standard **lifecycle rule transitions objects on a fixed
+schedule regardless of whether they're actually still being accessed** — it does not watch real
+access patterns the way Intelligent-Tiering does. This is precisely why the choice between a
+hand-written lifecycle rule and Intelligent-Tiering hinges on how *confident* you are in the
+predicted access pattern, not simply which one is "better" in the abstract.
+
+## Architecture: Minimum Storage Duration Trap
+
+```mermaid
+flowchart LR
+    Obj["Object transitioned<br/>to Glacier Flexible Retrieval<br/>(90-day minimum)"] -->|"deleted/transitioned<br/>again on day 45"| Penalty["Charged for the FULL<br/>90-day minimum anyway<br/>— early-deletion fee"]
+```
+
+Standard-IA, One Zone-IA, and the Glacier tiers all enforce a **minimum storage duration charge**
+(commonly 30 days for IA tiers, 90 days for Glacier Flexible Retrieval, 180 days for Deep
+Archive) — deleting or re-transitioning an object before that minimum elapses still bills for the
+full minimum period. A scenario describing data that turns over *faster* than a tier's minimum
+duration is describing a case where moving it to that "cheap" tier can actually cost **more**,
+not less — a frequently tested exam trap.
+
 ## Key Decision Points
 
 - **Lifecycle policies vs. Intelligent-Tiering** — predictable pattern → lifecycle rule (cheapest,
@@ -59,11 +97,62 @@ rules per service.
   irreplaceable data.
 - **Versioning + lifecycle together** — without a lifecycle rule to expire old versions,
   S3 Versioning can silently multiply storage costs by keeping every version forever.
+- **EBS snapshots are incremental**, which is itself a cost lever — each snapshot after the first
+  stores only changed blocks, so frequent snapshotting is cheaper than the full-volume size might
+  suggest, but deleting an *early* snapshot in a chain doesn't necessarily reduce cost as much as
+  expected if later snapshots still reference its data.
+- **AWS Backup Vault Lock** adds immutability without changing the underlying cost model — a
+  compliance requirement for immutable backups does not, on its own, force a more expensive
+  storage tier; it's a policy setting layered on top of the same lifecycle-tiered storage.
+
+## Common Mistakes
+
+- Writing a lifecycle rule that transitions data to Glacier/Deep Archive on a schedule faster
+  than the tier's minimum storage duration, actually increasing cost through early-deletion
+  penalties.
+- Leaving S3 Versioning enabled with no lifecycle rule expiring noncurrent versions, silently
+  accumulating storage cost for every version of every object ever written.
+- Using One Zone-IA for the sole copy of data that cannot be regenerated or restored from
+  elsewhere if that one Availability Zone is lost.
+- Forgetting that EBS snapshots and unattached volumes continue billing after an instance is
+  terminated — a very common, easy-to-miss cost leak Trusted Advisor is built to surface.
+- Choosing Intelligent-Tiering reflexively for data whose access pattern is, in fact, well known
+  and predictable — the monitoring fee is wasted money when a plain lifecycle rule would achieve
+  the identical outcome for free.
+
+## Full Worked Mini-Case: Designing a Compliant, Cost-Optimized Retention Policy
+
+**Scenario:** a healthcare company must retain patient record documents for 10 years for
+regulatory reasons. Records are accessed frequently in the first 60 days after creation (active
+treatment), rarely accessed between 60 days and 2 years (follow-up queries), and essentially never
+accessed after 2 years except for the rare legal discovery request, which can tolerate a
+12-hour retrieval delay.
+
+**Applying this framework:** objects start in **S3 Standard** for the first 60 days (frequent
+access justifies the higher per-GB cost). A lifecycle rule transitions them to **Standard-IA** at
+day 60 (infrequent-but-possible access, avoiding Glacier's retrieval delay during the follow-up
+window where speed still occasionally matters). A second rule transitions them to **Glacier Deep
+Archive** at the 2-year mark, since the stated access pattern beyond that point is "essentially
+never, and 12-hour retrieval is tolerable" — exactly Deep Archive's profile. The policy also
+applies **S3 Object Lock** in compliance mode for the full 10-year retention window, satisfying
+the regulatory immutability requirement without changing which storage class/cost tier the
+documents sit in at any given time.
 
 ## Why It's Important
 
 **Exam mapping:** SAA-C03 Domain 4, Task 4.1 ("design cost-optimized storage solutions —
 lifecycle policies, storage classes, backup strategy") is precisely this tier-matching skill.
+
+## Exam Tips
+
+- Match the stated access pattern's *frequency* and *predictability* to a tier — predictable and
+  infrequent points to a manual lifecycle rule; genuinely unknown points to Intelligent-Tiering.
+- Watch for minimum-duration traps — a scenario describing short-lived data being moved into
+  Glacier/Deep Archive is often testing whether you catch the early-deletion cost penalty.
+- "Must tolerate hours of retrieval delay" is the Glacier Flexible Retrieval/Deep Archive signal;
+  "occasionally still needs fast access" rules those out in favor of Standard-IA.
+- Compliance/immutability requirements (Object Lock, Vault Lock) are a separate axis from storage
+  class/cost — don't assume a compliance requirement forces a more expensive tier.
 
 ## Related Terms
 
@@ -72,3 +161,8 @@ lifecycle policies, storage classes, backup strategy") is precisely this tier-ma
 - [`../../../services/storage/ebs.md`](../../../services/storage/ebs.md)
 - [`../../../services/storage/aws-backup.md`](../../../services/storage/aws-backup.md)
 - [`../../../services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md)
+- [`../domain-3-high-performing-architectures/storage-performance-decision-framework.md`](../domain-3-high-performing-architectures/storage-performance-decision-framework.md) —
+  the same object/file/block storage shapes, revisited for raw performance rather than cost
+- [`../domain-1-secure-architectures/README.md`](../domain-1-secure-architectures/README.md) —
+  the KMS encryption and backup requirements that must survive every lifecycle transition
+  described in this doc

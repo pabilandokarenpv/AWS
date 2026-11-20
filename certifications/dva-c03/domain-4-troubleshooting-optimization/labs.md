@@ -119,3 +119,124 @@ finish the same CPU-bound loop noticeably faster than the 128MB one, which is th
 Task 4.3 tests: raising memory can *reduce* total cost even though the per-GB-second rate is
 higher, because duration drops enough to offset it. Always compute cost = (memory × duration), not
 just eyeball the memory setting.
+
+## Lab 4 — X-Ray annotations for filterable traces (Task 4.2)
+
+Builds the annotation-vs-metadata distinction from
+[`observability-instrumentation.md`](observability-instrumentation.md#instrumenting-your-own-code-task-42).
+
+```bash
+cat > annotated_handler.py <<'EOF'
+from aws_xray_sdk.core import xray_recorder, patch_all
+patch_all()
+import boto3, json
+ddb = boto3.client("dynamodb", endpoint_url="http://host.docker.internal:4566", region_name="us-east-1")
+
+def handler(event, context):
+    body = json.loads(event.get("body") or "{}")
+    customer_id = body.get("customerId", "unknown")
+
+    segment = xray_recorder.current_segment()
+    segment.put_annotation("customerId", customer_id)       # searchable
+    segment.put_metadata("rawRequestBody", body)             # NOT searchable, just attached context
+
+    ddb.get_item(TableName="Orders", Key={"orderId": {"S": "abc"}})
+    return {"statusCode": 200, "body": json.dumps({"customerId": customer_id})}
+EOF
+zip annotated_function.zip annotated_handler.py
+
+awslocal lambda create-function --function-name annotated-lookup \
+  --runtime python3.12 --handler annotated_handler.handler \
+  --zip-file fileb://annotated_function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --tracing-config Mode=Active
+
+# Invoke with two different customer IDs
+awslocal lambda invoke --function-name annotated-lookup \
+  --payload '{"body": "{\"customerId\":\"cust-A\"}"}' out_a.json
+awslocal lambda invoke --function-name annotated-lookup \
+  --payload '{"body": "{\"customerId\":\"cust-B\"}"}' out_b.json
+
+# Filter trace summaries by the annotation — this is the capability metadata does NOT give you
+awslocal xray get-trace-summaries \
+  --start-time $(date -d '5 minutes ago' +%s) \
+  --end-time $(date +%s) \
+  --filter-expression 'annotation.customerId = "cust-A"'
+```
+
+**What to notice:** the filter expression only works because `customerId` was stored via
+`put_annotation`, not `put_metadata` — try changing the filter to reference `rawRequestBody` and
+confirm it can't be filtered the same way. This is the concrete, hands-on version of the
+annotation-vs-metadata exam trap.
+
+## Lab 5 — Cost math: proving the memory/duration/cost relationship
+
+Builds the [README's Lambda cost/performance math section](README.md#lambda-costperformance-math-concretely)
+with real numbers instead of an illustrative table.
+
+```bash
+# 1. Reuse the cpuhandler.py from Lab 3, but test THREE memory sizes and record actual durations
+for MEM in 128 512 1024 1769 3008; do
+  awslocal lambda create-function --function-name cpu-test-$MEM \
+    --runtime python3.12 --handler cpuhandler.handler \
+    --zip-file fileb://cpufunction.zip \
+    --role arn:aws:iam::000000000000:role/lambda-role \
+    --memory-size $MEM 2>/dev/null || true
+
+  echo "=== ${MEM}MB ==="
+  awslocal lambda invoke --function-name cpu-test-$MEM --log-type Tail out.json \
+    --query 'LogResult' --output text | base64 --decode | grep "Duration\|Billed Duration\|Memory"
+done
+```
+
+**What to notice:** plot (memory in GB) × (billed duration in seconds) for each row — the product
+should be roughly flat (or even dip) through the CPU-bound range and then start climbing once the
+function stops being CPU-bound, confirming the shape of the README's cost table with real
+(emulated) numbers instead of taking it on faith.
+
+## Lab 6 — AWS Config drift detection paired with CloudTrail (Task 4.1)
+
+Builds the [README's Config-vs-CloudTrail pairing](README.md#aws-config-drift-as-a-task-41-investigative-input).
+
+```bash
+# 1. Create a security group in a known-good state
+SG_ID=$(awslocal ec2 create-security-group --group-name demo-sg --description "demo" \
+  --query 'GroupId' --output text)
+
+# 2. Start recording its configuration with AWS Config
+awslocal configservice put-configuration-recorder \
+  --configuration-recorder name=default,roleARN=arn:aws:iam::000000000000:role/config-role
+awslocal configservice start-configuration-recorder --configuration-recorder-name default
+
+# 3. "Drift" the security group — open a port to the world (the kind of change that should get flagged)
+awslocal ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+# 4. Confirm CloudTrail has the discrete event for WHO/WHICH call made the change
+awslocal cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AuthorizeSecurityGroupIngress
+
+# 5. Confirm Config has the resulting configuration state change in its timeline
+awslocal configservice get-resource-config-history \
+  --resource-type AWS::EC2::SecurityGroup --resource-id $SG_ID
+```
+
+**What to notice:** step 4 and step 5 answer two different questions about the exact same change —
+CloudTrail's event is the discrete "this API call happened at this time, by this principal,"
+while Config's history is the resulting "here's how this resource's configuration looked, over
+time." A real investigation typically needs both, in the order the README's diagram shows.
+
+## Lab wrap-up and cross-links
+
+| Lab | Task(s) reinforced | README / topic doc section |
+|---|---|---|
+| 1 | 4.1/4.2 (X-Ray tracing) | [How it fits together](README.md#how-it-fits-together-tracing-a-slow-request-to-its-root-cause) |
+| 2 | 4.1 (CloudWatch Logs Insights) | [CloudWatch Logs Insights, as a root-cause tool](README.md#cloudwatch-logs-insights-as-a-root-cause-tool) |
+| 3 | 4.3 (Lambda memory tuning) | [Lambda cost/performance math](README.md#lambda-costperformance-math-concretely) |
+| 4 | 4.2 (annotations vs. metadata) | [`observability-instrumentation.md`](observability-instrumentation.md#instrumenting-your-own-code-task-42) |
+| 5 | 4.3 (cost math, verified) | [Lambda cost/performance math](README.md#lambda-costperformance-math-concretely) |
+| 6 | 4.1 (Config + CloudTrail pairing) | [AWS Config: drift as a Task 4.1 investigative input](README.md#aws-config-drift-as-a-task-41-investigative-input) |
+
+Run Labs 1, 2, and 6 in sequence against the same simulated incident if you want the closest
+hands-on approximation of the README's [full worked case study](README.md#full-worked-case-study-diagnosing-and-fixing-a-slow-checkout-endpoint) —
+trace first, then logs/metrics, then the audit trail, in that order.

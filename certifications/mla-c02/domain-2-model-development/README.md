@@ -12,6 +12,11 @@ actually good, and keeping track of versions so you can compare and roll back. T
 addition here is: sometimes "developing a model" means *not* training one from scratch at all —
 instead selecting and lightly customizing (fine-tuning) an existing foundation model.
 
+A useful way to hold this whole domain in your head: every project starts at a fork — **build**
+(you have enough labeled data and a genuinely novel problem) or **adopt** (an existing foundation
+model already does something close enough to what you need). Nearly every task statement below
+is really "what do you do once you've picked one of those two branches."
+
 ## Task-statement-level content (from the official exam guide)
 
 | Task statement | What it covers | Where it's covered |
@@ -36,6 +41,9 @@ instead selecting and lightly customizing (fine-tuning) an existing foundation m
 - **[`services/machine-learning-ai/sagemaker-model-monitor-and-registry.md`](../../../services/machine-learning-ai/sagemaker-model-monitor-and-registry.md)**
   — Model Registry half of this doc: registering model versions, approval status (pending/
   approved/rejected), and lineage (which data + code produced this exact model artifact).
+- **[`services/machine-learning-ai/sagemaker-overview.md`](../../../services/machine-learning-ai/sagemaker-overview.md)**
+  — if the sub-service docs above feel disconnected, this umbrella document shows how training,
+  tuning, registry, and deployment chain together across the whole SageMaker lifecycle.
 
 ## New topic doc for this domain
 
@@ -100,6 +108,153 @@ Step by step:
    approval status, so a human or automated pipeline can decide whether it's cleared to deploy
    (Domain 3).
 
+### A second diagram — choosing an algorithm for a from-scratch classic ML model
+
+The "build from scratch" branch above hides a real decision tree worth making explicit, since
+"which built-in algorithm fits this problem type" is tested as its own question shape:
+
+```mermaid
+flowchart TD
+    Q1{"What kind of<br/>problem is this?"} -->|"Predict a category"| Q2{"Tabular data?"}
+    Q1 -->|"Predict a number"| REG["Linear Learner<br/>(regression mode) / XGBoost"]
+    Q1 -->|"Group similar items,<br/>no labels"| CLUST["K-Means"]
+    Q1 -->|"Find rare/unusual records"| ANOM["Random Cut Forest"]
+    Q1 -->|"Predict a future value<br/>over time"| TS["DeepAR"]
+    Q2 -->|Yes| TAB["XGBoost<br/>(strong default baseline)"]
+    Q2 -->|"No — text"| TEXT["BlazingText"]
+    Q2 -->|"No — images"| IMG["Built-in CNN algorithms"]
+    TAB --> FIT{"Fits well<br/>enough?"}
+    FIT -->|No| CUSTOM["Script mode:<br/>bring your own<br/>PyTorch/TensorFlow"]
+    FIT -->|Yes| DONE["Proceed to training"]
+```
+
+A scenario that gives you the problem type (classification vs. regression vs. clustering vs.
+anomaly detection vs. forecasting) plus the data shape (tabular vs. text vs. image) can almost
+always be walked straight down this tree to the correct built-in algorithm, without needing any
+algorithm-internals knowledge.
+
+### A third diagram — the fine-tuning decision inside the foundation-model branch
+
+Because "fine-tune or not" is itself a multi-step decision, not a single yes/no, it's worth
+expanding step 7 above into its own flow:
+
+```mermaid
+flowchart LR
+    START["Foundation model<br/>handles the task reasonably<br/>out of the box?"] -->|No| FT{"Problem is:<br/>wrong facts, or<br/>wrong behavior?"}
+    FT -->|"Wrong/missing facts"| RAG["RAG<br/>(Domain 1)"]
+    FT -->|"Wrong format/tone/<br/>persona/narrow skill"| FTUNE{"Enough labeled<br/>examples available?"}
+    FTUNE -->|Yes, 100s-1000s| SFT["Supervised fine-tuning<br/>on Bedrock/JumpStart"]
+    FTUNE -->|"No, only a handful"| FEWSHOT["Few-shot prompting<br/>(examples in the prompt itself,<br/>no training job needed)"]
+    START -->|Yes| PROMPT["Prompt engineering alone<br/>(cheapest, fastest, try first)"]
+```
+
+The exam-relevant point this diagram makes explicit: **prompt engineering is always the cheapest
+lever to try first**, before reaching for RAG or fine-tuning — a scenario that hasn't mentioned
+attempting better prompting yet shouldn't be assumed to need the heavier-weight fix.
+
+## Full worked case study — building a content-moderation system for a marketplace
+
+**The business problem:** "CraftHaven," an online marketplace for handmade goods, needs to (1)
+automatically flag listings that violate policy (prohibited materials, counterfeit claims) and
+(2) generate SEO-friendly product descriptions from seller-submitted bullet points, in the
+seller's own product category tone. Two very different sub-problems, both landing in Domain 2.
+
+**Sub-problem 1 — policy violation flagging (classic ML, build-from-scratch branch):**
+1. CraftHaven has 50,000 historical listings, each labeled "approved" or "flagged," with
+   flagged listings making up roughly 4% of the total — an imbalanced binary classification
+   problem on structured + text features (category, price, description text, seller history).
+2. **Algorithm choice:** following the decision tree above — tabular-plus-text classification —
+   the team starts with **XGBoost** on engineered features (price percentile within category,
+   seller account age, a BlazingText-derived text-risk score) rather than training a deep neural
+   network from scratch, since XGBoost is the strong default baseline for this shape of problem
+   and the dataset size doesn't obviously demand anything heavier.
+3. **Training:** a SageMaker Training Job runs with `max_depth`, `eta`, and `scale_pos_weight`
+   (XGBoost's built-in class-imbalance weighting knob) as key hyperparameters.
+4. **Evaluation:** given the 4% positive rate, the team deliberately does NOT report plain
+   accuracy as the headline metric (a model that always predicts "approved" would hit 96%
+   accuracy while catching zero violations) — they report **recall** at a fixed precision target,
+   because missing a real policy violation (false negative) is costlier to the business than a
+   false alarm that a human reviewer double-checks.
+5. **Tuning:** Automatic Model Tuning searches `max_depth` (3-10), `eta` (0.01-0.3), and
+   `scale_pos_weight` (1-25) using a Bayesian strategy, optimizing for validation recall at a
+   minimum precision floor of 0.85.
+6. **Registry:** the winning model version is registered in Model Registry with its precision/
+   recall pair attached as metadata, status `PendingManualApproval` — a human reviewer confirms
+   the tradeoff is acceptable before flipping it to `Approved`.
+
+**Sub-problem 2 — SEO description generation (foundation-model, adopt branch):**
+1. This is a text-generation task a general-purpose foundation model already does reasonably
+   well out of the box — the team starts with a Bedrock foundation model and **prompt
+   engineering alone**: a prompt template with the category, bullet points, and a style
+   instruction ("write a warm, descriptive 2-paragraph product description").
+2. **Evaluating "good enough":** a small panel of actual sellers reviews 100 generated
+   descriptions; if most read naturally and don't need more than minor edits, the team stops
+   here — no fine-tuning needed, which is both cheaper and faster to ship.
+3. **If quality isn't sufficient** (e.g., the model inconsistently ignores the requested tone, or
+   uses marketplace-prohibited superlative claims like "the best in the world"), the next lever is
+   **fine-tuning** on a curated set of several hundred approved description examples — a behavior/
+   format problem, not a missing-facts problem, so RAG would not be the right fix here even
+   though it's Domain 2's instinctive-sounding answer for "customize a foundation model."
+4. **Registry:** the fine-tuned model is also versioned in Model Registry, exactly like the
+   classic XGBoost model from sub-problem 1 — the Registry doesn't care whether a model was
+   trained from scratch or fine-tuned from a foundation model, it tracks both identically.
+
+**Why this case study matters for the exam:** it's deliberately built to show that a single
+business (and sometimes a single exam case-study question) can require *both* branches of the
+build-vs-adopt fork simultaneously, and that recognizing which branch a given sub-problem belongs
+to — not defaulting to "just use Bedrock for everything" or "just train everything from scratch"
+— is the actual skill being tested.
+
+## Evaluating for bias, not just accuracy
+
+Task statement 2.3 explicitly includes "detecting bias in model outputs" alongside the
+accuracy-style metrics above — worth a dedicated look because it's a different kind of checking
+than precision/recall, and conflating the two is a common exam trap.
+
+![SageMaker Clarify can analyze your data or a customer model for explainability and bias](https://docs.aws.amazon.com/sagemaker/latest/dg/images/clarify/clarify-processing-job.png)
+
+*Figure: AWS's own diagram of a SageMaker Clarify processing job — it can analyze either a
+dataset (pre-training bias) or a trained model's predictions (post-training bias and
+explainability), producing a report rather than a single pass/fail number. Source: AWS SageMaker
+Developer Guide, "Fairness, model explainability and bias detection with SageMaker Clarify" —
+docs.aws.amazon.com/sagemaker/latest/dg/clarify-configure-processing-jobs.html.*
+
+A quick way to keep accuracy-style metrics and bias metrics mentally separate: accuracy/precision/
+recall/F1/AUC/RMSE all answer "is the model *right*, in aggregate, across everyone." Bias metrics
+(class imbalance, disparate impact, difference in label/approval rates between groups) answer
+"is the model *equally* right (or equally wrong) across different groups of people" — a model can
+score very well on the first question while failing badly on the second, which is exactly why
+both checks exist as separate, non-substitutable steps. Full depth, including the post-training
+SHAP-based explainability half, lives in
+[`../domain-4-monitoring-security/responsible-ai-and-guardrails.md`](../domain-4-monitoring-security/responsible-ai-and-guardrails.md)
+— it's placed in Domain 4 because bias/explainability checking continues after deployment, not
+just at training time, but the *first* bias check (pre-training, on the raw data) is really a
+Domain 1/Domain 2 boundary concern, which is why it's referenced from both directions.
+
+## Troubleshooting / Common Issues
+
+- **A training job's loss becomes `NaN` partway through and the job fails.** Almost always a
+  learning rate set too high, or unnormalized/extreme-magnitude input features — lower the
+  learning rate and confirm features were scaled/normalized in Domain 1's prep step before
+  assuming the algorithm itself is broken.
+- **Two training runs with identical hyperparameters produce noticeably different metrics.**
+  Check whether a random seed was fixed for data shuffling/initialization — without a fixed seed,
+  some run-to-run variance is expected and isn't evidence of a bug, but large swings suggest the
+  dataset may be too small relative to the model's complexity (high variance, see the
+  bias-variance tradeoff in `ml-fundamentals-glossary.md`).
+- **A fine-tuning job on a foundation model "succeeds" but the resulting model refuses to answer
+  questions it previously handled fine.** This is catastrophic forgetting (see Scenario 15 above)
+  — reduce the learning rate/epochs or revisit whether fine-tuning was even the right lever
+  versus RAG or prompt engineering for this specific change.
+- **Automatic Model Tuning's best job barely beats the default hyperparameters.** The search
+  space may be poorly chosen (too narrow around values that don't matter, or missing the
+  hyperparameter that actually drives performance) — revisit which hyperparameters are included
+  in the search range before assuming tuning itself failed.
+- **A registered model's metrics look great on the held-out test set but the team still isn't
+  confident deploying it.** This is a legitimate signal to also run a bias/explainability check
+  (Clarify) before approval — strong aggregate accuracy metrics say nothing about fairness across
+  subgroups, exactly the point of the section above.
+
 ## Common exam scenarios
 
 1. **"Training accuracy is 99%, validation accuracy is 61%"** → overfitting; the fix is
@@ -127,8 +282,46 @@ Step by step:
    this is a precision problem; raising the classification threshold improves precision at the
    cost of recall — understand the precision/recall tradeoff, covered in
    `ml-fundamentals-glossary.md`.
+9. **"A foundation model performs the task well but occasionally fabricates facts not in its
+   training data or the provided context"** → this is a hallucination problem; the fix is tighter
+   grounding (better RAG retrieval, explicit "only answer from the provided context" prompting),
+   not fine-tuning, since fine-tuning doesn't reliably eliminate hallucination on facts outside
+   the fine-tuning set.
+10. **"Only a handful of labeled examples (a dozen or so) exist for a new classification
+    category, not enough for a full fine-tuning run"** → few-shot prompting (including the
+    handful of examples directly in the prompt) rather than attempting to fine-tune on too little
+    data, which would likely overfit badly on such a small set.
+11. **"Training a large model on a single GPU instance is too slow, and the team wants to speed
+    it up without changing the algorithm"** → distributed training (data parallelism across
+    multiple GPU instances), covered in depth in `sagemaker-training-and-tuning.md` — not a
+    smaller/simpler model, which would change the algorithm/capacity, not just the speed.
+12. **"A team wants to compare this week's newly trained model against last week's production
+    model before deciding whether to replace it"** → Model Registry's versioning plus
+    SageMaker Experiments' side-by-side metric comparison, not a manual spreadsheet.
+13. **"A regression model for house prices has unusually large errors on a few very expensive
+    homes, dragging down its overall error metric"** → check whether RMSE (which squares errors,
+    punishing large misses disproportionately) is appropriately chosen here vs. MAE (less
+    sensitive to outliers) — the business question of whether large errors *should* be weighted
+    more heavily determines which is the right choice, not a universal rule.
+14. **"A model trained well on last year's data is now underperforming, despite no code changes"**
+    → this is a Domain 4 concept-drift symptom, but the *fix* routes back into this domain:
+    retraining the model on recent data, then re-registering a new version.
+15. **"Fine-tuning a foundation model on a narrow, company-specific dataset caused it to perform
+    worse on general, unrelated questions it used to answer well"** → catastrophic forgetting —
+    fine-tuning too aggressively (too many epochs, too high a learning rate, or too narrow a
+    dataset) can degrade the base model's broader capability; mitigations include a lower
+    learning rate, fewer fine-tuning epochs, or techniques that blend base and fine-tuned behavior
+    rather than fully overwriting it.
 
 ## Related Terms
 
 See [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md) for every ML vocabulary term
 used above, and [`glossary/README.md`](../../../glossary/README.md) for the repo-wide index.
+
+- [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).
+- [`../domain-1-data-preparation/README.md`](../domain-1-data-preparation/README.md) — the data
+  this domain's training jobs consume, and the RAG vs. fine-tune decision this domain continues.
+- [`../domain-3-deployment-orchestration/README.md`](../domain-3-deployment-orchestration/README.md)
+  — where the models registered here get deployed to serve real traffic.
+- [`../domain-4-monitoring-security/README.md`](../domain-4-monitoring-security/README.md) — how
+  the metrics chosen in task statement 2.3 get watched continuously for drift after deployment.

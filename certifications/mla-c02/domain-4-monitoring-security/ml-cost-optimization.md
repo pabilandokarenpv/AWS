@@ -4,7 +4,8 @@
 
 *Operations concept · MLA-C02 Domain 4, Task Statement 4.2. ML workloads have a cost shape
 unlike most other AWS services: training is short, bursty, and often GPU-hungry; inference can
-be either always-on (expensive if idle) or spiky (wasteful if over-provisioned). This doc covers
+be either always-on (expensive if idle) or spiky (wasteful if over-provisioned); and GenAI costs
+behave differently from both, billed per-token rather than per-instance-hour. This doc covers
 the ML-specific discount mechanisms and sizing tools, separate from general AWS cost tools
 (Cost Explorer/Budgets), which are covered in `services/management-governance/`.*
 
@@ -12,24 +13,27 @@ the ML-specific discount mechanisms and sizing tools, separate from general AWS 
 
 ML cost optimization is choosing the right **purchasing option** (how you pay for compute) and
 the right **instance size** (how much compute you actually need) for each distinct phase of an
-ML workload — because training and inference have very different usage patterns, and using the
-wrong purchasing option for a given pattern either wastes money or risks job failures.
+ML workload — because training, inference, and GenAI usage have very different usage patterns,
+and using the wrong purchasing option for a given pattern either wastes money or risks job
+failures.
 
 ## Purpose
 
 SageMaker training jobs are temporary (minutes to days, then gone) and often need expensive GPU
 instances; a real-time endpoint, by contrast, sits there 24/7 whether or not it's receiving
-traffic. Treating both the same way — e.g., paying full On-Demand rates for everything, or trying
-to use interruptible Spot capacity for a customer-facing endpoint — either overspends or breaks
-reliability. These purchasing options and sizing tools exist specifically so ML workloads
-(unusually bursty on the training side, unusually idle-prone on the inference side) aren't
-forced into a one-size-fits-all AWS billing model.
+traffic; and a Bedrock foundation model call is billed per token processed, with no "instance" to
+right-size at all. Treating all three the same way — e.g., paying full On-Demand rates for
+everything, or trying to use interruptible Spot capacity for a customer-facing endpoint — either
+overspends or breaks reliability. These purchasing options and sizing tools exist specifically so
+ML workloads (unusually bursty on the training side, unusually idle-prone on the inference side,
+and token-metered on the GenAI side) aren't forced into a one-size-fits-all AWS billing model.
 
 ## How It Works
 
 Plain-English: match the payment plan to the predictability of usage — pay least when you commit
 to steady usage ahead of time (Reserved/Savings Plans), pay least when you can tolerate
-interruption (Spot), and don't guess at instance sizing — measure it (Inference Recommender).
+interruption (Spot), don't guess at instance sizing (measure it with Inference Recommender), and
+for GenAI, manage cost by managing tokens, not instances.
 
 ```mermaid
 flowchart LR
@@ -40,12 +44,15 @@ flowchart LR
     A -->|"Inference endpoint<br/>(unsure of right size)"| F["SageMaker Inference<br/>Recommender<br/>(load-tests instance types)"]
     F --> G["Recommended instance type<br/>+ cost/latency tradeoff report"]
     G --> E
+    A -->|"GenAI / Bedrock<br/>(billed per token)"| H{"Usage pattern?"}
+    H -->|"Steady, high volume"| I["Provisioned Throughput<br/>(committed capacity discount)"]
+    H -->|"Variable, unpredictable"| J["On-Demand per-token<br/>+ prompt/context optimization"]
 ```
 
 Step by step:
-1. **Classify the workload first** — training (temporary) vs. inference (often persistent) are
-   charged and optimized completely differently; this is the first branch to get right before
-   picking any specific discount.
+1. **Classify the workload first** — training (temporary), inference (often persistent), and
+   GenAI (token-metered) are charged and optimized completely differently; this is the first
+   branch to get right before picking any specific discount.
 2. **For training jobs that can tolerate interruption** (the job checkpoints its progress, so if
    AWS reclaims the spare capacity mid-run, it resumes from the last checkpoint instead of
    restarting) — **Managed Spot Training** uses AWS's spare, unused EC2 capacity at a steep
@@ -65,6 +72,43 @@ Step by step:
    oversized instance and under-provisioning into high latency/errors).
 6. **The sizing result feeds back into the purchasing decision** — once you know the right
    instance type, that's what you commit to under a Savings Plan for steady workloads.
+7. **For GenAI/Bedrock workloads**, cost doesn't scale with instance-hours at all — it scales
+   with tokens processed (input and output, often billed at different per-token rates) and with
+   any Guardrails filtering applied. High-volume, predictable GenAI usage can commit to
+   **Provisioned Throughput** for a discount over On-Demand per-token pricing; low/variable usage
+   stays On-Demand, with the real cost lever being *reducing tokens processed* (shorter, better-
+   targeted prompts; tighter RAG retrieval limiting how much context gets sent per request) rather
+   than any purchasing-option switch.
+
+![Screenshot of the list of prospective instances on a SageMaker model's details page](https://docs.aws.amazon.com/sagemaker/latest/dg/images/inf-rec-instant-recs.png)
+
+*Figure: a real SageMaker console screenshot of Inference Recommender's output — multiple
+candidate instance types compared side by side on cost per hour, cost per inference, latency, and
+invocations per minute, exactly the kind of measured comparison described in step 5 above. Source:
+AWS SageMaker Developer Guide, "Recommendation jobs with Amazon SageMaker Inference Recommender" —
+docs.aws.amazon.com/sagemaker/latest/dg/inference-recommender-recommendation-jobs.html.*
+
+### A second diagram — GenAI cost levers, since they don't map to instance-hour thinking at all
+
+Because GenAI cost optimization is genuinely new C02 content and behaves unlike every other cost
+lever in this document, it deserves its own explicit breakdown:
+
+```mermaid
+flowchart TD
+    A["Bedrock GenAI cost"] --> B["Input tokens processed"]
+    A --> C["Output tokens generated"]
+    A --> D["Guardrails filtering units"]
+    B --> E["Lever: shorter prompts,<br/>tighter RAG retrieval<br/>(fewer/smaller chunks)"]
+    C --> F["Lever: max_tokens limits,<br/>concise response instructions"]
+    D --> G["Lever: apply Guardrails only<br/>where genuinely needed,<br/>not redundantly at every layer"]
+    E --> H["Lower total cost"]
+    F --> H
+    G --> H
+```
+
+The exam-relevant point: a question describing rising GenAI costs is very often testing whether
+you reach for "reduce tokens processed" (the actual cost driver) rather than an instance-sizing
+or Spot/Reserved answer that simply doesn't apply to token-metered billing.
 
 ## Key Features / Components
 
@@ -81,6 +125,14 @@ Step by step:
   latency for drastically lower cost on spiky/low-traffic endpoints.
 - **Auto Scaling on real-time endpoints** — scales instance count down during low traffic,
   avoiding paying for peak capacity around the clock.
+- **Bedrock Provisioned Throughput** — a committed-capacity purchasing option for high-volume,
+  predictable GenAI usage, trading commitment for a lower effective per-token rate than On-Demand.
+- **Cost allocation tags** — tagging training jobs, endpoints, and Bedrock usage by project/team
+  so Cost Explorer can break down "which ML initiative is actually driving this spend," essential
+  once an organization runs more than a handful of models/GenAI apps simultaneously.
+- **AWS Budgets with ML-specific alerts** — a budget scoped specifically to SageMaker or Bedrock
+  service usage (rather than the whole account) with a forecasted-spend alert, catching a cost
+  trend before it becomes a surprise bill rather than after.
 
 ## Use Cases — When to Use It
 
@@ -90,6 +142,10 @@ Step by step:
   target → Inference Recommender before committing to any purchasing plan.
 - Traffic is near-zero most of the day with occasional bursts → Serverless Inference instead of
   an always-on Reserved/Savings-Plan-backed endpoint.
+- A customer-facing GenAI chatbot has high, consistent daily call volume → Bedrock Provisioned
+  Throughput, once usage is established enough to commit confidently.
+- A new GenAI feature is still being validated with uncertain adoption → stay On-Demand per-token
+  until usage patterns are predictable enough to justify a Provisioned Throughput commitment.
 
 ## When NOT to Use It / Alternatives
 
@@ -99,6 +155,9 @@ Step by step:
   On-Demand or Serverless first, measure actual usage, then commit once the pattern is stable.
 - **Don't manually benchmark instance types by trial and error in production** — use Inference
   Recommender's load testing instead; it's purpose-built and produces a defensible report.
+- **Don't commit to Bedrock Provisioned Throughput for an unvalidated, low-confidence usage
+  forecast** — the commitment is a real financial risk if actual usage falls well short of the
+  committed throughput; validate demand on On-Demand pricing first.
 
 ## Why It's Important
 
@@ -107,15 +166,30 @@ so picking the wrong purchasing option can mean paying multiples of what's neces
 poorly-sized endpoint either burns money on idle capacity or causes latency/errors under load.
 Exam weight: cost optimization task statements appear across every AWS associate-level cert, but
 MLA-C02 adds ML-specific mechanisms (Spot Training's checkpointing, SageMaker Savings Plans,
-Inference Recommender) that don't exist in SAA-C03/DVA-C03 — expect scenario questions matching
-a usage pattern to the correct purchasing option.
+Inference Recommender) and, new in C02, GenAI-specific cost mechanics (per-token billing,
+Provisioned Throughput) that don't exist in SAA-C03/DVA-C03 — expect scenario questions matching
+a usage pattern to the correct purchasing option, and at least one question testing the
+instance-hour-vs-per-token distinction directly.
 
 ## Pricing Model (summary)
 
 Spot discount percentage and Savings Plan discount percentage both vary by instance type/region/
 commitment term and change over time — check the official SageMaker pricing page for current
 numbers rather than memorizing a fixed percentage. Inference Recommender itself has no extra
-charge beyond the compute used during the load test it runs.
+charge beyond the compute used during the load test it runs. Bedrock per-token rates vary
+significantly by model (larger/more capable foundation models cost more per token than smaller
+ones) and by input vs. output token (output tokens are typically priced higher than input
+tokens, since generation is more compute-intensive than reading the prompt).
+
+**Worked example — the instance-hour vs. token math side by side:** a real-time `ml.m5.xlarge`
+endpoint running 24/7 bills for roughly 720 instance-hours a month *regardless of how many
+requests it actually serves* — the cost is fixed once the instance type and uptime are chosen. A
+Bedrock foundation model call, by contrast, has **zero idle cost** — a month with zero requests
+costs exactly $0, and a month with heavy usage costs proportionally more, scaling continuously
+with tokens processed rather than jumping in discrete instance-hour increments. This is the
+single most important mental model shift for GenAI cost questions: stop thinking in "is the
+meter always running" terms (true for SageMaker real-time endpoints) and start thinking in "cost
+is proportional to usage, with no idle floor" terms (true for Bedrock On-Demand).
 
 ## Hands-on Lab (Floci)
 
@@ -132,6 +206,104 @@ emulation does cover conceptually, plus real AWS Cost Explorer screenshots for c
   mostly idle" → Serverless Inference, not a Savings Plan commitment.
 - "Unsure what instance type to pick" is the explicit trigger phrase for Inference Recommender —
   don't guess an instance size as the answer when this phrase appears.
+- For GenAI cost questions, the lever is almost always tokens processed (prompt length, context
+  size, output length limits), not an instance-sizing decision — don't reach for Spot/Reserved/
+  Savings Plan answers on a question that's actually about Bedrock token billing.
+- "High, consistent, predictable GenAI call volume, want a lower effective rate than On-Demand" →
+  Bedrock Provisioned Throughput — the direct GenAI analog of a Savings Plan commitment.
+
+### More sample exam scenarios, worked
+
+**Scenario 1:** "A company runs nightly retraining jobs that take 3-4 hours and have no strict
+deadline — if interrupted, they can resume from where they left off the next available capacity
+window." *Answer:* Managed Spot Training — the described checkpoint/resume tolerance and lack of
+a hard deadline are exactly Spot's target use case, at up to ~90% savings over On-Demand.
+
+**Scenario 2:** "A customer support chatbot built on Bedrock has grown increasingly expensive
+month over month, while the number of user conversations has stayed roughly flat." *Answer:*
+investigate prompt/context size growth (e.g., an unbounded conversation history being resent on
+every turn, or a RAG pipeline retrieving more chunks than necessary) — flat conversation count
+with rising cost points directly at tokens-per-conversation growing, not request volume.
+
+**Scenario 3:** "A team is about to deploy a new real-time endpoint and has no prior data on what
+traffic or latency to expect." *Answer:* SageMaker Inference Recommender's load test, run before
+committing to any specific instance type or purchasing plan — guessing an instance size here risks
+both overpaying (oversized) and poor latency (undersized).
+
+**Scenario 4:** "A GenAI feature has been live for six months with steady, high daily call volume
+that shows no sign of slowing." *Answer:* now is the appropriate time to evaluate Bedrock
+Provisioned Throughput, since six months of steady, predictable usage is exactly the confidence
+level needed to justify a throughput commitment — contrast with Scenario 3's brand-new, unvalidated
+workload, where committing early would have been premature.
+
+## Full worked case study — a SaaS analytics company right-sizing its ML spend
+
+**The business problem:** "DataPulse," a B2B analytics SaaS company, runs (1) a nightly
+batch-trained churn model, (2) 40 small, per-customer real-time endpoints (one model per
+enterprise customer, each called only a few hundred times a day), and (3) a newly launched
+GenAI insights-summary feature built on Bedrock. Finance has flagged ML/GenAI spend as the
+fastest-growing line item and wants it brought under control without degrading any customer-
+facing feature.
+
+**Step 1 — classify each workload before touching any purchasing option:**
+1. The nightly churn retraining job is temporary, interruption-tolerant (it simply reruns from
+   the last checkpoint if interrupted) → **Managed Spot Training** candidate.
+2. The 40 per-customer endpoints are each low-traffic but currently each billed as a separate,
+   continuously-running real-time endpoint — exactly the "many small, mostly-idle endpoints"
+   anti-pattern flagged in `services/machine-learning-ai/sagemaker-overview.md`'s Pattern 3.
+3. The GenAI insights feature is billed per token, with highly variable per-customer usage.
+
+**Step 2 — apply the matching lever to each:**
+1. The churn job switches to Managed Spot Training — a straightforward configuration change with
+   no architectural risk, since the job already tolerates interruption/resumption.
+2. The 40 endpoints are consolidated onto a smaller number of **multi-model endpoints** — instead
+   of 40 continuously-billed instances, a handful of shared instances load each customer's model
+   into memory on demand, which is both the architectural fix *and* the cost fix simultaneously
+   (this is the same multi-model endpoint pattern referenced in the SageMaker overview document,
+   now applied as a Domain 4 cost-optimization lever rather than a Domain 3 architecture choice —
+   deliberately showing how the same mechanism serves both domains).
+3. The GenAI feature's cost driver is investigated first (not immediately committing to
+   Provisioned Throughput) — the team discovers the insights-summary prompt includes the
+   customer's full raw data table rather than a pre-aggregated summary, meaning token usage (and
+   cost) scales with each customer's raw data size rather than with actual feature usage. Fixing
+   the prompt to pre-aggregate data before sending it to the model cuts token volume dramatically
+   — a prompt-engineering fix, not a purchasing-option fix, and one that purchasing-option
+   thinking alone would never have surfaced.
+4. Only after the prompt fix stabilizes usage does the team revisit whether Bedrock Provisioned
+   Throughput is now justified by the (now lower, more predictable) steady-state token volume.
+
+**Why this case study matters for the exam:** it's built specifically to show that "optimize ML
+cost" is not always answered by picking a purchasing option from the table above — sometimes
+(as with the endpoint consolidation and the prompt-engineering fix) the real lever is an
+architectural or design change that happens to also be the cost fix, and recognizing *which*
+category a given cost problem falls into is exactly the judgment this task statement is testing.
+
+## Troubleshooting / Common Issues
+
+- **A Managed Spot Training job keeps restarting from scratch instead of resuming from a
+  checkpoint.** Confirm the training script is actually implementing checkpointing to the
+  configured S3 checkpoint path — Spot's automatic resume only works if the job itself saves and
+  reloads its own progress; SageMaker provides the interruption/resume *infrastructure*, not
+  automatic checkpointing of arbitrary training code that was never written to checkpoint.
+- **A SageMaker Savings Plan was purchased but the monthly bill doesn't show the expected
+  discount.** Check that the actual instance family/Region usage matches what the Savings Plan
+  was scoped to — a Savings Plan committed to one instance family only discounts usage of that
+  family; traffic that shifted to a different instance type or Region won't automatically draw
+  down the same plan.
+- **Inference Recommender's recommendation doesn't match production behavior once deployed.**
+  Confirm the load test used a genuinely representative sample payload and traffic pattern —
+  a load test run against unrealistically small or uniform payloads can recommend an instance
+  type that under-performs against real, more varied production traffic.
+- **Bedrock Provisioned Throughput is committed, but actual usage consistently falls below the
+  committed capacity.** This is a direct cost miscalculation — committed throughput is paid for
+  whether used or not, so review actual usage trends and consider stepping down the commitment
+  (or returning to On-Demand) rather than treating the shortfall as temporary without evidence.
+- **Multi-model endpoint latency spikes on the first request for a given customer's model.** This
+  is the expected "cold load" behavior — a model not currently in memory must be loaded from S3
+  the first time it's invoked after being evicted; if this latency is unacceptable for a specific
+  high-value customer, that customer may warrant its own dedicated endpoint despite the general
+  cost-optimization pattern favoring consolidation — the right answer depends on which constraint
+  (cost vs. guaranteed low latency) is more important for that specific case.
 
 ## Related Terms
 
@@ -139,5 +311,11 @@ emulation does cover conceptually, plus real AWS Cost Explorer screenshots for c
   — where Managed Spot Training is configured.
 - [`services/machine-learning-ai/sagemaker-deployment-endpoints.md`](../../../services/machine-learning-ai/sagemaker-deployment-endpoints.md)
   — the endpoint types these purchasing options apply to.
+- [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md) —
+  Provisioned Throughput and per-token pricing mechanics in full depth.
 - [`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md)
   — general AWS cost tracking (Cost Explorer, Budgets) underneath all of this.
+- [`../domain-3-deployment-orchestration/README.md`](../domain-3-deployment-orchestration/README.md)
+  — the inference-option decision that this document's cost levers attach to.
+- [`labs.md`](labs.md) — the hands-on exercise reproducing this document's drift/cost decision
+  logic with real, runnable code.

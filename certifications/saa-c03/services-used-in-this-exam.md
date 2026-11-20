@@ -4,7 +4,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 > Use this page as your checklist: before exam day, you should be able to open every linked doc from memory and explain what it does, when to use it, and how it shows up in a scenario question.
 
-**Total services/topics mapped to this cert: 94** (a service can appear in more than one domain if it's tested from multiple angles).
+**Total services/topics mapped to this cert: 116** (a service can appear in more than one domain if it's tested from multiple angles).
 
 ## Domain 1: Design Secure Architectures (30%)
 
@@ -18,6 +18,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | AWS IAM Identity Center (SSO) | [iam-identity-center-sso.md](../../services/security-identity-compliance/iam-identity-center-sso.md) |
 | AWS Identity and Access Management (IAM) | [iam.md](../../services/security-identity-compliance/iam.md) |
 | AWS Key Management Service (KMS) | [kms.md](../../services/security-identity-compliance/kms.md) |
+| AWS Lake Formation | [lake-formation.md](../../services/analytics/lake-formation.md) |
 | AWS Organizations & Service Control Policies (SCPs) | [organizations-and-scps.md](../../services/security-identity-compliance/organizations-and-scps.md) |
 | AWS STS & Role Switching (AssumeRole) | [sts-and-role-switching.md](../../services/security-identity-compliance/sts-and-role-switching.md) |
 | AWS Secrets Manager vs. Systems Manager Parameter Store | [secrets-manager-vs-parameter-store.md](../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md) |
@@ -26,6 +27,8 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | AWS Site-to-Site VPN & Client VPN | [vpn.md](../../services/networking-content-delivery/vpn.md) |
 | AWS Systems Manager | [systems-manager.md](../../services/management-governance/systems-manager.md) |
 | AWS WAF (Web Application Firewall) | [waf.md](../../services/security-identity-compliance/waf.md) |
+| Additional Governance Services — Control Tower, Health Dashboard, License Manager, Managed Grafana, Managed Prometheus, Proton, Service Catalog, Compute Optimizer | [additional-governance-services.md](../../services/management-governance/additional-governance-services.md) |
+| Additional Security Services — CloudHSM, Detective, Directory Service, Firewall Manager, Network Firewall, RAM, Artifact, Audit Manager | [additional-security-services.md](../../services/security-identity-compliance/additional-security-services.md) |
 | Amazon Cognito | [cognito.md](../../services/security-identity-compliance/cognito.md) |
 | Amazon GuardDuty | [guardduty.md](../../services/security-identity-compliance/guardduty.md) |
 | Amazon Macie | [macie.md](../../services/security-identity-compliance/macie.md) |
@@ -42,9 +45,12 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 | Service / Topic | Doc |
 |---|---|
+| AWS Amplify | [amplify.md](../../services/front-end-web-mobile/amplify.md) |
 | AWS Backup | [aws-backup.md](../../services/storage/aws-backup.md) |
+| AWS Device Farm | [device-farm.md](../../services/front-end-web-mobile/device-farm.md) |
 | AWS Fargate | [fargate.md](../../services/containers/fargate.md) |
 | AWS Step Functions | [step-functions.md](../../services/application-integration/step-functions.md) |
+| AWS X-Ray | [x-ray.md](../../services/developer-tools/x-ray.md) |
 | Amazon API Gateway | [api-gateway.md](../../services/networking-content-delivery/api-gateway.md) |
 | Amazon Aurora | [aurora.md](../../services/database/aurora.md) |
 | Amazon CloudFront | [cloudfront.md](../../services/networking-content-delivery/cloudfront.md) |
@@ -52,6 +58,9 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Amazon Elastic Container Service (ECS) | [ecs.md](../../services/containers/ecs.md) |
 | Amazon Elastic Kubernetes Service (EKS) | [eks.md](../../services/containers/eks.md) |
 | Amazon EventBridge | [eventbridge.md](../../services/application-integration/eventbridge.md) |
+| Amazon Fraud Detector & Amazon Kendra | [fraud-detector-and-kendra.md](../../services/machine-learning-ai/fraud-detector-and-kendra.md) |
+| Amazon MQ | [amazon-mq.md](../../services/application-integration/amazon-mq.md) |
+| Amazon Pinpoint | [pinpoint.md](../../services/front-end-web-mobile/pinpoint.md) |
 | Amazon RDS (Relational Database Service) | [rds.md](../../services/database/rds.md) |
 | Amazon Route 53 | [route53.md](../../services/networking-content-delivery/route53.md) |
 | Amazon SNS (Simple Notification Service) | [sns.md](../../services/application-integration/sns.md) |
@@ -59,6 +68,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Containers vs. VMs vs. Serverless — A Conceptual Comparison | [containers-vs-vms-vs-serverless.md](../../services/containers/containers-vs-vms-vs-serverless.md) |
 | Elastic Load Balancing (ALB / NLB / GWLB / CLB) | [elastic-load-balancing.md](../../services/networking-content-delivery/elastic-load-balancing.md) |
 | Messaging Patterns Overview — SQS, SNS, EventBridge & Step Functions Together | [messaging-patterns-overview.md](../../services/application-integration/messaging-patterns-overview.md) |
+| Niche Compute Services — Outposts, Wavelength, Serverless Application Repository, VMware Cloud on AWS | [niche-compute-services.md](../../services/compute/niche-compute-services.md) |
 
 ## Domain 3: Design High-Performing Architectures (24%)
 
@@ -67,6 +77,8 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Service / Topic | Doc |
 |---|---|
 | AWS Batch | [aws-batch.md](../../services/compute/aws-batch.md) |
+| AWS Data Pipeline & AWS Data Exchange | [data-pipeline-and-data-exchange.md](../../services/analytics/data-pipeline-and-data-exchange.md) |
+| AWS DataSync | [datasync.md](../../services/migration-transfer/datasync.md) |
 | AWS Direct Connect | [direct-connect.md](../../services/networking-content-delivery/direct-connect.md) |
 | AWS Fargate | [fargate.md](../../services/compute/fargate.md) |
 | AWS Global Accelerator | [global-accelerator.md](../../services/networking-content-delivery/global-accelerator.md) |
@@ -85,6 +97,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Amazon ElastiCache | [elasticache.md](../../services/database/elasticache.md) |
 | Amazon Elastic Container Service (ECS) | [ecs.md](../../services/containers/ecs.md) |
 | Amazon Elastic Kubernetes Service (EKS) | [eks.md](../../services/containers/eks.md) |
+| Amazon Elastic Transcoder & Amazon Kinesis Video Streams | [elastic-transcoder-and-kinesis-video-streams.md](../../services/media/elastic-transcoder-and-kinesis-video-streams.md) |
 | Amazon FSx | [fsx.md](../../services/storage/fsx.md) |
 | Amazon Kinesis Family (Data Streams, Data Firehose, Data Analytics) | [kinesis-family.md](../../services/analytics/kinesis-family.md) |
 | Amazon Neptune | [neptune.md](../../services/database/neptune.md) |
@@ -96,6 +109,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Data Lake Concepts (S3 as a Data Lake, Lake House Architecture) | [data-lake-concepts.md](../../services/analytics/data-lake-concepts.md) |
 | Database Selection Guide — Choosing the Right AWS Database | [database-selection-guide.md](../../services/database/database-selection-guide.md) |
 | Elastic Load Balancing (ALB / NLB / GWLB / CLB) | [elastic-load-balancing.md](../../services/networking-content-delivery/elastic-load-balancing.md) |
+| Niche Database Services — Aurora Serverless, Amazon Keyspaces, Amazon QLDB | [niche-database-services.md](../../services/database/niche-database-services.md) |
 | S3 Storage Classes | [s3-storage-classes.md](../../services/storage/s3-storage-classes.md) |
 | Transit Gateway & VPC Peering | [transit-gateway-and-peering.md](../../services/networking-content-delivery/transit-gateway-and-peering.md) |
 | VPC Endpoints & AWS PrivateLink | [vpc-endpoints-privatelink.md](../../services/networking-content-delivery/vpc-endpoints-privatelink.md) |
@@ -108,11 +122,16 @@ A fast-reference index of every AWS service this repo documents that actually sh
 |---|---|
 | AWS Backup | [aws-backup.md](../../services/storage/aws-backup.md) |
 | AWS Cost Management Tools | [cost-management-tools.md](../../services/management-governance/cost-management-tools.md) |
+| AWS DataSync | [datasync.md](../../services/migration-transfer/datasync.md) |
+| AWS Database Migration Service (AWS DMS) | [dms.md](../../services/migration-transfer/dms.md) |
 | AWS Direct Connect | [direct-connect.md](../../services/networking-content-delivery/direct-connect.md) |
 | AWS Fargate | [fargate.md](../../services/compute/fargate.md) |
 | AWS Lambda | [lambda.md](../../services/compute/lambda.md) |
 | AWS Site-to-Site VPN & Client VPN | [vpn.md](../../services/networking-content-delivery/vpn.md) |
+| AWS Snow Family | [snow-family.md](../../services/migration-transfer/snow-family.md) |
+| AWS Transfer Family | [transfer-family.md](../../services/migration-transfer/transfer-family.md) |
 | AWS Trusted Advisor | [trusted-advisor.md](../../services/management-governance/trusted-advisor.md) |
+| Additional Governance Services — Control Tower, Health Dashboard, License Manager, Managed Grafana, Managed Prometheus, Proton, Service Catalog, Compute Optimizer | [additional-governance-services.md](../../services/management-governance/additional-governance-services.md) |
 | Amazon Aurora | [aurora.md](../../services/database/aurora.md) |
 | Amazon CloudFront | [cloudfront.md](../../services/networking-content-delivery/cloudfront.md) |
 | Amazon DynamoDB | [dynamodb.md](../../services/database/dynamodb.md) |
@@ -124,6 +143,9 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Containers vs. VMs vs. Serverless — A Conceptual Comparison | [containers-vs-vms-vs-serverless.md](../../services/containers/containers-vs-vms-vs-serverless.md) |
 | Data Transfer Pricing (Networking Cost Model) | [data-transfer-pricing.md](../../services/networking-content-delivery/data-transfer-pricing.md) |
 | Database Selection Guide — Choosing the Right AWS Database | [database-selection-guide.md](../../services/database/database-selection-guide.md) |
+| Migration Services Overview — Application Discovery Service, MGN & Migration Hub | [migration-services-overview.md](../../services/migration-transfer/migration-services-overview.md) |
+| Niche Compute Services — Outposts, Wavelength, Serverless Application Repository, VMware Cloud on AWS | [niche-compute-services.md](../../services/compute/niche-compute-services.md) |
+| Niche Database Services — Aurora Serverless, Amazon Keyspaces, Amazon QLDB | [niche-database-services.md](../../services/database/niche-database-services.md) |
 | S3 Storage Classes | [s3-storage-classes.md](../../services/storage/s3-storage-classes.md) |
 | Transit Gateway & VPC Peering | [transit-gateway-and-peering.md](../../services/networking-content-delivery/transit-gateway-and-peering.md) |
 | VPC Endpoints & AWS PrivateLink | [vpc-endpoints-privatelink.md](../../services/networking-content-delivery/vpc-endpoints-privatelink.md) |

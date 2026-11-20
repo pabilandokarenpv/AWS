@@ -27,7 +27,7 @@ failures of the original model or deployment design.
 
 | Task statement | What it covers | Where it's covered |
 |---|---|---|
-| **4.1 — Monitor model and infrastructure health** | Data drift / concept drift detection, latency/error monitoring, right-sizing deployed infrastructure | [`services/machine-learning-ai/sagemaker-model-monitor-and-registry.md`](../../../services/machine-learning-ai/sagemaker-model-monitor-and-registry.md) |
+| **4.1 — Monitor model and infrastructure health** | Data drift / concept drift detection, latency/error monitoring, right-sizing deployed infrastructure; distributed tracing to isolate which hop in a multi-service inference pipeline is actually slow | [`services/machine-learning-ai/sagemaker-model-monitor-and-registry.md`](../../../services/machine-learning-ai/sagemaker-model-monitor-and-registry.md), [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) |
 | **4.2 — Optimize cost** | Spot vs. On-Demand vs. Reserved, SageMaker Savings Plans, Inference Recommender, Cost Explorer/Budgets | [`ml-cost-optimization.md`](ml-cost-optimization.md) *(new doc, written for this domain)* |
 | **4.3 — Secure ML/AI solutions** | IAM least privilege, VPC network isolation, KMS encryption at rest/in transit | [`services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md), [`services/security-identity-compliance/kms.md`](../../../services/security-identity-compliance/kms.md), [`services/networking-content-delivery/vpc.md`](../../../services/networking-content-delivery/vpc.md) |
 | **4.4 — NEW: Responsible AI, bias, and GenAI guardrails** | Detecting bias in model/GenAI outputs, Bedrock Guardrails for content filtering, explainability | [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md) *(new doc, written for this domain)* |
@@ -37,7 +37,7 @@ failures of the original model or deployment design.
 | **4.2.8 — NEW: Monitor agent resource consumption** | Tracking compute/token/tool-call cost per agent run, not just per model call | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-428--monitoring-agent-resource-consumption) |
 | **4.2.9 — NEW: Manage FM inference costs with usage optimization** | Ongoing optimization levers beyond the initial purchasing-option decision | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-429--managing-fm-inference-costs-with-usage-optimization) |
 | **4.2.10 — NEW: Monitor AI-specific cost patterns** | Token usage, embedding computation cost, vector database storage cost, tracked distinctly | [`ml-cost-optimization.md`](ml-cost-optimization.md#new-skill-4210--monitoring-ai-specific-cost-patterns) |
-| **4.3.1 — NEW: Secure ML/AI CI/CD pipelines** | Scanning code and container images for vulnerabilities (CodeGuru, Inspector) | this doc's ["Securing ML/AI CI/CD Pipelines"](#new-skill-431--securing-mlai-cicd-pipelines-codeguru-amazon-inspector) section below |
+| **4.3.1 — NEW: Secure ML/AI CI/CD pipelines** | Scanning code and container images for vulnerabilities (CodeGuru, Inspector) | this doc's ["Securing ML/AI CI/CD Pipelines"](#new-skill-431--securing-mlai-cicd-pipelines-codeguru-amazon-inspector) section below, full service depth in [`services/machine-learning-ai/additional-ai-services-mla.md`](../../../services/machine-learning-ai/additional-ai-services-mla.md) (CodeGuru, DevOps Guru, plus Lex/Comprehend Medical/HealthLake as other MLA-C02-only managed AI services) |
 | **4.3.8 — NEW: Select appropriate FM credential type** | Bedrock API keys vs. IAM credentials for accessing foundation models | this doc's ["Selecting FM Credential Types"](#new-skill-438--selecting-the-appropriate-credential-type-to-access-fms) section below |
 | **4.3.9 — NEW: Implement responsible-AI safeguards** | Bedrock Guardrails for sensitive data protection per policy | [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md) |
 
@@ -60,6 +60,13 @@ failures of the original model or deployment design.
 - **[`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md)**
   — the general AWS Cost Explorer/Budgets tooling that `ml-cost-optimization.md` builds on top of
   with ML-specific purchasing options.
+- **[`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md)** —
+  distributed tracing for Task 4.1's "monitor infrastructure health" half specifically when the
+  health question is *latency localization* across a multi-hop inference pipeline (API Gateway →
+  Lambda → SageMaker endpoint, or a Bedrock-backed agent chaining several calls): X-Ray's trace
+  timeline and service map answer "which specific hop is slow," complementing (not replacing)
+  Model Monitor's drift detection and AgentCore Observability's agent-coordination monitoring
+  covered elsewhere in this domain — see that doc's own MLA-C02 framing for the full depth.
 
 ## New topic docs for this domain
 

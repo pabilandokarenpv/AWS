@@ -41,6 +41,12 @@ stems — it tells you which half of this domain you're in before you even look 
 | RDS read replicas | [`services/database/rds.md`](../../../services/database/rds.md) |
 | Aurora (replicas, Aurora Serverless) | [`services/database/aurora.md`](../../../services/database/aurora.md) |
 | Event-driven & microservice architecture patterns — how it all composes *(new — decision-level topic)* | [`event-driven-microservice-architecture-patterns.md`](event-driven-microservice-architecture-patterns.md) |
+| AWS Amplify (full-stack app scaffolding — auth/API/storage wired together) | [`services/front-end-web-mobile/amplify.md`](../../../services/front-end-web-mobile/amplify.md) |
+| AWS Device Farm (real-device mobile testing before a scaled backend ever sees traffic) | [`services/front-end-web-mobile/device-farm.md`](../../../services/front-end-web-mobile/device-farm.md) |
+| Amazon Pinpoint (multi-channel engagement messaging, decoupled from the core app) | [`services/front-end-web-mobile/pinpoint.md`](../../../services/front-end-web-mobile/pinpoint.md) |
+| AWS Serverless Application Repository (SAR) — packaged, reusable serverless app patterns | [`services/compute/niche-compute-services.md`](../../../services/compute/niche-compute-services.md) |
+| Amazon Fraud Detector & Amazon Kendra — managed AI services consumed as decoupled components | [`services/machine-learning-ai/fraud-detector-and-kendra.md`](../../../services/machine-learning-ai/fraud-detector-and-kendra.md) |
+| Amazon MQ — managed ActiveMQ/RabbitMQ broker for migrating existing JMS/AMQP applications | [`services/application-integration/amazon-mq.md`](../../../services/application-integration/amazon-mq.md) |
 
 "Loosely coupled" is the thread that ties this whole task together: every service in this table
 exists to let one component change, scale, or fail *without the others noticing*. API Gateway
@@ -48,7 +54,22 @@ decouples a client from knowing which backend compute model serves it; SQS/SNS/E
 decouple a producer from knowing who (or how many) consumers exist; read replicas decouple read
 traffic from write traffic; containers decouple the application from the underlying host. When a
 scenario says two services are "tightly coupled" or a failure "cascades," the fix is almost always
-inserting one of this table's services as a buffer between them.
+inserting one of this table's services as a buffer between them. The same decoupling instinct
+extends to the front-end and intelligence layers of the stack. **Amplify** provisions a scalable
+mobile/web backend (auth, API, storage) without an app team hand-wiring each piece, **Device
+Farm** validates a mobile client against real hardware before it ever reaches that scaled
+backend, and **Pinpoint** moves multi-channel customer messaging into its own managed,
+asynchronous channel instead of bolting notification code onto the request path. **SAR** lets a
+team deploy a proven, packaged serverless application pattern instead of hand-assembling the same
+Lambda/SQS/DynamoDB wiring from scratch. And when a workload needs to call out to a managed AI
+service — **Fraud Detector** scoring a transaction in real time, or **Kendra** answering a search
+query — the same SQS/EventBridge decoupling pattern from this task's core lesson applies: the call
+happens off the critical path, so a slow or momentarily degraded AI service doesn't drag down the
+primary request. One more recurring exam trap sits in this same table: when a scenario describes
+*migrating* an existing JMS- or AMQP-based application rather than building something new,
+**Amazon MQ** is the right managed broker — a drop-in replacement for a self-hosted ActiveMQ/
+RabbitMQ broker that needs little to no application code change, which is a fundamentally
+different problem than the greenfield SQS/SNS decoupling this task otherwise tests.
 
 ## Task 2.2 — Design highly available and/or fault-tolerant architectures
 
@@ -63,6 +84,7 @@ inserting one of this table's services as a buffer between them.
 | Aurora (Multi-AZ, Global Database) | [`services/database/aurora.md`](../../../services/database/aurora.md) |
 | Elastic Load Balancing (spans multiple AZs) | [`services/networking-content-delivery/elastic-load-balancing.md`](../../../services/networking-content-delivery/elastic-load-balancing.md) |
 | Disaster recovery strategies (RTO/RPO, backup→pilot light→warm standby→multi-site) *(new — decision-level topic)* | [`disaster-recovery-strategies.md`](disaster-recovery-strategies.md) |
+| AWS X-Ray — distributed tracing for workload visibility across decoupled components | [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) |
 
 A critical distinction this task hinges on: **availability is automatic and routine; disaster
 recovery is deliberate and rare.** Multi-AZ RDS failing over to its standby, an Auto Scaling group
@@ -71,7 +93,12 @@ seconds to minutes, with no human decision involved, and they protect against th
 of a Region. Disaster recovery (the four strategies in `disaster-recovery-strategies.md`) is a
 *planned response*, sized to a stated RTO/RPO, for losing an *entire* Region. A scenario that
 conflates the two ("we have Multi-AZ, so we're protected if the Region goes down") is describing
-a gap the exam wants you to catch.
+a gap the exam wants you to catch. Knowing a failure happened — fast enough to act on it — also
+depends on visibility into the request path itself: **X-Ray**'s distributed tracing turns
+"something in this decoupled system is unhealthy" into "this specific service, on this specific
+call, is the one failing," the same signal Route 53 and ELB health checks act on automatically,
+just surfaced for a human during an incident instead of consumed by an automated failover
+mechanism.
 
 ## Architecture: A Resilient, Multi-AZ, Decoupled System
 

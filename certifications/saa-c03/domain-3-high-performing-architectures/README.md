@@ -57,6 +57,7 @@ is really just one of these four levers applied to a specific service category.
 | DocumentDB | [`services/database/documentdb.md`](../../../services/database/documentdb.md) |
 | Neptune | [`services/database/neptune.md`](../../../services/database/neptune.md) |
 | Redshift | [`services/database/redshift.md`](../../../services/database/redshift.md) |
+| Aurora Serverless v2, Amazon Keyspaces, Amazon QLDB — niche database services | [`services/database/niche-database-services.md`](../../../services/database/niche-database-services.md) |
 
 Task 3.3 is primarily "cache-aside first, then pick the right engine": the single biggest lever
 for database *read* performance is not picking a faster database at all, it's putting
@@ -65,7 +66,10 @@ Only after caching is accounted for does engine choice matter — DynamoDB for s
 millisecond key-value access at any scale, Aurora for relational workloads needing the highest
 MySQL/PostgreSQL-compatible throughput available, Redshift for OLAP/analytical queries across
 huge datasets, Neptune/DocumentDB for graph/document-shaped access patterns a relational engine
-handles poorly.
+handles poorly. Aurora Serverless v2 extends this same engine-choice logic to workloads whose
+*load itself* varies unpredictably — it scales compute capacity in fine-grained increments within
+seconds, so a spiky workload gets Aurora's relational performance without being sized for its own
+peak around the clock.
 
 ## Task 3.4 — Determine high-performing and/or scalable network architectures
 
@@ -91,6 +95,22 @@ handles poorly.
 | EMR (big data processing) | [`services/analytics/emr.md`](../../../services/analytics/emr.md) |
 | Data lake concepts | [`services/analytics/data-lake-concepts.md`](../../../services/analytics/data-lake-concepts.md) |
 | Athena (query data lake directly) | [`services/analytics/athena.md`](../../../services/analytics/athena.md) |
+| Elastic Transcoder & Kinesis Video Streams (media transcoding / video stream ingestion) | [`services/media/elastic-transcoder-and-kinesis-video-streams.md`](../../../services/media/elastic-transcoder-and-kinesis-video-streams.md) |
+| AWS DataSync (high-speed online transfer of on-prem datasets into S3/EFS/FSx) | [`services/migration-transfer/datasync.md`](../../../services/migration-transfer/datasync.md) |
+| AWS Data Pipeline (legacy orchestration) & AWS Data Exchange (third-party data ingestion) | [`services/analytics/data-pipeline-and-data-exchange.md`](../../../services/analytics/data-pipeline-and-data-exchange.md) |
+
+Two more ingestion sources extend this same pattern. **Kinesis Video Streams** ingests live
+video/audio from cameras or mobile devices — the streaming equivalent of Kinesis Data Streams,
+purpose-built for time-encoded media rather than arbitrary records — and **Elastic Transcoder**
+then transforms a master video file into the multiple resolutions/bitrates different devices
+need, the media equivalent of Glue's CSV→Parquet transformation. Separately, when the data to
+ingest already exists on-premises rather than arriving live, **DataSync** is the managed transfer
+mechanism that lands it in S3/EFS/FSx at up to 10x the speed of a hand-rolled copy script, feeding
+the very same Glue/EMR/Athena pipeline described above. **AWS Data Exchange** is a different kind
+of ingestion source entirely — third-party data a provider licenses to you rather than data your
+own systems generate — landing in that same S3 data lake; **AWS Data Pipeline** is this pipeline's
+legacy orchestration option, now largely superseded by Glue (for the transformation step) and
+Step Functions (for general scheduling/dependency logic).
 
 ## Architecture: A High-Performing, Multi-Layer System
 

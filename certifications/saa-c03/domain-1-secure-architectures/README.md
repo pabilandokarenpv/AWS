@@ -44,6 +44,7 @@ problem, or a data problem?" before looking at the answer choices.
 | STS, AssumeRole, cross-account role switching | [`services/security-identity-compliance/sts-and-role-switching.md`](../../../services/security-identity-compliance/sts-and-role-switching.md) |
 | Service Control Policies (SCPs), AWS Organizations | [`services/security-identity-compliance/organizations-and-scps.md`](../../../services/security-identity-compliance/organizations-and-scps.md) |
 | Multi-account strategy & Control Tower landing zone *(new — decision-level topic, no single-service home)* | [`multi-account-security-strategy.md`](multi-account-security-strategy.md) |
+| Control Tower (full service deep-dive) & AWS Service Catalog (self-service account/resource provisioning) | [`services/management-governance/additional-governance-services.md`](../../../services/management-governance/additional-governance-services.md) |
 
 Task 1.1 is really one idea repeated at three scales: **a human (or workload) should hold the
 minimum permission needed, for the minimum time needed, and prove who they are before they get
@@ -54,7 +55,11 @@ not even the account's own administrators can lift. Memorize that progression, n
 individual service names — the exam's scenario wording ("a developer needs occasional access to
 three accounts," "no user, including admins, should ever disable logging," "an application needs
 to read from an S3 bucket in a different account") is choosing *which scale* the question is
-testing, and the right-sized answer lives at that scale.
+testing, and the right-sized answer lives at that scale. At the organizational scale, a Control
+Tower landing zone is frequently paired with **Service Catalog**, which lets a platform team
+publish pre-approved, governance-compliant account and resource templates ("golden paths") that
+other teams self-provision from — the same least-privilege philosophy applied to *infrastructure
+choice* itself, not just permissions.
 
 ## Task 1.2 — Design secure workloads and applications
 
@@ -74,6 +79,7 @@ testing, and the right-sized answer lives at that scale.
 | GuardDuty (threat detection) | [`services/security-identity-compliance/guardduty.md`](../../../services/security-identity-compliance/guardduty.md) |
 | Macie (sensitive data discovery) | [`services/security-identity-compliance/macie.md`](../../../services/security-identity-compliance/macie.md) |
 | Security Hub & Inspector | [`services/security-identity-compliance/security-hub-and-inspector.md`](../../../services/security-identity-compliance/security-hub-and-inspector.md) |
+| CloudHSM, Detective, Directory Service, Firewall Manager, Network Firewall, RAM, Artifact, Audit Manager (consolidated niche security services) | [`services/security-identity-compliance/additional-security-services.md`](../../../services/security-identity-compliance/additional-security-services.md) |
 | VPN (Site-to-Site / Client VPN) | [`services/networking-content-delivery/vpn.md`](../../../services/networking-content-delivery/vpn.md) |
 | Direct Connect | [`services/networking-content-delivery/direct-connect.md`](../../../services/networking-content-delivery/direct-connect.md) |
 
@@ -85,7 +91,15 @@ anomalous account/network behavior, Macie watching specifically for sensitive da
 Security Hub/Inspector aggregating and scanning). A useful habit: whenever a scenario names an
 attack or a leak, ask "is this something a *firewall* should have stopped, or something a
 *detector* should flag after the fact?" — Shield/WAF/security groups are preventive, GuardDuty/
-Macie/Security Hub are detective, and the exam expects you to reach for the right category.
+Macie/Security Hub are detective, and the exam expects you to reach for the right category. A
+second tier of lower-frequency Task 1.2 services rounds out this picture: **CloudHSM** for
+workloads needing dedicated, single-tenant hardware key custody beyond what KMS's multi-tenant
+model offers, **Detective** for drilling into root cause *after* GuardDuty or Security Hub raises
+a finding, **Network Firewall** and **Firewall Manager** for centralized, org-wide traffic
+filtering and security-group hygiene, and **Directory Service** for workloads needing an actual
+Active Directory rather than IAM federation — see
+[`services/security-identity-compliance/additional-security-services.md`](../../../services/security-identity-compliance/additional-security-services.md)
+for these plus **RAM**, **Artifact**, and **Audit Manager** on the compliance side.
 
 ## Task 1.3 — Determine appropriate data security controls
 
@@ -99,6 +113,7 @@ Macie/Security Hub are detective, and the exam expects you to reach for the righ
 | AWS Backup (centralized backup/replication policy) | [`services/storage/aws-backup.md`](../../../services/storage/aws-backup.md) |
 | S3 storage classes & lifecycle policies | [`services/storage/s3-storage-classes.md`](../../../services/storage/s3-storage-classes.md) |
 | S3 fundamentals (versioning, replication) | [`services/storage/s3.md`](../../../services/storage/s3.md) |
+| Lake Formation (row/column/tag-based access control over a data lake, on top of the Glue Data Catalog) | [`services/analytics/lake-formation.md`](../../../services/analytics/lake-formation.md) |
 
 Task 1.3 is the "data at rest vs. data in transit" split, plus the operational half of each:
 **KMS** handles at-rest encryption and (critically for the exam) *automatic annual key rotation*

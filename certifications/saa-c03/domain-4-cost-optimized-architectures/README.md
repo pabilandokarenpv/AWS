@@ -40,6 +40,13 @@ compute, database, and network in turn — learn the move once, then recognize i
 | Fargate | [`services/compute/fargate.md`](../../../services/compute/fargate.md) |
 | Containers vs. VMs vs. serverless | [`services/containers/containers-vs-vms-vs-serverless.md`](../../../services/containers/containers-vs-vms-vs-serverless.md) |
 | Compute cost-optimization decision framework *(new — decision-level topic)* | [`compute-cost-optimization-decision-framework.md`](compute-cost-optimization-decision-framework.md) |
+| AWS Outposts & AWS Wavelength — hybrid/edge compute cost tradeoffs vs. a standard Region | [`services/compute/niche-compute-services.md`](../../../services/compute/niche-compute-services.md) |
+
+**Outposts** and **Wavelength** both cost meaningfully more per unit of compute than an
+equivalent standard Region, and the exam's cost-optimization angle on them is recognizing when
+that premium is actually justified — a data-residency or sub-10ms-latency requirement a standard
+Region structurally cannot meet — versus when a team has defaulted to on-premises/edge hardware
+out of habit when a standard Region would have been both cheaper and sufficient.
 
 ## Task 4.3 — Design cost-optimized database solutions
 
@@ -52,6 +59,12 @@ compute, database, and network in turn — learn the move once, then recognize i
 | Aurora (incl. Aurora Serverless v2) | [`services/database/aurora.md`](../../../services/database/aurora.md) |
 | DynamoDB (on-demand vs. provisioned) | [`services/database/dynamodb.md`](../../../services/database/dynamodb.md) |
 | Database cost-optimization decision framework *(new — decision-level topic)* | [`database-cost-optimization-decision-framework.md`](database-cost-optimization-decision-framework.md) |
+| Aurora Serverless v2, Amazon Keyspaces, Amazon QLDB — niche database services, cost angle | [`services/database/niche-database-services.md`](../../../services/database/niche-database-services.md) |
+
+Aurora Serverless v2 is this task's clearest database example of the domain's central move: a
+workload with genuinely variable load pays for the capacity it actually uses, scaling down (not
+just up) automatically, instead of a provisioned instance sized for peak and billed at that rate
+around the clock even at 3am.
 
 ## Task 4.4 — Design cost-optimized network architectures
 
@@ -66,11 +79,29 @@ compute, database, and network in turn — learn the move once, then recognize i
 | Direct Connect | [`services/networking-content-delivery/direct-connect.md`](../../../services/networking-content-delivery/direct-connect.md) |
 | VPN | [`services/networking-content-delivery/vpn.md`](../../../services/networking-content-delivery/vpn.md) |
 | Network cost-optimization decision framework *(new — decision-level topic)* | [`network-cost-optimization-decision-framework.md`](network-cost-optimization-decision-framework.md) |
+| AWS DataSync (high-speed online transfer into AWS storage) | [`services/migration-transfer/datasync.md`](../../../services/migration-transfer/datasync.md) |
+| AWS DMS — Database Migration Service (live database migration/replication) | [`services/migration-transfer/dms.md`](../../../services/migration-transfer/dms.md) |
+| AWS Snow Family (offline bulk data transfer — Snowcone/Snowball/Snowmobile) | [`services/migration-transfer/snow-family.md`](../../../services/migration-transfer/snow-family.md) |
+| AWS Transfer Family (managed SFTP/FTPS/FTP into S3/EFS) | [`services/migration-transfer/transfer-family.md`](../../../services/migration-transfer/transfer-family.md) |
+| Migration services overview — Application Discovery Service, MGN, Migration Hub | [`services/migration-transfer/migration-services-overview.md`](../../../services/migration-transfer/migration-services-overview.md) |
+
+Moving data itself has a cost dimension this task tests directly: **Snow Family** devices exist
+specifically because, past a certain dataset size, physically shipping a device is *cheaper and
+faster* than paying for the internet/Direct Connect transfer of the same bytes — a scenario
+giving a petabyte-scale, one-time dataset and a deadline is testing whether you'll reach for
+Snowball/Snowmobile instead of assuming everything must go over the wire. For ongoing, repeated
+transfers, **DataSync** avoids the engineering cost of a hand-rolled, retry-handling copy script,
+**Transfer Family** avoids standing up and patching your own SFTP server fleet, and **DMS**
+replaces a bespoke database-replication pipeline with a managed one — three cases where the
+"cost-optimized" answer is a managed service rather than "build it yourself cheaper."
 
 Also relevant across all four tasks: [`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md)
 (Cost Explorer, budgets, Compute Optimizer) and
 [`services/management-governance/trusted-advisor.md`](../../../services/management-governance/trusted-advisor.md)
-(automated flags for idle/oversized/underutilized resources across every category above).
+(automated flags for idle/oversized/underutilized resources across every category above). For
+the fuller write-up of Compute Optimizer's rightsizing mechanics (and other lower-frequency
+governance services), see
+[`services/management-governance/additional-governance-services.md`](../../../services/management-governance/additional-governance-services.md).
 
 ## Architecture: A Cost-Optimized System
 

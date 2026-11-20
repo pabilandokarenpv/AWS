@@ -4,7 +4,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 > Use this page as your checklist: before exam day, you should be able to open every linked doc from memory and explain what it does, when to use it, and how it shows up in a scenario question.
 
-**Total services/topics mapped to this cert: 30** (a service can appear in more than one domain if it's tested from multiple angles).
+**Total services/topics mapped to this cert: 35** (a service can appear in more than one domain if it's tested from multiple angles).
 
 ## Domain 1: Data Preparation for ML and AI (28%)
 
@@ -13,8 +13,10 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Service / Topic | Doc |
 |---|---|
 | AWS Glue (Glue ETL, Glue DataBrew, Glue Data Catalog) | [glue.md](../../services/analytics/glue.md) |
+| AWS Lake Formation | [lake-formation.md](../../services/analytics/lake-formation.md) |
 | Amazon Athena | [athena.md](../../services/analytics/athena.md) |
 | Amazon Bedrock | [bedrock.md](../../services/machine-learning-ai/bedrock.md) |
+| Amazon Data Firehose | [data-firehose.md](../../services/analytics/data-firehose.md) |
 | Amazon EMR (Elastic MapReduce) | [emr.md](../../services/analytics/emr.md) |
 | Amazon Kinesis Family (Data Streams, Data Firehose, Data Analytics) | [kinesis-family.md](../../services/analytics/kinesis-family.md) |
 | Amazon OpenSearch Service | [opensearch.md](../../services/analytics/opensearch.md) |
@@ -45,6 +47,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Amazon Elastic Container Registry (ECR) | [ecr.md](../../services/containers/ecr.md) |
 | Amazon Elastic Container Service (ECS) | [ecs.md](../../services/containers/ecs.md) |
 | Amazon Elastic Kubernetes Service (EKS) | [eks.md](../../services/containers/eks.md) |
+| Amazon MWAA (Managed Workflows for Apache Airflow) | [mwaa.md](../../services/application-integration/mwaa.md) |
 | Amazon SageMaker — Overview | [sagemaker-overview.md](../../services/machine-learning-ai/sagemaker-overview.md) |
 | SageMaker Deployment & Endpoints | [sagemaker-deployment-endpoints.md](../../services/machine-learning-ai/sagemaker-deployment-endpoints.md) |
 | SageMaker Pipelines | [sagemaker-pipelines.md](../../services/machine-learning-ai/sagemaker-pipelines.md) |
@@ -58,6 +61,8 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | AWS Cost Management Tools | [cost-management-tools.md](../../services/management-governance/cost-management-tools.md) |
 | AWS Identity and Access Management (IAM) | [iam.md](../../services/security-identity-compliance/iam.md) |
 | AWS Key Management Service (KMS) | [kms.md](../../services/security-identity-compliance/kms.md) |
+| AWS X-Ray | [x-ray.md](../../services/developer-tools/x-ray.md) |
+| Additional AI/AI-Adjacent Services for MLA-C02 (Lex, CodeGuru, Comprehend Medical, DevOps Guru, HealthLake) | [additional-ai-services-mla.md](../../services/machine-learning-ai/additional-ai-services-mla.md) |
 | Amazon Bedrock | [bedrock.md](../../services/machine-learning-ai/bedrock.md) |
 | Amazon VPC (Virtual Private Cloud) | [vpc.md](../../services/networking-content-delivery/vpc.md) |
 | SageMaker Deployment & Endpoints | [sagemaker-deployment-endpoints.md](../../services/machine-learning-ai/sagemaker-deployment-endpoints.md) |

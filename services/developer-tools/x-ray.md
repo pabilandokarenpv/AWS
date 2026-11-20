@@ -515,13 +515,8 @@ automates for you across real services in production.
 
 ---
 
-**Repo completeness note — cert cross-linking not yet applied:** this doc should also be
-referenced from the following certification domain pages, which currently don't link to it
-(these files were intentionally **not edited** here to avoid conflicting with other in-flight
-edits elsewhere in the repo — flagging for a follow-up pass):
-- `certifications/saa-c03/domain-2-resilient-architectures/README.md` — workload visibility /
-  observability for resilient architectures (SAA-C03 Domain 2)
-- `certifications/dva-c03/domain-4-troubleshooting-optimization/README.md` — troubleshooting and
-  observability tooling (DVA-C03 Domain 4)
-- `certifications/mla-c02/domain-4-monitoring-security/README.md` — monitoring for ML pipelines
-  and inference endpoints (MLA-C02 Domain 4)
+**Repo completeness note — cert cross-linking fully applied:** this doc is now linked from all
+three certification domain pages that reference it: `certifications/dva-c03/domain-4-troubleshooting-optimization/README.md`
+(Task 4.1/4.2), `certifications/saa-c03/domain-2-resilient-architectures/README.md` (Task 2.2 —
+workload visibility/observability), and `certifications/mla-c02/domain-4-monitoring-security/README.md`
+(Task 4.1 — monitoring ML pipelines and inference endpoints).

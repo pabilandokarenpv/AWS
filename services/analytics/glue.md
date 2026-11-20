@@ -166,6 +166,119 @@ Parquet output. Rule-of-thumb sizing questions this worked example answers:
    to a cap you set, rather than you guessing a single fixed worker count that's either
    wasteful on light days or insufficient on heavy ones.
 
+## AWS Glue Data Quality — Deep Dive
+
+Earlier sections mention Glue Data Quality in passing (a Key Feature bullet, a use case, and a
+Glue Workflow diagram node); this section is the real depth the exam's data-preparation-quality
+scenarios actually test — how rules are written, what the DQDL language looks like, and exactly
+how it plugs into the Data Catalog.
+
+**Plain English:** Glue Data Quality is a rule-based checker that runs against a Glue Data
+Catalog table (or directly inside an ETL job) and answers one question precisely: *does this
+data satisfy the specific, named rules we wrote for it* (no nulls in this column, values in this
+column are unique, this column's values fall in an expected range) — not a general-purpose
+anomaly detector, but a deterministic, auditable rule engine built on the open-source **Deequ**
+framework.
+
+```mermaid
+flowchart LR
+    TABLE[(Glue Data Catalog table<br/>or in-job DynamicFrame)] --> RULESET["Data Quality Ruleset<br/>written in DQDL"]
+    RULESET --> EVAL{"Evaluate every rule<br/>against the data"}
+    EVAL -->|"all rules pass"| PASS["Promote to next stage<br/>(e.g., curated zone)"]
+    EVAL -->|"one or more rules fail"| FAIL["Action: fail the job,<br/>quarantine the data,<br/>or just report the failure"]
+    PASS --> SCORE["Data quality score<br/>+ per-rule result<br/>written to S3/CloudWatch"]
+    FAIL --> SCORE
+```
+
+### Data Quality Definition Language (DQDL)
+
+DQDL is a small, purpose-built language for expressing rules as a simple list — not general
+code, which is deliberate: rules need to be readable and auditable by a data steward, not only a
+Spark engineer.
+
+```text
+Rules = [
+    IsComplete "order_id",
+    IsUnique "order_id",
+    ColumnValues "amount" > 0,
+    ColumnValues "amount" <= 100000,
+    Completeness "customer_email" > 0.95,
+    ColumnLength "zip_code" between 5 and 10,
+    ReferentialIntegrity "product_id" "products_table.product_id" = 1.0
+]
+```
+
+Reading this ruleset line by line: `IsComplete "order_id"` requires zero nulls in that column;
+`IsUnique "order_id"` requires no duplicate values (a primary-key-style check); `ColumnValues
+"amount" > 0` and `<= 100000` bound a numeric column to a plausible range, catching data-entry
+errors or unit mistakes; `Completeness "customer_email" > 0.95` is a *threshold* check — allowing
+up to 5% missing emails rather than demanding 100% completeness, useful when a field is
+legitimately sometimes absent; `ColumnLength` validates a string field's length falls in an
+expected range (catching a truncated or malformed zip code); `ReferentialIntegrity` checks that
+every `product_id` in this table actually exists in a `products_table` — a cross-table
+consistency check analogous to a foreign-key constraint, which plain S3/Parquet files have no
+native way to enforce on their own.
+
+### How a ruleset plugs into the pipeline
+
+```mermaid
+sequenceDiagram
+    participant Job as Glue ETL Job
+    participant DQ as Glue Data Quality
+    participant Cat as Glue Data Catalog
+    participant S3c as S3 Curated Zone
+    participant S3q as S3 Quarantine Prefix
+
+    Job->>DQ: Evaluate ruleset against job's output DynamicFrame
+    DQ->>DQ: Run each DQDL rule, compute pass/fail + data quality score
+    alt All rules pass
+        DQ-->>Job: Ruleset passed
+        Job->>S3c: Write output to curated zone
+        Job->>Cat: Register/update table schema
+    else One or more rules fail
+        DQ-->>Job: Ruleset failed (per-rule detail)
+        Job->>S3q: Route failing batch to quarantine prefix
+        Job->>Job: Fail the job run (configurable — fail-fast or report-only)
+    end
+```
+
+The critical design point: Data Quality rules can run **inside a Glue ETL job itself** (gating
+whether the job's output is written to the curated zone at all) or **against an already-cataloged
+table** on a schedule (auditing data that's already landed, independent of any specific job run).
+The first mode catches bad data *before* it reaches consumers; the second mode is a standing
+health check on data that's already there — both are valid, and a scenario naming "before it
+reaches a dashboard" vs. "periodically audit what's already in the catalog" is distinguishing
+between these two attachment points, not between two different products.
+
+### DQDL rule categories worth knowing by name
+
+| Rule category | Example | What it catches |
+|---|---|---|
+| Completeness | `IsComplete "col"`, `Completeness "col" > 0.9` | Missing/null values, either entirely disallowed or bounded by a threshold |
+| Uniqueness | `IsUnique "col"`, `Uniqueness "col" > 0.99` | Duplicate values in a column that should behave like a key |
+| Value range/set | `ColumnValues "col" > 0`, `ColumnValues "col" in ["A","B","C"]` | Out-of-range numbers, unexpected categorical values |
+| Data type/format | `ColumnDataType "col" = "INTEGER"`, `ColumnLength "col" between 5 and 10` | A column silently containing the wrong type or malformed string length |
+| Referential integrity | `ReferentialIntegrity "fk_col" "other_table.pk_col" = 1.0` | Orphaned foreign-key-style references across tables |
+| Statistical | `Mean "col" between 10 and 100`, `StandardDeviation "col" < 50` | A column's aggregate distribution drifting outside an expected statistical range |
+| Custom SQL-like | `CustomSql "SELECT COUNT(*) FROM primary WHERE amount < 0" = 0` | Any check expressible as a SQL aggregate the built-in rule types don't directly cover |
+
+![The AWS Glue Studio console's composite rule settings panel, showing options to evaluate data quality rules across the entire dataset versus per-column.](https://docs.aws.amazon.com/glue/latest/dg/images/composite-rule-settings.png)
+*Configuring how a composite Data Quality rule evaluates — across the whole dataset or scoped per
+column — directly in the Glue Studio console's rule builder. Source: AWS Glue Developer Guide,
+[Data Quality Definition Language (DQDL) reference](https://docs.aws.amazon.com/glue/latest/dg/dqdl.html).
+© Amazon Web Services.*
+
+### Why this matters specifically for MLA-C02
+
+A model trained on data that silently violates basic quality assumptions (nulls where there
+shouldn't be any, a numeric column with impossible values, orphaned foreign keys breaking a join)
+doesn't fail loudly — it just trains on corrupted signal and produces a quietly worse model, the
+exact kind of failure Domain 1's "ensure data integrity" task statement is built around. Glue
+Data Quality gives a deterministic, named, auditable way to gate that — the exam-correct answer
+whenever a scenario wants bad data caught **before** a training job or dashboard sees it, as
+opposed to discovering the problem downstream via a confusing model evaluation result or a wrong
+dashboard number.
+
 ## Key Features / Components
 
 - **Glue Data Catalog** — a persistent, managed Hive-metastore-compatible metadata store;

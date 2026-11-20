@@ -38,7 +38,7 @@ happens when it fails?"
 | Task | What to read | Where |
 |---|---|---|
 | 1.1 — SDK/API calls, retries, pagination | AWS Lambda doc covers SDK-from-handler patterns; also see IAM for the credentials the SDK uses | [`services/compute/lambda.md`](../../../services/compute/lambda.md), [`services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md) |
-| 1.1 — Streaming data | Kinesis family for stream ingestion patterns | [`services/analytics/kinesis-family.md`](../../../services/analytics/kinesis-family.md) |
+| 1.1 — Streaming data | Kinesis family for stream ingestion patterns where you write the consumer code; Amazon Data Firehose for the other half of "manage streaming data" — fully managed, code-free delivery of a stream to S3/Redshift/OpenSearch/Splunk, no consumer application to write or operate | [`services/analytics/kinesis-family.md`](../../../services/analytics/kinesis-family.md), [`services/analytics/data-firehose.md`](../../../services/analytics/data-firehose.md) |
 | 1.1 — Event-driven apps (EventBridge, S3 events) | EventBridge is the central event bus; S3 event notifications are covered in the S3 doc | [`services/application-integration/eventbridge.md`](../../../services/application-integration/eventbridge.md), [`services/storage/s3.md`](../../../services/storage/s3.md) |
 | 1.1 — Messaging/decoupling patterns feeding event-driven code | SQS/SNS/Step Functions patterns | [`services/application-integration/messaging-patterns-overview.md`](../../../services/application-integration/messaging-patterns-overview.md), [`services/application-integration/sqs.md`](../../../services/application-integration/sqs.md), [`services/application-integration/sns.md`](../../../services/application-integration/sns.md), [`services/application-integration/step-functions.md`](../../../services/application-integration/step-functions.md) |
 | 1.1 — API Gateway stages | Stage variables, deployment promotion, throttling per stage | [`services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md) |
@@ -53,6 +53,7 @@ happens when it fails?"
 | 1.3 — Choosing between data stores | Decision framework when a question gives you requirements instead of a service name | [`services/database/database-selection-guide.md`](../../../services/database/database-selection-guide.md) |
 | Supporting — IAM credentials the SDK uses under the hood | [`services/security-identity-compliance/iam.md`](../../../services/security-identity-compliance/iam.md), [`services/security-identity-compliance/sts-and-role-switching.md`](../../../services/security-identity-compliance/sts-and-role-switching.md) |
 | Supporting — observability hooks you'll want once this code ships | [`../domain-4-troubleshooting-optimization/observability-instrumentation.md`](../domain-4-troubleshooting-optimization/observability-instrumentation.md) |
+| Supporting — standing up/hosting the frontend half of a full-stack app fast, without hand-wiring Cognito/AppSync/S3/CloudFront yourself | [`services/front-end-web-mobile/amplify.md`](../../../services/front-end-web-mobile/amplify.md) |
 
 ## New in DVA-C03: AI-assisted development
 
@@ -433,6 +434,15 @@ tests — the shape of a real feature, not a one-line exam distractor:
 - *"A mobile app needs a managed GraphQL API with real-time subscriptions instead of REST"* →
   AppSync, not API Gateway + Lambda for every field (AppSync resolvers call Lambda/DynamoDB/etc.
   per field/operation, but the API shape itself is GraphQL).
+- *"A small team needs to stand up a mobile/web app's auth, API, and storage backend fast, and
+  deploy the frontend with Git-push CI/CD, without directly provisioning each underlying service"*
+  → AWS Amplify — it provisions real Cognito/AppSync-or-API Gateway/DynamoDB/S3 resources behind a
+  CLI command and hosts the frontend via Amplify Hosting; see
+  [`services/front-end-web-mobile/amplify.md`](../../../services/front-end-web-mobile/amplify.md).
+- *"Streaming data needs to land in S3/Redshift/OpenSearch with no consumer code to write or
+  operate"* → Amazon Data Firehose, not a Kinesis Data Streams consumer app — see
+  [`services/analytics/data-firehose.md`](../../../services/analytics/data-firehose.md) for the
+  Firehose-vs-Data-Streams trap worked in detail.
 - *"A function needs microsecond-level read latency on a DynamoDB table that gets repeated reads of
   the same hot items"* → DynamoDB Accelerator (DAX) as a caching layer in front of DynamoDB, not a
   general-purpose cache like ElastiCache for this specific DynamoDB-shaped need.

@@ -32,9 +32,10 @@ quickly, and cheaply enough to do it routinely rather than only during a crisis.
 | Task | What to read | Where |
 |---|---|---|
 | 4.1 — Logs and metrics | [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) |
+| 4.1 — X-Ray tracing to find *where* in a distributed call chain something broke | Full X-Ray service deep dive: segments/subsegments, service maps, sampling rules, annotations vs. metadata | [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) |
 | 4.1 — Who/what made an API call | [`services/management-governance/cloudtrail.md`](../../../services/management-governance/cloudtrail.md) |
 | 4.1 — AI-assisted error analysis | Cross-link — see below |
-| 4.2 — Instrumenting code (custom metrics, structured logs, trace segments) | [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) (metrics/logs side) — distributed tracing itself has no standalone services/ doc yet; see the new [`observability-instrumentation.md`](observability-instrumentation.md) in this folder for the X-Ray-specific piece |
+| 4.2 — Instrumenting code (custom metrics, structured logs, trace segments) | [`services/management-governance/cloudwatch.md`](../../../services/management-governance/cloudwatch.md) (metrics/logs side); [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) (the X-Ray SDK/daemon mechanics of emitting segments/subsegments/annotations from your own code) — see also the [`observability-instrumentation.md`](observability-instrumentation.md) topic page in this folder, which ties both together specifically for Task 4.2 |
 | 4.2 — Automating remediation/runbooks once an issue is found | [`services/management-governance/systems-manager.md`](../../../services/management-governance/systems-manager.md) |
 | 4.2 — Auditing config drift as a troubleshooting input | [`services/management-governance/aws-config.md`](../../../services/management-governance/aws-config.md) |
 | 4.3 — Lambda performance tuning | [`services/compute/lambda.md`](../../../services/compute/lambda.md) |
@@ -58,11 +59,17 @@ data and proposes a root cause or a tuning change, while a human still verifies 
 
 ### New in this folder
 
-X-Ray distributed tracing doesn't have a standalone `services/` doc yet, and it's central to Task
-4.1/4.2, so it gets a short topic doc here:
+X-Ray distributed tracing is now covered two ways: the full service deep dive —
+[`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md) (segments,
+subsegments, service maps, sampling rules, annotations vs. metadata, the SDK/daemon split) — and a
+Domain-4-specific topic page that applies those concepts directly to Task 4.1/4.2's framing:
 
 ➡️ **[`observability-instrumentation.md`](observability-instrumentation.md)** — X-Ray tracing
 concepts (segments, subsegments, service maps) plus how to instrument code for Task 4.2.
+
+Read the service doc first for the concepts, then the topic page for how Task 4.1 (root cause —
+"which hop is slow") and Task 4.2 (instrumentation — "emit a trace segment from your own code")
+each use them.
 
 ## How it fits together: tracing a slow request to its root cause
 
@@ -262,6 +269,15 @@ type / requirement / implementation decision spelled out:
 - *"Need to see which specific microservice in a chain of 5 calls is adding latency"* → X-Ray
   service map / trace segments, not just CloudWatch Logs (logs alone don't show cross-service
   timing without manual correlation).
+- *"Some requests don't show up in X-Ray even though tracing is enabled and nothing looks broken"*
+  → expected sampling behavior (X-Ray's default rule traces the first request each second plus 5%
+  of the rest, per service), not a misconfiguration — see
+  [`services/developer-tools/x-ray.md`](../../../services/developer-tools/x-ray.md#sampling--why-x-ray-doesnt-trace-every-single-request)
+  unless a custom sampling rule was clearly set up wrong.
+- *"Need to filter/search traces by a customer ID or feature-flag value, versus just viewing extra
+  debug context on a trace you've already found"* → the former is an X-Ray annotation (indexed,
+  searchable); the latter is metadata (not indexed, view-only) — a frequently tested distinction in
+  the X-Ray service doc's own exam tips.
 - *"Need to know exactly which IAM principal deleted a resource at 2am"* → CloudTrail event
   history, not CloudWatch Logs (CloudTrail is the audit trail of *API calls*, CloudWatch is
   *application/runtime* telemetry).

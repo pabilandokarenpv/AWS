@@ -4,7 +4,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 > Use this page as your checklist: before exam day, you should be able to open every linked doc from memory and explain what it does, when to use it, and how it shows up in a scenario question.
 
-**Total services/topics mapped to this cert: 81** (a service can appear in more than one domain if it's tested from multiple angles).
+**Total services/topics mapped to this cert: 85** (a service can appear in more than one domain if it's tested from multiple angles).
 
 ## Domain 1: Development with AWS Services (30%)
 
@@ -12,6 +12,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 | Service / Topic | Doc |
 |---|---|
+| AWS Amplify | [amplify.md](../../services/front-end-web-mobile/amplify.md) |
 | AWS AppSync | [appsync.md](../../services/application-integration/appsync.md) |
 | AWS CodeDeploy | [codedeploy.md](../../services/developer-tools/codedeploy.md) |
 | AWS CodePipeline | [codepipeline.md](../../services/developer-tools/codepipeline.md) |
@@ -23,6 +24,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | Amazon Aurora | [aurora.md](../../services/database/aurora.md) |
 | Amazon Bedrock | [bedrock.md](../../services/machine-learning-ai/bedrock.md) |
 | Amazon CloudWatch | [cloudwatch.md](../../services/management-governance/cloudwatch.md) |
+| Amazon Data Firehose | [data-firehose.md](../../services/analytics/data-firehose.md) |
 | Amazon DynamoDB | [dynamodb.md](../../services/database/dynamodb.md) |
 | Amazon ElastiCache | [elasticache.md](../../services/database/elasticache.md) |
 | Amazon Elastic Container Registry (ECR) | [ecr.md](../../services/containers/ecr.md) |
@@ -73,9 +75,11 @@ A fast-reference index of every AWS service this repo documents that actually sh
 
 | Service / Topic | Doc |
 |---|---|
+| AWS AppConfig | [appconfig.md](../../services/management-governance/appconfig.md) |
 | AWS CDK (Cloud Development Kit) | [cdk.md](../../services/management-governance/cdk.md) |
 | AWS Cloud9 & AWS CloudShell | [cloud9-and-cloudshell.md](../../services/developer-tools/cloud9-and-cloudshell.md) |
 | AWS CloudFormation | [cloudformation.md](../../services/management-governance/cloudformation.md) |
+| AWS CodeArtifact | [codeartifact.md](../../services/developer-tools/codeartifact.md) |
 | AWS CodeBuild | [codebuild.md](../../services/developer-tools/codebuild.md) |
 | AWS CodeCommit | [codecommit.md](../../services/developer-tools/codecommit.md) |
 | AWS CodeDeploy | [codedeploy.md](../../services/developer-tools/codedeploy.md) |
@@ -87,7 +91,6 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | AWS STS & Role Switching (AssumeRole) | [sts-and-role-switching.md](../../services/security-identity-compliance/sts-and-role-switching.md) |
 | AWS Secrets Manager vs. Systems Manager Parameter Store | [secrets-manager-vs-parameter-store.md](../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md) |
 | AWS Serverless Application Model (SAM) | [sam.md](../../services/developer-tools/sam.md) |
-| AWS Systems Manager | [systems-manager.md](../../services/management-governance/systems-manager.md) |
 | Amazon API Gateway | [api-gateway.md](../../services/networking-content-delivery/api-gateway.md) |
 | Amazon CloudWatch | [cloudwatch.md](../../services/management-governance/cloudwatch.md) |
 | Amazon Elastic Container Registry (ECR) | [ecr.md](../../services/containers/ecr.md) |
@@ -109,6 +112,7 @@ A fast-reference index of every AWS service this repo documents that actually sh
 | AWS Systems Manager | [systems-manager.md](../../services/management-governance/systems-manager.md) |
 | AWS Trusted Advisor | [trusted-advisor.md](../../services/management-governance/trusted-advisor.md) |
 | AWS Well-Architected Tool | [well-architected-tool.md](../../services/management-governance/well-architected-tool.md) |
+| AWS X-Ray | [x-ray.md](../../services/developer-tools/x-ray.md) |
 | Amazon API Gateway | [api-gateway.md](../../services/networking-content-delivery/api-gateway.md) |
 | Amazon CloudWatch | [cloudwatch.md](../../services/management-governance/cloudwatch.md) |
 | Amazon DynamoDB | [dynamodb.md](../../services/database/dynamodb.md) |

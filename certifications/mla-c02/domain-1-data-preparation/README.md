@@ -26,9 +26,9 @@ The C02 exam guide groups Domain 1 into these task statements. Each maps to a li
 
 | Task statement | What it covers | Where it's covered |
 |---|---|---|
-| **1.1 — Ingest and store data** | Batch vs. streaming ingestion; choosing a storage layer (S3, EFS, FSx) for ML workloads; streaming data with Kinesis for near-real-time features | [`services/analytics/kinesis-family.md`](../../../services/analytics/kinesis-family.md) |
+| **1.1 — Ingest and store data** | Batch vs. streaming ingestion; choosing a storage layer (S3, EFS, FSx) for ML workloads; streaming data with Kinesis for near-real-time features; zero-code managed delivery of streaming data into S3/data-lake destinations | [`services/analytics/kinesis-family.md`](../../../services/analytics/kinesis-family.md), [`services/analytics/data-firehose.md`](../../../services/analytics/data-firehose.md) |
 | **1.2 — Transform data and perform feature engineering** | Cleaning, deduplication, normalization/standardization, encoding categoricals, handling missing values; building and serving reusable features | [`services/analytics/glue.md`](../../../services/analytics/glue.md), [`services/machine-learning-ai/sagemaker-data-wrangler-and-feature-store.md`](../../../services/machine-learning-ai/sagemaker-data-wrangler-and-feature-store.md) |
-| **1.3 — Ensure data integrity and prepare for modeling (bias, compliance)** | Detecting class imbalance, labeling quality, bias in training data, train/validation/test splitting, shuffling, data augmentation | [`services/analytics/data-lake-concepts.md`](../../../services/analytics/data-lake-concepts.md) (governance/cataloging side) |
+| **1.3 — Ensure data integrity and prepare for modeling (bias, compliance)** | Detecting class imbalance, labeling quality, bias in training data, train/validation/test splitting, shuffling, data augmentation; fine-grained row/column/tag-based access control over the data lake itself so only the right people/pipelines can even see the training data | [`services/analytics/data-lake-concepts.md`](../../../services/analytics/data-lake-concepts.md) (governance/cataloging side), [`services/analytics/lake-formation.md`](../../../services/analytics/lake-formation.md) (permissions layer) |
 | **1.4 — NEW: Prepare data for generative AI / RAG** | What an embedding is, chunking documents, vector stores, why foundation models need retrieval instead of retraining | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md) *(new doc, written for this domain)* |
 | **1.1.7 — NEW: Configure scalable vector databases** | Choosing/configuring OpenSearch Service, Amazon RDS with pgvector, or Amazon S3 vector search for a given scale/latency/budget spec | [`embeddings-and-rag-data-prep.md`](embeddings-and-rag-data-prep.md#vector-database-deep-comparison----opensearch-service-vs-amazon-rds-pgvector-vs-amazon-s3-vector-search) and this doc's ["Vector Database Options"](#new-skill-11--configuring-scalable-vector-databases-for-ai-applications) section below |
 | **1.1.8 — NEW: Ingest/store diverse data types** | Text, image, and audio ingestion/storage for AI/ML, not just tabular data | this doc's ["Ingesting Multimodal Data"](#new-skill-118--ingesting-and-storing-diverse-data-types-text-images-audio) section below |
@@ -49,6 +49,13 @@ Don't duplicate content here; read the linked doc for depth. This README is the 
   Kinesis Data Streams / Firehose / Data Analytics. Use when data must be ingested continuously
   (clickstream, IoT sensor, transaction feed) and you need low-latency features (e.g., a fraud
   model scoring a transaction within seconds of it happening).
+- **[`services/analytics/data-firehose.md`](../../../services/analytics/data-firehose.md)** —
+  the dedicated Firehose deep dive: zero-code, fully managed delivery of streaming data into S3
+  (as Parquet, partitioned), Redshift, or OpenSearch — the right Task 1.1 answer whenever a
+  scenario needs raw ML training data landing in the lake continuously with no consumer code
+  written at all, as opposed to needing custom per-record feature computation in flight (which
+  points to Kinesis Data Streams + a custom consumer instead, per `kinesis-family.md`'s
+  side-by-side comparison).
 - **[`services/analytics/glue.md`](../../../services/analytics/glue.md)** — serverless ETL
   (Extract, Transform, Load — moving data from a source, reshaping it, and writing it somewhere
   new). Glue DataBrew (visual, no-code cleaning) and Glue Jobs (Spark-based, code-driven) are both

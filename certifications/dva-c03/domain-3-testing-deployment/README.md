@@ -13,7 +13,9 @@ deployment cheap to detect and cheap to undo.
 ## Task statements (verbatim from the exam guide)
 
 **Task 3.1 — Prepare application artifacts for deployment**
-- Dependency management (bundling, layers, lockfiles)
+- Dependency management (bundling, layers, lockfiles) — see also
+  [CodeArtifact](../../../services/developer-tools/codeartifact.md) for where the packages
+  themselves are resolved from in the first place
 - Build container images for ECR (Dockerfiles, tagging, lifecycle policies)
 - Externalize configuration (AppConfig, Parameter Store, Secrets Manager — don't bake config into
   the artifact)
@@ -37,9 +39,10 @@ deployment cheap to detect and cheap to undo.
 | Task | What to read | Where |
 |---|---|---|
 | 3.1 — Dependency bundling, Lambda layers | [`services/compute/lambda.md`](../../../services/compute/lambda.md) |
+| 3.1 — Dependency management for code modules (private npm/PyPI/Maven/NuGet packages, lockfiles resolving against a controlled, cached source instead of the public internet) | [`services/developer-tools/codeartifact.md`](../../../services/developer-tools/codeartifact.md) |
 | 3.1 — Container images, ECR build/tag/lifecycle | [`services/containers/ecr.md`](../../../services/containers/ecr.md) |
 | 3.1 — Container-vs-VM-vs-serverless packaging decision | [`services/containers/containers-vs-vms-vs-serverless.md`](../../../services/containers/containers-vs-vms-vs-serverless.md) |
-| 3.1 — Externalized config | [`services/security-identity-compliance/secrets-manager-vs-parameter-store.md`](../../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md) (AppConfig itself is covered as part of Systems Manager — see [`services/management-governance/systems-manager.md`](../../../services/management-governance/systems-manager.md)) |
+| 3.1 — Externalized config, including "manage environment-specific application configuration" | [`services/management-governance/appconfig.md`](../../../services/management-governance/appconfig.md) for the gradual-rollout/auto-rollback config-deployment case specifically, [`services/security-identity-compliance/secrets-manager-vs-parameter-store.md`](../../../services/security-identity-compliance/secrets-manager-vs-parameter-store.md) for plain value/secret storage with no rollout concept |
 | 3.1 — API Gateway stage config as deployable artifact | [`services/networking-content-delivery/api-gateway.md`](../../../services/networking-content-delivery/api-gateway.md) |
 | 3.2 — IaC template authoring/validation | [`services/developer-tools/sam.md`](../../../services/developer-tools/sam.md), [`services/management-governance/cloudformation.md`](../../../services/management-governance/cloudformation.md), [`services/management-governance/cdk.md`](../../../services/management-governance/cdk.md) |
 | 3.2 — Build-time test execution | [`services/developer-tools/codebuild.md`](../../../services/developer-tools/codebuild.md) |
@@ -122,6 +125,8 @@ flowchart TD
     ZIP --> LAYER[Shared deps split into a Lambda layer\nso every function's own zip stays small]
     IMG --> LIFECYCLE[ECR lifecycle policy: expire old/untagged images\nscan on push for vulnerabilities]
     CONFIG[Environment-specific config] -.NEVER baked into the artifact.-> EXTERNAL[AppConfig / Parameter Store / Secrets Manager\nread at runtime, per environment]
+    ZIP -.resolves build-time dependencies from.-> ARTREPO[CodeArtifact: private npm/PyPI/Maven repo]
+    IMG -.resolves build-time dependencies from.-> ARTREPO
     ZIP -.at deploy time, reads.-> EXTERNAL
     IMG -.at deploy time, reads.-> EXTERNAL
 ```
@@ -343,6 +348,19 @@ because of `sam local`.
 - *"The same build artifact must be deployable unchanged to dev, staging, and production"* →
   externalize config via Parameter Store/Secrets Manager/AppConfig, read at runtime — never bake
   environment-specific values into the artifact itself.
+- *"A feature flag/config change must roll out gradually to a percentage of traffic and
+  automatically roll back if a CloudWatch alarm trips"* → AWS AppConfig's deployment strategy +
+  alarm integration, not a plain Parameter Store value flipped instantly for 100% of traffic — see
+  [`services/management-governance/appconfig.md`](../../../services/management-governance/appconfig.md).
+- *"A build keeps failing because a public npm/PyPI package was yanked or a public registry had an
+  outage"* → the team isn't using a private, cached dependency repository — CodeArtifact resolves
+  and permanently retains previously-fetched package versions so a public-registry outage or
+  removal doesn't break the build; see
+  [`services/developer-tools/codeartifact.md`](../../../services/developer-tools/codeartifact.md).
+- *"An attacker published a malicious package on the public registry using the same name as an
+  internal, never-publicly-published package"* → that's a dependency confusion attack — CodeArtifact
+  package origin controls (block upstream fetches for internally-namespaced packages) are the fix,
+  not a naming convention alone.
 - *"A rollback must happen within seconds, even at the cost of running double capacity briefly"* →
   blue/green, accepting the temporary cost of a duplicate environment for the fastest possible undo.
 - *"A cost-sensitive team wants gradual deployment but can't justify running a duplicate full

@@ -1,6 +1,6 @@
 # AWS Elastic Beanstalk
 
-> **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md)
+> **Appears in:** [SAA-C03](../../certifications/saa-c03/README.md) · [DVA-C03](../../certifications/dva-c03/README.md)
 
 ![AWS Elastic Beanstalk](../../diagrams/assets/icons/awselasticbeanstalk.png)
 

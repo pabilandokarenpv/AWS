@@ -8,6 +8,14 @@ SAA-C03 builds the shared vocabulary (VPC/networking, IAM/security, storage, dat
 Well-Architected thinking) that both other certs assume you already know. Skipping straight to
 DVA-C03 or MLA-C02 means re-learning fundamentals mid-domain, which is slower overall.
 
+## Resources you have for each cert, and when to use which
+
+Every cert folder has THREE different practice resources — they serve different purposes, use them in this order:
+
+1. **`practice-questions/` (domain-split banks)** — use while studying one domain, right after reading that domain's docs. Each question has its answer and explanation right there — read these slowly, one domain's worth at a time, not as a timed test.
+2. **`exam-bank/` (bank-1.md, bank-2.md, bank-3.md)** — study-mode, 65 questions each matching the real exam's item count and domain weighting, with the correct answer AND a full explanation (including why every wrong option is wrong) immediately after each question. Use these for drilling once you've covered ALL domains — bank-1 after your first full pass, bank-2 after fixing whatever bank-1 exposed, bank-3 as a final review before attempting a timed mock.
+3. **`practice-questions/full-exams/` (exam-1, exam-2)** — timed, blind simulation. Questions and answers are in SEPARATE files on purpose — don't open the answer key until you've answered all 65. This is the closest thing to exam day in this repo. Do these last, under real time pressure (130 minutes, no notes).
+
 ## Phase 0 — Before you open a single domain doc (do this once)
 
 1. Read [`00-fundamentals/`](00-fundamentals) top to bottom (~5 files, ~1,200 lines). Don't skim —

@@ -9,6 +9,16 @@ so a missed question points straight back to the material to re-study.
 
 See [`../README.md`](../README.md) for the full DVA-C03 study plan and domain breakdown.
 
+## This isn't the only practice material — here's the full picture
+
+This folder (50 domain-split questions) is for studying ONE domain at a time. Two more
+resources exist for different stages of prep: **[`full-exams/`](full-exams/index.md)** — 2
+full-length, **timed, blind** 65-question mock exams (separate question/answer-key files)
+matching the real exam's exact item count and weighting — and **[`../exam-bank/`](../exam-bank/README.md)**
+— 3 more 65-question **study-mode** banks (bank-1/2/3) with the answer and explanation
+inline under each question. Use domain-split questions while learning a domain, exam-bank
+for full-scope drilling after all domains are done, full-exams last under real time pressure.
+
 ## Question counts by domain
 
 | File | Domain | Exam weight | Questions | Multi-select | Notes |

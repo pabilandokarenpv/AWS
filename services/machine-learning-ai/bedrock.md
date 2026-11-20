@@ -2,11 +2,7 @@
 
 > **Appears in:** [DVA-C03](../../certifications/dva-c03/README.md) · [MLA-C02](../../certifications/mla-c02/README.md)
 
-![Amazon Bedrock](https://awsfundamentals.com/assets/aws-icons/Arch_Amazon-Bedrock_64.svg)
-<!-- icepanel CDN mirror (diagrams/README.md convention) doesn't carry Bedrock yet since it's a
-     newer service; fallback source used per that doc's instructions: official AWS Architecture
-     Icons asset, mirrored at awsfundamentals.com/aws-icons/amazon-bedrock (Arch_Amazon-Bedrock_64.svg
-     from the AWS Architecture Icons package, Artificial-Intelligence category). -->
+![Amazon Bedrock](../../diagrams/assets/icons/bedrock.png)
 
 ## Definition
 

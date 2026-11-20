@@ -41,11 +41,15 @@ AWS/
 ├── certifications/         ← One folder per cert, organized exactly like AWS's own exam guide
 │   ├── saa-c03/
 │   │   ├── README.md               ← exam overview, format, scoring, domain weight table
+│   │   ├── services-used-in-this-exam.md  ← checklist of every service tested, by domain
 │   │   ├── domain-1-secure-architectures/
 │   │   ├── domain-2-resilient-architectures/
 │   │   ├── domain-3-high-performing-architectures/
 │   │   ├── domain-4-cost-optimized-architectures/
-│   │   └── practice-questions/
+│   │   ├── practice-questions/            ← domain-split question banks
+│   │   │   └── full-exams/                ← 2 timed, blind 65-question mock exams + answer keys
+│   │   └── exam-bank/                     ← 3 study-mode 65-question banks (bank-1/2/3),
+│   │                                         answer+explanation inline for every option
 │   ├── dva-c03/             ← same pattern, DVA-C03's 4 domains
 │   └── mla-c02/             ← same pattern, MLA-C02's 4 domains
 ├── services/                ← Service-by-service deep reference, grouped by AWS category
@@ -62,13 +66,17 @@ AWS/
 │   ├── application-integration/
 │   ├── management-governance/
 │   ├── containers/
-│   └── developer-tools/
+│   ├── developer-tools/
+│   ├── migration-transfer/      ← DataSync, DMS, Snow Family, Transfer Family, migration overview
+│   ├── front-end-web-mobile/    ← Amplify, Device Farm, Pinpoint
+│   └── media/                   ← Elastic Transcoder, Kinesis Video Streams
 ├── glossary/                ← A–Z index of every term used anywhere in this repo, one-liner +
 │                               link to the full explanation
 ├── labs-floci/              ← Hands-on labs using Floci (free local AWS emulator), mapped to
 │                               each domain so you can actually DO the thing, not just read it
-├── diagrams/                ← Shared diagram conventions + official AWS icon asset references
+├── diagrams/                ← Shared diagram conventions + locally vendored AWS icon assets
 ├── CONTENT_TEMPLATE.md      ← the exact structure every topic doc follows (read this once)
+├── STUDY-PLAN.md            ← phased plan: which resource to use when, SAA-C03 → DVA-C03 → MLA-C02
 └── RESOURCES.md             ← official exam guides, whitepapers, Skill Builder, Floci docs
 ```
 

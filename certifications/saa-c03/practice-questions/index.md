@@ -27,6 +27,19 @@ explanation of *why each wrong option is wrong* — not just "incorrect," but th
 misconception or mismatch it represents. Every explanation links back to the relevant
 [`services/`](../../../services) doc or domain doc in this repo for deeper review.
 
+## This isn't the only practice material — here's the full picture
+
+This folder (60 domain-split questions) is for studying ONE domain at a time. Two more
+resources exist for different stages of prep:
+
+- **[`full-exams/`](full-exams/index.md)** — 2 full-length, **timed, blind** 65-question mock
+  exams (questions and answer keys in separate files) matching the real exam's exact item
+  count and domain weighting. Use these last, under real time pressure, once you've finished
+  all domains.
+- **[`../exam-bank/`](../exam-bank/README.md)** — 3 more 65-question banks (bank-1/2/3), but
+  **study-mode**: the answer and full explanation sit right under each question, for drilling
+  after a full first pass through all 4 domains, before you attempt the timed `full-exams/`.
+
 ## How to use these
 
 1. **Attempt every question cold, without looking at the answer first.** Write down your

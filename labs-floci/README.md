@@ -67,3 +67,10 @@ failover physics, no real IAM policy evaluation edge cases, no real SageMaker tr
 infra). It's for learning the *shape* of the API/workflow and practicing CLI/SDK/IaC — not a
 substitute for reading how the real service behaves, which is what the exam actually tests.
 Use it to build muscle memory, not as your only source of truth.
+
+## Where this fits with the rest of the repo
+
+Floci labs are the *hands-on* layer. For *testing recognition/recall*, each cert also has
+`practice-questions/` (domain-split, study as you go), `exam-bank/` (3 full 65-question
+study-mode banks), and `practice-questions/full-exams/` (2 timed blind mock exams) — see
+each cert's `README.md` or [`STUDY-PLAN.md`](../STUDY-PLAN.md) for how they fit together.

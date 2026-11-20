@@ -172,6 +172,36 @@ flowchart LR
   configuration change) is logged, giving a full audit trail of who published or accessed what,
   when.
 
+## Common Architectures
+
+**1. Single production domain, per-team repositories, one centralized external connection** —
+the default recommended shape for most organizations: one domain holding every repository,
+each team or service getting its own repository (or small cluster of repositories, one per
+package format they use), all chained upstream of one or two shared repositories that hold the
+actual external connections to npmjs.com/PyPI/Maven Central. This keeps exactly one enforcement
+point for "which public sources are we allowed to pull from" while giving every team their own
+publish/consume boundary.
+
+**2. Internal shared-library distribution with dependency-confusion protection** — an internal
+SDK or shared utility library is published to a dedicated internal repository with package
+origin controls set to block upstream fetches for that package's exact name, closing the
+dependency-confusion attack path described above, while every consuming team's repository has
+that internal repository as an upstream so they can `npm install`/`pip install` the internal
+package exactly like any public one.
+
+**3. CI/CD pipeline integration** — a CodeBuild project's `buildspec.yml` `install`/`pre_build`
+phase calls `aws codeartifact get-authorization-token` and configures the relevant package
+manager (npm's `.npmrc`, pip's `pip.conf`, Maven's `settings.xml`) to point at the CodeArtifact
+repository endpoint before running the actual build/test commands — the standard way
+CodeArtifact plugs into an existing CI pipeline with minimal buildspec changes (see
+`codebuild.md` for the fuller CI pipeline picture this slots into).
+
+**4. Promotion pipeline across environments** — a stricter organizational pattern uses separate
+repositories for "candidate" packages (published by CI on every merge) versus "approved"
+packages (promoted into a separate repository only after passing a security scan or manual
+review gate), giving a clear, auditable boundary between "built" and "approved for other teams
+to depend on" rather than one repository serving both purposes.
+
 ## Use Cases — When to Use It
 
 1. **CI/CD build reliability insulation (any engineering org with a CI pipeline).** Problem: a
@@ -282,6 +312,60 @@ organization with meaningful engineering scale, not an optional nice-to-have.
   an ML team is allowed to pull in, is CodeArtifact territory, distinct from the data/model
   concerns most of MLA-C02 otherwise tests.
 
+## Limits & Quotas
+
+- **Repositories per domain**: up to 1,000 — comfortably enough for even a large organization's
+  per-team repository structure, but worth knowing as a real ceiling if an org considers a
+  repository-per-microservice pattern at extreme scale.
+- **Upstream repositories per repository**: up to 10 direct upstreams, with multi-level chaining
+  supported up to a maximum chain depth — very deep chains (many hops) can slow down a
+  "not found in any upstream" resolution, since every level in the chain must be checked before
+  returning a 404.
+- **Package versions per package**: a high but finite limit per package within a repository;
+  relevant mainly for extremely high-churn internal packages with frequent, automated version
+  publishes (e.g., a CI pipeline publishing a new version on every commit) that may eventually
+  need a retention/cleanup policy.
+- **Asset size**: a per-asset size ceiling (large compiled binaries, uncommonly large Maven
+  artifacts) — most language-ecosystem packages are well under this, but a Generic-format
+  artifact storing a large build output should check current limits before relying on it.
+- **Domains per account**: a soft limit, raisable via support case — though AWS explicitly
+  recommends a single production domain per organization rather than many, specifically to keep
+  one consistent security/access policy surface instead of fragmenting it across domains.
+- **Authorization token lifetime**: up to 12 hours by default (configurable shorter); a build
+  pipeline running longer than the token's lifetime needs to refresh it mid-build, which is why
+  CI build scripts typically fetch a fresh token at the start of every build rather than caching
+  one across build runs.
+
+## Troubleshooting / Common Issues
+
+- **`403 Forbidden` fetching a package that clearly exists.** Almost always one of: the
+  authorization token has expired (tokens are short-lived by design — re-run
+  `get-authorization-token`), the calling principal's IAM policy doesn't grant
+  `codeartifact:ReadFromRepository` on this specific repository, or a package origin control is
+  set to `BLOCK` for the requested source (internal vs. upstream) for this specific package.
+- **A package version used to resolve from upstream but now returns 404.** Check package origin
+  controls first — if `upstream` was set to `BLOCK` for this package (often deliberately, as a
+  dependency-confusion defense), CodeArtifact will no longer fetch *new* versions from upstream,
+  though already-cached versions remain available; this is expected behavior once origin controls
+  are configured, not a connectivity problem.
+- **Builds suddenly slower after introducing CodeArtifact.** Check whether the repository actually
+  has the needed packages cached yet — the *first* request for any given version still has to
+  reach the external connection's upstream, so a freshly created repository's first few builds
+  are not yet benefiting from caching; subsequent builds for the same versions should be faster,
+  not slower.
+- **A newly published internal package isn't visible to a downstream team's repository.** Confirm
+  the upstream relationship is actually configured in the direction expected — "repo A is
+  upstream of repo B" means B sees A's packages, not the reverse; a common setup mistake is
+  configuring the relationship backwards.
+- **External connection stopped returning new versions of a public package.** External
+  connections occasionally need re-association after certain configuration changes, and some
+  public registries' own availability affects what CodeArtifact can fetch *for the first time* —
+  already-cached versions remain available via CodeArtifact's own storage regardless of the
+  external connection's current state.
+- **CI pipeline intermittently fails authentication.** Usually the authorization token wasn't
+  refreshed for a long-running or restarted build process and expired mid-build — fetch a fresh
+  token at the start of every build invocation rather than reusing one across separate build runs.
+
 ## Pricing Model (summary)
 
 - **Storage** — billed per GB-month of unique package assets stored (deduplicated at the domain
@@ -376,6 +460,25 @@ architecture diagrams above, built one API call at a time.
 - **In-scope for both DVA-C03 and MLA-C02** — DVA-C03 tests it as general build-pipeline
   dependency management; MLA-C02 tests it specifically around reproducible ML training
   environment dependencies — recognize which framing a question is using.
+
+### Sample exam scenario, worked
+
+**Scenario:** "A company recently discovered that an attacker published a malicious package to
+the public npm registry using the exact same name as one of the company's internal, never-
+publicly-published npm packages. Several internal builds pulled the malicious version instead of
+the real internal one before the issue was caught. What should the company configure to prevent
+this from happening again?"
+
+*Answer:* This is describing a **dependency confusion attack**, and the fix is **CodeArtifact
+package origin controls** — specifically, setting the upstream fetch behavior for that exact
+package name to `BLOCK` in every repository that should only ever resolve it internally, so
+CodeArtifact will never again fetch a version of that package name from any external/upstream
+source, regardless of what gets published there. A plausible-sounding but incomplete answer
+("just rename the internal package" or "tell developers to double-check versions manually") is
+an organizational mitigation, not a technical control enforced by the dependency resolution
+system itself — the giveaway in the question is that the fix needs to prevent *automated build
+tooling* from resolving the wrong source, which only a configured technical control (origin
+controls), not a naming convention or manual review step, can guarantee going forward.
 
 ## Further Reading
 

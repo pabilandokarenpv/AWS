@@ -336,6 +336,61 @@ have, for any team running more than a couple of interdependent services in prod
   SageMaker) is testing whether you'd reach for X-Ray to localize which hop is actually slow
   before trying to optimize the model itself.
 
+## Limits & Quotas
+
+Exact numbers change — always check the Service Quotas console for current values — but the
+*shape* of what's limited is genuinely useful to know:
+
+- **Trace retention**: X-Ray retains traces for **30 days** by default; after that window, raw
+  trace data is no longer retrievable (aggregated service map/Insights data may persist
+  separately) — a question about "need traces available for a compliance review 90 days later"
+  is pointing at exporting/archiving trace data elsewhere (e.g., to S3 via a CloudWatch Logs
+  export pipeline), not relying on X-Ray's own retention alone.
+- **Segment document size**: each segment document has a maximum size (a few hundred KB); very
+  large custom metadata payloads attached to a segment can exceed this and get rejected — keep
+  large debugging payloads out of segment metadata and log them separately if they're genuinely
+  large.
+- **Sampling rule count**: there's a cap on the number of custom sampling rules per account/
+  Region; very fine-grained per-endpoint sampling strategies at scale may need rule consolidation
+  (e.g., matching multiple paths with one rule using a wildcard) rather than one rule per
+  endpoint.
+- **Trace ID propagation depth**: there is no hard limit on how many services one trace can span,
+  but extremely deep call chains (dozens of hops) make the resulting trace timeline harder to
+  read in practice even though X-Ray will still record it correctly.
+- **X-Ray daemon UDP packet size**: the daemon listens for UDP traffic from the SDK with a
+  practical packet-size ceiling; segments that are unusually large (very long custom annotation
+  lists) can, in rare cases, need splitting across multiple UDP packets, handled automatically by
+  the SDK but worth knowing exists as a boundary condition.
+
+## Troubleshooting / Common Issues
+
+- **No traces appearing in the console at all.** Check, in order: (1) Active Tracing is actually
+  enabled on the resource (Lambda console setting, or the equivalent IAM/config flag elsewhere);
+  (2) on EC2/ECS/EKS specifically, confirm the X-Ray daemon process/sidecar/DaemonSet is actually
+  running — unlike Lambda/Elastic Beanstalk, nothing runs it for you; (3) the execution role/
+  instance role has `xray:PutTraceSegments` and `xray:PutTelemetryRecords` permissions — a missing
+  IAM permission here fails silently from the application's perspective (segments are just
+  dropped, no exception thrown by default).
+- **Some requests are traced, most aren't, with no error.** This is almost always expected
+  sampling behavior (the default rule traces 1/sec + 5% of the rest per service), not a bug —
+  check the active sampling rule before assuming something's broken.
+- **Trace shows a gap between two services with no explanation.** Usually means the second
+  service never received (or never propagated onward) the `X-Amzn-Trace-Id` header — check that
+  every hop in the chain, including any manual HTTP client code not wrapped by the SDK's
+  auto-instrumentation, explicitly forwards that header.
+- **Annotations/metadata not showing on a trace.** Confirm the SDK call adding them executed
+  *before* the segment closed — adding an annotation after a segment has already been sent to the
+  daemon has no effect on that already-sent segment.
+- **Service map shows a node but no useful detail when clicked.** Usually means segments are
+  arriving with inconsistent or missing service names/versions across instances of the "same"
+  service — standardize the service name configuration across all instances so X-Ray can group
+  them as one logical node correctly.
+- **X-Ray Insights not firing on an obvious anomaly.** Insights needs a meaningful baseline of
+  normal traffic first to establish what "anomalous" means statistically — a brand-new service
+  with very little traffic history may not trigger Insights even during a real problem, simply
+  because there isn't enough baseline data yet; rely on ordinary CloudWatch alarms as a backstop
+  for low-traffic services.
+
 ## Pricing Model (summary)
 
 - **Trace storage and retrieval** — billed per trace recorded and per trace retrieved/scanned,

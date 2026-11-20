@@ -354,6 +354,200 @@ that **embeddings and text generation are different model types**, that **image 
 separate model category from either**, and that switching between providers inside Bedrock is a
 configuration change, not an architecture change.
 
+## Bedrock AgentCore — Deep Dive
+
+Everything above this section describes calling a model and, at most, letting an Agent call a
+handful of Lambda-backed Action Groups. **Bedrock AgentCore** is a separate, newer platform layer
+that exists for a different problem: *running agents in production, at scale, safely* — session
+isolation, durable state across a long-running or multi-turn interaction, identity/credential
+management for what an agent is allowed to touch, and purpose-built observability for agentic
+workloads specifically. Bedrock Agents (covered earlier) answer "can the model call a function";
+AgentCore answers "how do I actually operate hundreds of these agent sessions in production
+without building my own session/state/identity/observability infrastructure by hand."
+
+### Why AgentCore exists as a separate thing from "just an Agent"
+
+A single Bedrock Agent calling a few Action Groups, as described above, is enough for a
+demo or a lightly-used internal tool. It is *not* enough once you need: many concurrent users each
+with their own isolated, stateful session; an agent that needs to remember something from three
+days ago in a different conversation; credentials scoped per-end-user rather than one shared
+execution role; or a way to debug *which specific step* in a long multi-step agent run actually
+failed, across potentially dozens of tool calls. Building all of that yourself (session storage,
+per-user credential vending, step-level tracing) is exactly the kind of undifferentiated
+infrastructure work AWS keeps building managed services to absorb — AgentCore is that managed
+layer, purpose-built for agentic workloads instead of adapted from general-purpose compute.
+
+### AgentCore architecture
+
+```mermaid
+flowchart TD
+    USER[End user / client app] -->|authenticates via IdP| IDENTITY[AgentCore Identity<br/>Cognito / Okta / Entra ID]
+    IDENTITY -->|OAuth token + claims| RUNTIME[AgentCore Runtime<br/>one isolated microVM per session]
+    RUNTIME --> AGENTCODE[Your agent code<br/>any framework: Strands, LangGraph,<br/>CrewAI, or custom]
+    AGENTCODE -->|model calls| FM[Foundation Model<br/>Bedrock or any provider]
+    AGENTCODE -->|read/write context| MEMORY[(AgentCore Memory<br/>short-term + long-term,<br/>namespaced per user)]
+    AGENTCODE -->|tool calls, MCP-compatible| GATEWAY[AgentCore Gateway<br/>wraps APIs/Lambda as MCP tools]
+    GATEWAY --> API1[Internal API]
+    GATEWAY --> LAM[Lambda function]
+    GATEWAY --> MCP[Existing MCP server]
+    AGENTCODE -.every step emits traces.-> OBS[AgentCore Observability<br/>OpenTelemetry -> CloudWatch]
+    RUNTIME -.session ends, microVM terminates.-> RUNTIME
+```
+
+Walking through each piece and the problem it specifically solves:
+
+1. **AgentCore Identity** handles authentication and authorization *for the agent itself*, not
+   just for your application's human users. A user authenticates through your existing identity
+   provider (Amazon Cognito, Okta, Microsoft Entra ID — AgentCore doesn't require migrating
+   away from whatever IdP you already run); AgentCore Identity receives that token, extracts
+   custom claims defining what this specific user is allowed to do, and makes those claims
+   available throughout the session — so an agent acting *on behalf of* a specific user inherits
+   that user's actual permissions rather than one shared, overly broad service-role identity for
+   every user. A **token vault**, backed by Secrets Manager, secures the API keys/credentials the
+   agent needs to reach external systems, with role-based access control over who/what can use
+   which stored credential.
+2. **AgentCore Runtime** is the actual execution environment: a secure, serverless runtime where
+   **every session runs in its own isolated microVM**, with dedicated compute and memory,
+   framework-agnostic (works with LangGraph, Strands Agents, CrewAI, LlamaIndex, Google ADK,
+   OpenAI Agents SDK, or fully custom agent code), and supporting long-running sessions (AgentCore
+   Runtime explicitly supports extended execution — hours, not just a typical Lambda's
+   15-minute ceiling — for genuinely long agentic workflows like deep research tasks). When a
+   session ends, its microVM terminates entirely — no state silently persists in a shared process
+   between unrelated users' sessions, which is the architectural guarantee that makes multi-tenant
+   agent hosting safe in the first place.
+3. **AgentCore Memory** is the answer to **agent state management** specifically — the part of
+   this architecture most directly relevant to anyone who has tried to build this themselves and
+   hit the "where does conversation history actually live" wall. It provides both:
+   - **Short-term memory** — conversation history and working context for the *current*
+     multi-turn session, so the agent remembers what was said five messages ago within one
+     conversation.
+   - **Long-term memory** — facts, preferences, and summarized context that persists **across**
+     sessions, **namespaced per user/actor**, so a returning user's agent remembers relevant
+     history from a prior, entirely separate conversation days or weeks later, without manually
+     re-feeding that context every time. Memory can also be **shared across multiple agents**
+     within a session for multi-agent systems, so a specialist sub-agent inherits context a
+     planning agent already gathered instead of starting cold.
+   The practical shift this represents: before AgentCore, "does my agent remember anything beyond
+   this one request" was a problem every team solved with their own DynamoDB table and
+   hand-rolled summarization logic; AgentCore Memory makes that a configured capability instead
+   of a bespoke subsystem.
+4. **AgentCore Gateway** turns existing APIs, Lambda functions, and even other pre-existing MCP
+   (Model Context Protocol) servers into MCP-compatible tools an agent can call, with
+   `AWS_IAM`/SigV4-authenticated tool traffic and exposing only the specific, approved tool
+   targets a given agent is allowed to reach — the production-grade, access-controlled version of
+   what an Action Group does for a basic Bedrock Agent.
+5. **AgentCore Observability** is the piece worth calling out explicitly by name, because it
+   solves a problem generic application monitoring genuinely does not: debugging *one specific
+   agent run's reasoning path*. It emits **OpenTelemetry (OTel)-standardized traces** through
+   Amazon CloudWatch, giving:
+   - **Session-level and step-level tracing** — every planning step, every tool call, every
+     intermediate model response inside one agent run is captured as part of one trace, the same
+     way X-Ray stitches together a request's hops across services (see `x-ray.md`), but purpose-
+     built for an agent's *reasoning* steps specifically, not just service-to-service network
+     calls.
+   - **Execution path visualization** — a step-by-step view of exactly what the agent decided to
+     do and in what order, letting you inspect intermediate outputs (what did the agent actually
+     retrieve or compute at step 3, before it made the decision that turned out wrong at step 5).
+   - **Token-level foundation model spend tracking** — cost attribution down to which session,
+     which agent, and which model call actually consumed the tokens, rather than one undifferentiated
+     monthly Bedrock bill.
+   - **Standard observability stack compatibility** — because it's OTel-based, the same trace
+     data can flow to any OTel-compatible backend (CloudWatch natively, or third-party tools like
+     Datadog), rather than being locked into a single proprietary format.
+   The exam-relevant framing: **AgentCore Observability is to an agent's reasoning steps what
+   X-Ray is to a distributed request's service hops** — same underlying idea (trace one logical
+   unit of work across many smaller steps), applied one layer up, to an agent's *decisions*
+   rather than a request's network calls.
+
+### A real multi-step agent session, traced through AgentCore
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Identity as AgentCore Identity
+    participant Runtime as AgentCore Runtime (microVM)
+    participant Memory as AgentCore Memory
+    participant Gateway as AgentCore Gateway
+    participant Obs as AgentCore Observability
+
+    User->>Identity: Authenticate (OAuth via Cognito/Okta)
+    Identity-->>Runtime: Token + user claims
+    Runtime->>Memory: Load short-term context (this session)<br/>+ long-term memory (this user, past sessions)
+    Memory-->>Runtime: Relevant prior context
+    Runtime->>Runtime: Agent plans next step (model call)
+    Runtime->>Gateway: Call tool (e.g. lookupOrder) via MCP
+    Gateway-->>Runtime: Tool result
+    Runtime->>Memory: Write new facts learned this session
+    Runtime-->>User: Final response
+    Runtime-->>Obs: Emit full session trace (every step, OTel format)
+    Note over Runtime: Session ends -> microVM terminates,<br/>no state survives in the runtime itself
+```
+
+Reading this top to bottom: authentication and memory loading happen *before* the agent's first
+real reasoning step, which is what lets the agent act with the correct user's permissions and
+relevant history from the very first decision, not as an afterthought bolted on partway through.
+The trace to Observability happens continuously (not just at the end) in a real deployment — it's
+drawn here as one step purely for diagram clarity — and the microVM's termination at session end
+is the mechanism, not just a policy, behind AgentCore's session-isolation guarantee: there's no
+shared long-lived process for stale state to leak out of between unrelated sessions.
+
+### AgentCore vs. a plain Bedrock Agent — when the upgrade is warranted
+
+| Need | Plain Bedrock Agent (covered above) | Bedrock AgentCore |
+|---|---|---|
+| Single-session, single-user tool-calling demo | Sufficient on its own | Overkill for this alone |
+| Many concurrent users, each needing isolated session state | Not built for this — no session-isolation guarantee of this kind | **Runtime's per-session microVM is exactly this** |
+| Agent must remember facts across separate, later conversations | No native cross-session memory | **AgentCore Memory's long-term, per-user-namespaced store** |
+| Credentials/permissions should reflect the specific end user, not one shared execution role | Harder to express cleanly | **AgentCore Identity's per-user claims and token vault** |
+| Need to debug exactly which step of a multi-step agent run failed, in production | Limited visibility beyond basic invocation logs | **AgentCore Observability's step-level, OTel-based tracing** |
+| Need agents built in an open-source framework (LangGraph, CrewAI) rather than Bedrock's own Agent construct | Not supported — a Bedrock Agent is Bedrock's own construct | **Framework-agnostic by design** |
+
+The practical exam-relevant takeaway: a scenario describing a single, lightly-used, stateless
+tool-calling assistant is still just "Agents for Bedrock." A scenario describing *scale*
+(many concurrent users), *persistence* (remembering across sessions), *per-user security
+boundaries*, or *production-grade step-level debugging* is describing the specific problems
+AgentCore's Runtime, Memory, Identity, and Observability components solve, respectively — naming
+the *right AgentCore component* for the *specific* problem in the scenario (not just saying
+"AgentCore" generically) is the deeper skill being tested.
+
+### Official architecture reference
+
+![AgentCore harness architecture: a managed agent loop running in an isolated microVM per session, with filesystem/shell access, integrated with Memory, Gateway, Identity, and Observability](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/images/harness-architecture.png)
+
+*Figure: the official AgentCore harness architecture — every session is stateful by default and
+runs in a secure, isolated microVM (backed by AgentCore Runtime), with its own filesystem and
+shell so the agent can write and execute code directly, while short-term and long-term memories
+persist across sessions even after a given microVM has terminated and been replaced. This is the
+concrete, AWS-drawn version of the same microVM-isolation-plus-persistent-memory idea walked
+through in the architecture diagram above. Source: Amazon Bedrock AgentCore Developer Guide,
+["AgentCore harness"](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html).*
+
+![A customer support automation workflow using EventBridge, Bedrock AgentCore, and Lambda, showing an event-driven trigger feeding into AgentCore's runtime and memory layers](https://docs.aws.amazon.com/prescriptive-guidance/latest/agentic-ai-serverless/images/guide-img/ba00558a-f1cc-4853-9196-e287a2ba5ba5/images/817e4b4a-799b-4055-9f10-016be899f181.png)
+
+*Figure: a concrete, event-driven reference pattern — EventBridge triggers an AgentCore-hosted
+agent in response to a real business event (e.g., a new support ticket), with AgentCore Memory
+persisting task/context state across the (potentially asynchronous, multi-step) resolution
+process and Lambda handling discrete tool actions along the way. This illustrates AgentCore being
+used for *event-driven, backend* agentic automation, not just a synchronous chat-style
+interaction. Source: AWS Prescriptive Guidance, ["Orchestration models: From rule-based to
+AI-native"](https://docs.aws.amazon.com/prescriptive-guidance/latest/agentic-ai-serverless/orchestration-models.html).*
+
+### AgentCore and the exams, specifically
+
+- **MLA-C02** — AgentCore extends Domain 3's (Deployment & Orchestration) agent-orchestration
+  content beyond single-call Agents into production operating concerns: session isolation,
+  memory architecture (short-term vs. long-term, per-user namespacing), and identity/credential
+  scoping for agents acting on a user's behalf. Domain 4 (Monitoring & Security) content
+  increasingly points at **AgentCore Observability** specifically for anything framed as
+  "debugging a multi-step agent's execution path in production" or "tracking per-session
+  foundation model cost," distinct from Guardrails (content safety) or general CloudWatch metrics
+  (infrastructure health).
+- **DVA-C03** — AgentCore is in scope at the "building/integrating with AI services securely"
+  depth this exam tests Bedrock at generally: a developer-facing question might ask about
+  AgentCore Identity's role in scoping an agent's permissions to the calling user (an IAM/security
+  question wearing an agentic-AI costume) rather than expecting agent-architecture design depth —
+  that design depth is MLA-C02 territory.
+
 ## Key Features / Components
 
 - **Foundation Model access** — one API across multiple model providers: Amazon's own **Titan**
@@ -951,5 +1145,8 @@ defense in depth — not switching to a different, non-existent "private" Bedroc
   cases
 - `ai-services-overview.md` — purpose-built AI APIs that are often a better fit than a
   foundation-model prompt for narrow tasks
+- [`../developer-tools/x-ray.md`](../developer-tools/x-ray.md) — distributed tracing for ordinary
+  service-to-service request hops; AgentCore Observability applies the same underlying idea one
+  layer up, to an agent's own reasoning/tool-call steps
 - `glossary/` — foundation model, embedding, RAG, fine-tuning, prompt engineering, hallucination,
   token, vector store, agent

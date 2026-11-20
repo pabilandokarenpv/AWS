@@ -303,6 +303,13 @@ tasks: one doing a one-time full-load-only migration into a new RDS instance for
 another running continuous CDC into Kinesis Data Streams for a separate real-time fraud-detection
 pipeline — both reading the same source transaction log independently.
 
+**5. Phased engine-upgrade migration with a safe rollback window.** A team upgrading from an old,
+unsupported database major version runs a DMS task replicating continuously into a new instance on
+the current supported version; the old instance keeps serving production traffic throughout
+testing, and cutover only happens once the team is confident — with the old instance left running,
+untouched, as an immediate rollback target for a defined grace period after cutover rather than
+being decommissioned the same day.
+
 ## Limits & Quotas
 
 - **Replication instances per account/Region** — a default soft quota (commonly around 20–40,
@@ -320,6 +327,33 @@ pipeline — both reading the same source transaction log independently.
 - **DMS Serverless capacity units** — auto-scales within a configured min/max DCU (DMS Capacity
   Unit) range rather than a fixed instance class, which is itself a quota to plan around for very
   large workloads.
+- **Maximum number of tables per task** — very large schemas (thousands of tables) are supported,
+  but splitting an extremely large schema across multiple tasks is a common practice to improve
+  parallelism and isolate failures to a smaller blast radius than one all-encompassing task.
+
+## Security Considerations
+
+- **Replication instance network placement** — deploy the replication instance inside a VPC with
+  security groups scoped to exactly the source and target database ports it needs, not a broad
+  "allow all" rule; the instance has direct read access to the source database's actual data.
+- **Encryption at rest for the replication instance** — the replication instance's storage
+  (used for caching changes and logs during migration) supports encryption via AWS KMS; enable it
+  for any migration involving sensitive data, since cached transactional data sits there
+  temporarily during the full-load and CDC phases.
+- **Encryption in transit to source and target endpoints** — configure SSL/TLS on both source and
+  target endpoint connections wherever the database engine supports it; DMS doesn't force this
+  automatically — a migration task can be set up with unencrypted endpoint connections if someone
+  isn't careful during endpoint creation.
+- **Credential handling for endpoints** — source/target database credentials should be stored in
+  AWS Secrets Manager and referenced by the endpoint configuration rather than embedded directly,
+  the same pattern any other database-credential use case should follow.
+- **Least-privilege database users for migration** — the database user DMS connects as should have
+  only the permissions actually needed for replication (read on source, write on target), not a
+  full administrative account, limiting blast radius if credentials are ever compromised.
+- **Data exposure during CDC-to-analytics architectures** — when a DMS CDC task feeds S3 or a
+  streaming service for analytics, apply the same data classification and access-control review to
+  that destination as you would to the production database itself — CDC doesn't inherit source-
+  database access controls automatically at the destination.
 
 ## Troubleshooting / Common Issues
 
@@ -420,6 +454,15 @@ small an instance class), or the target can't write fast enough to keep pace. Ch
 `CDCLatencySource`/`CDCLatencyTarget` CloudWatch metrics and scale up the replication instance
 class or investigate target-side write throughput.
 
+**Scenario 4:** A fraud-detection platform needs to react to new transaction rows within seconds
+of them being written to a production database, without adding polling load to that database.
+Which DMS capability fits, and what target would it typically use?
+
+*Answer:* A DMS task running **ongoing replication (CDC)** with **Amazon Kinesis Data Streams** (or
+Amazon MSK) as the target endpoint — DMS reads changes from the source's transaction log (not by
+polling the database), streaming them to Kinesis for near-real-time downstream consumption by the
+fraud-detection logic.
+
 ## Exam Tips
 
 - **Keyword "minimal downtime," "source stays operational," "migrate a database to AWS"** → AWS
@@ -430,9 +473,12 @@ class or investigate target-side write throughput.
   target endpoint instead of another relational database — a common "is this even a migration
   scenario" distractor.
 - If the scenario is about **files, not database rows** → that's **AWS DataSync**, not DMS.
-- **Multi-AZ replication instance** → tests DR/HA for the *migration process itself* (the
+- **Multi-AZ replication instance** — tests DR/HA for the *migration process itself* (the
   replication instance), not the target database's own Multi-AZ setting — these are two separate
   Multi-AZ configurations that get conflated on the exam.
+- **DMS Serverless vs. provisioned instances** — know that DMS Serverless removes the need to
+  choose an instance class up front, auto-scaling capacity instead; a scenario emphasizing
+  unpredictable or bursty migration workloads is a hint toward DMS Serverless specifically.
 
 ## Further Reading
 
@@ -441,6 +487,7 @@ class or investigate target-side write throughput.
 - [AWS Schema Conversion Tool](https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Welcome.html)
 - [Change Data Capture Using AWS DMS: Migrate and Replicate](https://docs.aws.amazon.com/reference-architecture-diagrams/latest/change-data-capture-dms/change-data-capture-dms-migrate.html)
 - [AWS DMS pricing](https://aws.amazon.com/dms/pricing/) — current, authoritative rates
+- [AWS Schema Conversion Tool user guide](https://docs.aws.amazon.com/SchemaConversionTool/latest/userguide/CHAP_Welcome.html) — deeper reference for heterogeneous schema conversion specifics
 
 ## Related Terms
 

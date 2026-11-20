@@ -326,6 +326,12 @@ itself and syncing to AWS incrementally whenever a connection window opens, comb
 Family's offline durability with DataSync's incremental online-transfer model instead of choosing
 strictly one or the other.
 
+**5. Multi-source consolidation for a merger integration.** Two companies merging their IT
+estates run several DataSync agents in parallel — one per legacy environment — each writing into a
+shared destination bucket's own prefix, letting the combined data lake exist before any deeper
+application-level integration work begins, and letting each legacy environment be decommissioned
+on its own independent timeline once its data has safely landed.
+
 ## Limits & Quotas
 
 - **Tasks per account/Region** — a default soft quota (commonly around 400, raisable via Support).
@@ -340,6 +346,28 @@ strictly one or the other.
   impact on shared network links during business hours.
 - **Task execution concurrency** — a single task runs one execution at a time; overlapping schedules
   queue rather than run in parallel against the same location pair.
+
+## Security Considerations
+
+- **Encryption in transit is mandatory, not optional** — every DataSync transfer uses TLS between
+  the agent and the service, and between the service and AWS storage destinations; there's no
+  "unencrypted mode" to accidentally leave on.
+- **IAM role scoping for S3 destinations** — the IAM role DataSync assumes to write into an S3
+  bucket should be scoped to exactly the bucket/prefix the task needs, not account-wide S3 access;
+  a task misconfigured with an overly broad role is a common least-privilege gap in otherwise
+  well-designed transfers.
+- **Agent network exposure** — the DataSync agent VM only needs **outbound** HTTPS to AWS service
+  endpoints; it doesn't need to accept inbound connections from the internet, and should be placed
+  on a network segment that reflects that (no unnecessary inbound firewall rules).
+- **VPC endpoints for private connectivity** — for environments that can't route transfer traffic
+  over the public internet (common in regulated industries), DataSync supports **VPC endpoints
+  (PrivateLink)** so the agent-to-service connection never touches the public internet at all.
+- **Credentials for non-AWS object storage sources** — when DataSync reads from a self-managed,
+  S3-API-compatible source, those credentials should be stored and rotated the same way any other
+  sensitive credential would be (e.g., AWS Secrets Manager), not hardcoded into agent configuration.
+- **Data residency during transfer** — for data subject to residency requirements, confirm which
+  Region the DataSync service endpoint and destination storage are in; a transfer configured
+  against the wrong Region's endpoint can inadvertently move data outside its required jurisdiction.
 
 ## Troubleshooting / Common Issues
 
@@ -424,6 +452,15 @@ agent?
 *Answer:* AWS DataSync, running in **agentless** mode — since both source and destination are AWS
 storage services (S3 to S3, even cross-Region), no DataSync agent VM is required; the service talks
 to both buckets' APIs directly.
+
+**Scenario 4:** A company has a self-managed, S3-API-compatible object storage appliance on
+premises and needs its contents migrated into Amazon S3 directly, without first exporting
+everything to local disk and re-uploading. Does DataSync support this, and how?
+
+*Answer:* Yes — DataSync supports treating a self-managed, S3-API-compatible system as a
+**source location** directly (object storage support, not just NFS/SMB/HDFS), letting a DataSync
+agent read from the appliance's API and write straight into an S3 bucket in one hop, avoiding an
+unnecessary local-disk staging round trip.
 
 ## Exam Tips
 

@@ -502,4 +502,8 @@ the new credential was created but never promoted, leaving the application unaff
 - [`kms.md`](kms.md) — the encryption layer underneath both services
 - [`iam.md`](iam.md) — IAM policies (and resource policies for Secrets Manager) gate who can read which secret
 - [`acm-and-private-ca.md`](acm-and-private-ca.md) — a related but separate way to manage certificate private keys
+- [`../management-governance/appconfig.md`](../management-governance/appconfig.md) — a third,
+  commonly confused service: AppConfig doesn't just *store* a value like these two, it *deploys*
+  a configuration/feature-flag change gradually with automatic rollback — and can wrap a secret
+  or parameter from either of these services as the content it deploys
 - `glossary/` — rotation, staging label, SecureString

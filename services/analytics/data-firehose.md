@@ -348,6 +348,60 @@ category of undifferentiated infrastructure work.
   SageMaker Feature Store — recognizing which the scenario is actually asking for is the tested
   skill, not memorizing either service in isolation.
 
+## Limits & Quotas
+
+- **Record size**: up to 1,000 KB per record (before any Lambda transformation); larger payloads
+  must be split by the producer before calling `PutRecord`/`PutRecordBatch`.
+- **PutRecordBatch**: up to 500 records or 4 MB per call, whichever limit is hit first.
+- **Buffer size range**: S3 destinations support a buffer size from 1 MiB up to 128 MiB;
+  buffer interval from 60 seconds up to 900 seconds — you cannot buffer indefinitely even at the
+  maximum setting.
+- **Throughput per delivery stream**: a default soft limit on records/sec and MB/sec per
+  delivery stream, region-dependent and raisable via a support case — relevant when a single
+  high-volume source needs more throughput than one stream's default quota allows.
+- **Dynamic partitioning**: a limit on the number of active, simultaneously-buffering partitions
+  per delivery stream; a partitioning key with extremely high cardinality (e.g., partitioning by
+  a unique customer ID rather than a coarser dimension) can exceed this and should use a coarser
+  partition key instead.
+- **Transformation Lambda timeout**: the invoked transformation Lambda has its own timeout
+  (up to the Lambda service's own maximum); a transformation that's too slow relative to the
+  buffer interval causes delivery delay or Firehose's internal retry/backoff on that batch.
+- **Error record retry duration**: configurable up to a maximum retry window (commonly up to 7200
+  seconds / 2 hours) before Firehose gives up and routes a persistently-failing record to the
+  error output location.
+
+## Troubleshooting / Common Issues
+
+- **Data not appearing at the destination at all.** Check, in order: (1) the buffer hasn't hit
+  either threshold yet (a low-volume stream with a large buffer size configured waits for the
+  *time* threshold, not the size one — this is expected, not a bug, if it's within the configured
+  interval); (2) IAM role attached to the delivery stream has permission to write to the
+  destination (S3 `PutObject`, Redshift cluster access, OpenSearch index permissions, as
+  applicable); (3) the error output S3 prefix, if configured, for records that failed delivery
+  and were routed there instead of silently disappearing.
+- **Records missing specific fields after format conversion.** Almost always a schema mismatch
+  between the incoming JSON's actual fields and the Glue Data Catalog table schema Firehose was
+  told to convert against — a field present in the data but absent from the catalog schema is
+  silently dropped during Parquet/ORC conversion, not errored loudly.
+- **Transformation Lambda errors causing missing records.** Check the transformation Lambda's own
+  CloudWatch Logs for errors first — Firehose retries a failing transformation invocation
+  according to the configured retry duration, then routes the affected records to the error
+  output location once that window is exhausted, rather than silently dropping them.
+- **Redshift COPY step stalling.** Because Redshift delivery always stages through S3 first, data
+  already landed in the intermediate S3 bucket even if the subsequent `COPY` into the cluster is
+  stalled (cluster maintenance, cluster at capacity, a malformed row rejected by `COPY`'s
+  validation) — check the Redshift cluster's own `COPY` command history/errors, not just the
+  Firehose stream's own metrics, to find the actual cause.
+- **Dynamic partitioning creating far more S3 prefixes than expected.** Usually means the chosen
+  partition key has higher cardinality than intended (e.g., accidentally partitioning by a
+  per-request unique ID instead of a coarser field like `event_type` or `customer_tier`) —
+  revisit the JQ expression defining the partition key.
+- **Unexpectedly high cost at scale.** Check whether format conversion and/or VPC delivery are
+  both enabled when only one is actually needed — both carry their own additional per-GB charges
+  on top of base ingestion, and a Firehose stream configured with options nobody is actually using
+  (e.g., format conversion enabled on a stream already writing JSON that nothing downstream reads
+  as Parquet) is a real, avoidable cost leak.
+
 ## Pricing Model (summary)
 
 - **Billed per GB ingested**, with volume-based pricing tiers that get cheaper at higher

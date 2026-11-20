@@ -369,6 +369,32 @@ DMS alone provides for a database workload.
   throughput — a real-world planning consideration, not a hard quota, but one that materially
   affects how long on-site loading actually takes.
 
+## Security Considerations
+
+- **Encryption is always on, keys never stored on the device** — data on a Snow Family device is
+  encrypted at rest using AWS KMS-managed keys that are never physically stored on the hardware
+  itself, so a lost or stolen device in transit doesn't expose the keys needed to decrypt it.
+- **Tamper-evidence as a control, not just a feature** — the physical tamper-detection hardware
+  (intrusion switches, NFC validation tags, anti-tamper inserts) exists specifically so that a
+  device showing signs of physical tampering in transit can be treated as a security incident
+  rather than silently trusted on arrival; always check tamper-evidence status before unlocking a
+  received device.
+- **Manifest and unlock code are the actual access control** — the job manifest and its unlock
+  code are cryptographically bound to one specific device and account; losing control of either
+  effectively means losing control of access to that device's data, so they should be handled with
+  the same care as any other root credential.
+- **NIST 800-88 wipe between jobs** — AWS's sanitization process between customer jobs is the
+  control that makes device reuse safe for the next customer; this is relevant to know when a
+  security review asks "how is customer data isolated between successive users of the same
+  physical hardware."
+- **Local IAM on Snowball Edge** — devices support local IAM, letting you scope which local
+  applications/users can access on-device S3-compatible storage and compute resources, mirroring
+  cloud IAM practice at the edge rather than leaving the device's local resources wide open.
+- **Chain-of-custody documentation for regulated data** — for compliance-sensitive transfers
+  (healthcare, financial, government), retain the shipping/tracking records and job completion
+  report as part of the audit trail proving custody was maintained throughout the physical
+  transfer.
+
 ## Troubleshooting / Common Issues
 
 - **Device won't power on or appears dead on arrival** — verify power cable/voltage compatibility

@@ -138,6 +138,50 @@ isolation — a RAG-grounded, tool-using Agent still needs the same input/output
 simple single-turn chatbot, applied at the boundary with the user rather than at every internal
 step.
 
+### A third diagram — a bias-audit workflow, end to end, for a high-stakes decision model
+
+Because "run Clarify" is an incomplete answer on its own — the exam tests the *sequence* and
+*judgment calls* around a real bias audit, not just naming the tool — this diagram traces a full
+audit from first data review through to a documented, defensible conclusion:
+
+```mermaid
+flowchart TD
+    A["Audit begins:<br/>high-stakes decision model<br/>(lending, hiring, insurance)"] --> B["Pre-training bias metrics<br/>on the training dataset"]
+    B --> C{"Class imbalance or<br/>sensitive-attribute proxy<br/>correlation found?"}
+    C -->|Yes| D["Address in data<br/>(remove/reweight proxy<br/>feature) BEFORE training"]
+    C -->|No| E["Proceed to training<br/>as-is"]
+    D --> F["Train / retrain model"]
+    E --> F
+    F --> G["Post-training bias metrics<br/>on the trained model's<br/>actual predictions"]
+    G --> H{"Disparity between<br/>groups found?"}
+    H -->|No| I["Document clean result,<br/>proceed to explainability step"]
+    H -->|Yes| J{"Fully explained by a<br/>legitimate, job-relevant<br/>factor, controlling for it?"}
+    J -->|Yes| K["Document the legitimate-<br/>factor finding as the audit<br/>record — NOT bias"]
+    J -->|No| L["Genuine bias finding —<br/>remediate the model/data,<br/>re-run the FULL audit"]
+    I --> M["Per-prediction SHAP<br/>explainability logged for<br/>every decision"]
+    K --> M
+    M --> N["Audit package complete:<br/>pre-training report +<br/>post-training report +<br/>explainability samples +<br/>legitimate-factor analysis<br/>(if applicable)"]
+```
+
+Step by step: an audit is never just "run post-training bias metrics and stop" — it starts
+upstream (pre-training, on the data itself), and critically, a post-training disparity finding
+forks into two genuinely different paths depending on whether it survives conditioning on a
+legitimate factor. **Skipping the conditioning step and treating every disparity as proof of
+bias** is one common failure mode; **skipping the conditioning step and dismissing every
+disparity without analysis** is the opposite, equally wrong failure mode — the diagram's explicit
+fork at step J is where the exam's most nuanced bias questions live.
+
+![Configuring a guardrail in the Amazon Bedrock console](https://docs.aws.amazon.com/solutions/latest/qnabot-on-aws/images/provide_guardrail_detail.png)
+
+*Figure: a real Amazon Bedrock Guardrails console configuration screen — providing a guardrail's
+basic details before configuring its individual filter types (denied topics, content filters, PII
+redaction, etc.). This is the practical console entry point for every Guardrails concept described
+in this document; full configuration JSON for every filter type, plus versioning discipline and
+the three integration patterns (direct invocation, Agent/Knowledge Base, standalone
+`ApplyGuardrail`), is in [`bedrock-guardrails-deep-dive.md`](bedrock-guardrails-deep-dive.md).
+Source: AWS QnABot solution guide's Bedrock Guardrails integration walkthrough —
+docs.aws.amazon.com/solutions/latest/qnabot-on-aws/amazon-bedrock-guardrails-integration.html.*
+
 ## Key Features / Components
 
 - **SageMaker Clarify — Pre-training bias metrics**: class imbalance, difference in label rates
@@ -331,6 +375,20 @@ that aren't actually supported by any retrieved document." *Answer:* Bedrock Gua
 contextual grounding / hallucination detection check, layered on top of (not a replacement for)
 the retrieval-quality improvements covered in Domain 1's `embeddings-and-rag-data-prep.md`.
 
+**Scenario 5:** "An insurance company's post-training bias audit flags a disparity, and the team
+needs to decide whether to escalate it as a genuine bias finding or document it as explained."
+*Answer:* condition the comparison on the suspected legitimate factor (e.g., compare outcomes
+within the same risk-tier bracket across groups) before concluding either way — jumping straight
+to either "it's bias" or "it's fine" without this conditioning step is the exact trap this
+document's bias-audit workflow diagram is built to prevent.
+
+**Scenario 6:** "A company wants every Bedrock Guardrail filter type configured with real, testable
+policy examples before a production launch — denied topics, content filters, PII handling, and a
+RAG-specific grounding check." *Answer:* this maps directly to
+`bedrock-guardrails-deep-dive.md`'s real configuration JSON for all six filter types — this
+document covers the conceptual "what and why"; that document covers the concrete "exactly how to
+configure it."
+
 ## Related Terms
 
 - [`../domain-2-model-development/ml-fundamentals-glossary.md`](../domain-2-model-development/ml-fundamentals-glossary.md)
@@ -342,6 +400,11 @@ the retrieval-quality improvements covered in Domain 1's `embeddings-and-rag-dat
   — where Agents/Knowledge Bases (which Guardrails wraps) get orchestrated and deployed.
 - [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md)
   — full Bedrock service doc, Guardrails is one feature within it.
+- [`bedrock-guardrails-deep-dive.md`](bedrock-guardrails-deep-dive.md) — real configuration JSON
+  for all six Guardrails filter types, versioning discipline, and the three integration patterns
+  — the direct "how to configure it" companion to this document's "what it is and why" level.
 - [`ml-cost-optimization.md`](ml-cost-optimization.md) — Guardrails filtering has its own billing
   unit, separate from the underlying foundation model's token cost.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — Section 6 (Bedrock) and Section 9 (Model Monitor &
+  Registry) touch Guardrails and Clarify as part of the full ten-service standalone reference.
 - [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).

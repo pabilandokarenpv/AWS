@@ -20,6 +20,26 @@ of a data problem nobody caught early (a skewed sample, a leaking feature, a sil
 training/serving mismatch). Testing this domain heavily is AWS's way of making sure certified ML
 engineers internalize that discipline before they ever touch a training job.
 
+## Plain-English analogies for every core service in this domain
+
+Before the task-statement table below, it helps to have one durable mental picture per service —
+these are the analogies referenced throughout this domain's docs, collected here in one place:
+
+| Service | Analogy |
+|---|---|
+| **S3 / Data lake** | A giant, cheap warehouse where you can drop boxes of any size/shape as they arrive, and label them only when someone actually needs to find something — versus a filing cabinet (a warehouse) where every folder must be pre-labeled before anything goes in. |
+| **Glue** | A librarian (the Crawler) who walks the archive and writes an index card for every shelf (the Data Catalog), so a worker (an ETL job) knows exactly where to find what it needs without re-discovering the warehouse's contents from scratch every time. |
+| **Lake Formation** | The finer internal lock system inside the warehouse — IAM/S3 policies are the front-door lock (in or out); Lake Formation is "you may enter, but only open this cabinet, and within it, only this drawer." |
+| **Athena** | A librarian who, instead of making you check out a book, lets you point at a shelf and ask a question — she reads only the relevant pages and charges you for exactly what she had to read. |
+| **EMR** | A construction crew AWS assembles on demand — you specify the tools (Spark? Hive?) and crew size, they show up pre-wired, and you send them home (terminate) the moment the job's done. |
+| **Kinesis Data Streams** | A conveyor belt with numbered slots (shards) — producers drop records on, consumers read off in order, at their own pace, able to re-read recent history if they fall behind. |
+| **Data Firehose** | A forklift that automatically takes items off the belt and stacks them neatly in a warehouse (S3) — nobody drives it; you point it at a destination once and it runs forever. |
+| **OpenSearch** | A card catalog built to answer "find everything related to X, ranked by relevance" — not "look up record #4521," which is what a plain database does. |
+| **SageMaker Data Wrangler** | A spreadsheet with a recorded macro — point, click, preview the before/after, and it remembers the whole transformation as a reusable recipe. |
+| **SageMaker Feature Store** | A shared filing cabinet with two drawers: one slow drawer with the complete history (training), one fast drawer with only the latest value (real-time inference) — both filled from the same single filing action, so they can never disagree. |
+| **Bedrock / RAG** | Giving a well-read substitute teacher a one-page briefing right before class, instead of making them re-read the entire textbook every time a fact changes. |
+| **Embeddings** | Plotting every sentence you've ever read as a dot on a map, where similar-meaning sentences cluster in the same neighborhood — "find what's relevant" becomes "find the closest dots." |
+
 ## Task-statement-level content (from the official exam guide)
 
 The C02 exam guide groups Domain 1 into these task statements. Each maps to a linked doc below.
@@ -478,6 +498,56 @@ that both BI dashboards and ML training jobs draw from" is describing exactly th
 Consumption Zone feeding both QuickSight and Feature Store from the same conformed data, rather
 than each team building its own separate, inconsistent cleaning pipeline.
 
+## A fourth diagram and image — governed access across the whole pipeline
+
+Every diagram so far shows data *moving*; it's worth seeing, once, where *permissions* sit
+relative to that movement, since a scenario naming multiple teams with different column/row
+visibility needs is testing this specific layer:
+
+```mermaid
+sequenceDiagram
+    participant Analyst as Data scientist (IAM role)
+    participant Athena as Amazon Athena
+    participant Cat as Glue Data Catalog
+    participant LF as Lake Formation
+    participant S3 as S3 curated zone
+
+    Analyst->>Athena: SELECT * FROM curated_features
+    Athena->>Cat: Resolve schema + location
+    Cat->>LF: Check this role's grant on curated_features
+    LF-->>Cat: Authorized -- all columns except raw_ssn
+    Cat-->>Athena: Schema minus raw_ssn, S3 location
+    Athena->>LF: Request scoped, temporary credentials
+    LF-->>Athena: Credentials limited to the grant
+    Athena->>S3: Read only authorized columns
+    S3-->>Athena: Data, raw_ssn never fetched
+    Athena-->>Analyst: Results, raw_ssn absent
+```
+
+The step worth internalizing: Athena never gets broader S3 access than the specific Lake
+Formation grant, **even if** its own underlying IAM role would technically permit more — this
+**credential vending** mechanism is why a restriction enforced in Athena can't be bypassed by the
+same analyst switching to an EMR notebook under the identical role. This matters directly for
+Domain 1's Task 1.3 (data integrity/compliance) because sensitive training-data columns (SSNs,
+health information, salary) often need exactly this kind of enforcement before a feature pipeline
+is even allowed to read them.
+
+![Diagram showing the Lake Formation permissions management workflow: a principal queries through an analytical engine, which requests metadata from the Data Catalog, which checks permissions with Lake Formation before vending temporary credentials to access the underlying S3 data](https://docs.aws.amazon.com/lake-formation/latest/dg/images/lf-workflow.png)
+
+*Figure: AWS's own diagram of the exact sequence above — note the engine never talks to S3
+directly until Lake Formation has vended it scoped, temporary credentials. Source: AWS Lake
+Formation Developer Guide, "How it works" —
+docs.aws.amazon.com/lake-formation/latest/dg/how-it-works.html. Verified live via `curl -o
+/dev/null -w "%{http_code}"` → `200`.*
+
+![The execution details page showing a graph of query stages in the Athena console](https://docs.aws.amazon.com/athena/latest/ug/images/query-stats-2.png)
+
+*Figure: Athena's own console breakdown of queuing/planning/execution stages for a completed
+query — useful for distinguishing "waiting for capacity" from "actually scanning files" when a
+query feels slower than expected, a distinction the exam's cost-optimization questions lean on.
+Source: AWS Athena User Guide, "View statistics and execution details for completed queries" —
+docs.aws.amazon.com/athena/latest/ug/query-stats.html. Verified live via curl → `200`.*
+
 ## Full worked case study — a retail company building real-time personalization
 
 To see every piece of this domain working together on one concrete business problem, walk
@@ -642,6 +712,20 @@ option.
   Check the configured number of DPUs (Data Processing Units) and job timeout — a job
   over-provisioned on workers for a small dataset burns compute unnecessarily; right-size before
   assuming Glue itself is expensive for this workload.
+- **A target-encoded categorical feature produces unrealistically high validation metrics that
+  collapse on fresh data.** Almost always target-encoding leakage — the encoding was computed on
+  the full dataset instead of per-fold, letting each row's own label leak into its own feature's
+  value; see `feature-engineering-deep-dive.md` for the correct k-fold approach.
+- **A multimodal RAG pipeline's image-similarity search returns results that look nothing like
+  the query photo.** Confirm every embedded image used the exact same multimodal embedding model
+  and version — the identical mismatched-embedding-space failure mode that affects text RAG
+  manifests on the image side too, and is the first thing to check before assuming the model
+  itself performs poorly.
+- **A Lake Formation grant is in place, but an analyst still sees unrestricted data through an
+  EMR notebook using the same IAM role that works correctly through Athena.** Check whether EMR's
+  Lake Formation integration is actually enabled for that specific cluster — EMR needs explicit
+  configuration to participate in credential vending; without it, the cluster may fall back to
+  the role's own broader IAM permissions.
 
 ## Common exam scenarios
 
@@ -701,6 +785,70 @@ option.
     Glue/Data Wrangler/Feature Store path, while the PDFs may first need Amazon Textract (a
     pre-built AI service, see `services/machine-learning-ai/ai-services-overview.md`) to extract
     text before either classic feature engineering or embedding/RAG treatment applies.
+16. **"A high-cardinality categorical column (thousands of zip codes) is exploding a feature
+    table's width after one-hot encoding, and training time has tripled"** → switch to target
+    encoding (ideally k-fold, to avoid leaking label information into the encoded feature) rather
+    than continuing to one-hot encode a column with that many distinct values — see
+    `feature-engineering-deep-dive.md` for the worked numbers.
+17. **"A fraud model achieves 99.4% accuracy but a post-launch audit finds it essentially never
+    predicts fraud at all"** → classic class-imbalance trap; the fix is evaluating with
+    recall/precision/F1/AUC-PR instead of trusting accuracy, plus resampling or class weighting
+    during training — see `class-imbalance-and-bias-in-training-data.md` for the full mechanics.
+18. **"A RAG pipeline needs to search both scanned insurance claim forms and typed adjuster
+    notes, with the forms containing handwritten annotations"** → Amazon Textract extracts text
+    (including handwriting) from the scanned forms first; the adjuster notes go straight to
+    chunking; both resulting text streams are embedded with the *same* embedding model before
+    either reaches the vector store — see `multimodal-data-ingestion-patterns.md`.
+19. **"A loan-approval model's pre-training bias check shows a large Difference in Proportions of
+    Labels (DPL) between two demographic groups, before any model has even been trained"** →
+    this is specifically a pre-training (data-level) bias signal, distinct from a post-training
+    Disparate Impact check on the model's actual predictions — both are named, separately-tested
+    checks, not interchangeable terms for "the model is biased."
+20. **"A vector store needs to support both a similarity search over product description
+    embeddings AND an exact-match filter on `in_stock = true` joined against a live inventory
+    table updating every few minutes, in the same query"** → the relational-join requirement is
+    the deciding factor pointing at Amazon RDS/Aurora with `pgvector`, not OpenSearch or S3
+    Vector Buckets, which don't support arbitrary SQL joins against other business data.
+
+## A second GenAI-focused worked case study — building a multimodal insurance claims assistant
+
+To see the classic-ML and GenAI tracks converge on genuinely multimodal input (not just text),
+walk one more concrete scenario end to end.
+
+**The business problem:** "ClearPath Insurance" wants an assistant that lets an adjuster type or
+speak a question about a claim ("what's the total approved amount for claim #4471, and does the
+attached damage photo match the described incident?") and get back an answer drawing on three
+different source types: the structured claims database, a stack of scanned claim forms, and
+photos attached to each claim.
+
+1. **Structured data (classic ML track):** claim amounts, dates, and status codes live in a
+   relational source, periodically exported into the S3 raw zone, cataloged by a **Glue
+   Crawler**, and cleaned via **Glue ETL** into the curated zone — no different from the
+   classic-ML pipeline described earlier in this README.
+2. **Scanned forms (multimodal ingestion):** each claim's scanned intake form is processed by
+   **Amazon Textract**, extracting the claim amount, date, and adjuster notes as structured text
+   — these become candidate chunks for the RAG pipeline, tagged with the claim ID as metadata.
+3. **Damage photos (multimodal embeddings):** each photo is embedded with a multimodal embedding
+   model (e.g., Bedrock Titan Multimodal Embeddings), landing in the *same* vector space as text
+   embeddings of the adjuster's written damage description — letting a similarity search confirm
+   whether the photo's embedded "look" is consistent with the text description's embedded
+   "meaning," a genuinely cross-modal check neither modality alone could answer.
+4. **Voice input (audio-to-text):** when an adjuster speaks a question instead of typing it,
+   **Amazon Transcribe** converts it to text first, which then follows the identical embed →
+   retrieve → generate path as a typed question — there is no separate "voice RAG" pipeline, only
+   a transcription step bolted onto the front of the existing text pipeline.
+5. **Retrieval and generation:** the assistant embeds the adjuster's question, retrieves the most
+   relevant chunks — whether sourced from Textract'd forms, the structured claims data (surfaced
+   via a tool call rather than embedding, since it's an exact-match lookup, not a similarity
+   search), or photo embeddings — and Bedrock generates a grounded answer citing the specific
+   claim and source.
+
+**Why this case study matters for the exam:** a genuinely advanced case-study question is likely
+to combine *all four* modalities (structured, scanned-text, image, voice) in one scenario and
+expect you to route each to its correct Domain 1 pipeline — Textract for scanned-but-readable
+content, a multimodal embedding model for visual similarity (not OCR), Transcribe before
+embedding for voice, and the classic Glue/Feature Store path for anything genuinely structured and
+exact-match — rather than forcing every modality through one single tool.
 
 ## Related Terms
 
@@ -708,6 +856,17 @@ See the companion [`glossary/README.md`](../../../glossary/README.md) for one-li
 every cross-cutting term, and [`00-fundamentals/`](../../../00-fundamentals) for AWS basics this
 domain assumes (S3 storage classes, IAM basics, VPC).
 
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — a single, standalone file covering all 11 Domain 1
+  services/topics in full depth (Definition, Analogy, Use Cases, diagrams, images, Exam Tips
+  each), for readers who want one file instead of this whole folder.
+- [`feature-engineering-deep-dive.md`](feature-engineering-deep-dive.md) — worked encoding/
+  scaling/temporal/interaction feature techniques with real numbers, expanding Task 1.2.
+- [`class-imbalance-and-bias-in-training-data.md`](class-imbalance-and-bias-in-training-data.md)
+  — worked pre-/post-training bias metrics (CI, DPL, DI) and mitigation (oversampling, SMOTE,
+  undersampling, class weighting) with real numbers, expanding Task 1.3.
+- [`multimodal-data-ingestion-patterns.md`](multimodal-data-ingestion-patterns.md) — worked
+  text/image/audio ingestion pipelines (Textract, Transcribe, Rekognition, multimodal embeddings),
+  expanding Tasks 1.1.8 and 1.2.5.
 - [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).
 - [`../domain-2-model-development/README.md`](../domain-2-model-development/README.md) — what
   happens to this domain's cleaned data and engineered features next.

@@ -17,6 +17,8 @@ nothing emulates actual model-serving infrastructure.*
 | 6 | SageMaker Neo stand-in: export/compile for efficient inference | ONNX Runtime | Task 3.1 (edge) |
 | 7 | Agent state management with a local key-value store | SQLite | Task 3.2.9 — agent state |
 | 8 | Prompt version testing harness | plain Python, pytest | Task 3.3.7/3.3.9 — Prompt Management & testing |
+| 9 | Auto-scaling target-tracking math, simulated locally | plain Python | Task 3.1 — endpoint auto-scaling cost math |
+| 10 | GPU batching throughput, simulated with a toy queue | plain Python | Task 3.2.10 — GPU resource scaling |
 
 ## Lab 1 — What Floci can do here
 
@@ -324,6 +326,108 @@ pattern from `README.md`'s Prompt Management diagram — `v2` passes its test (a
 `v1`) and would be promoted to production; a hypothetical `v3` that *failed* a test like this
 would be rejected automatically, exactly like the diagram's "scores acceptable?" branch, with no
 production traffic ever reaching the rejected version.
+
+## Lab 9 — Simulating target-tracking auto-scaling math locally
+
+```python
+# autoscale_sim.py — a simplified, deterministic stand-in for Application Auto Scaling's
+# target-tracking logic against a SageMaker endpoint variant, to build intuition for the
+# instance-count math before reading the real worked examples in
+# sagemaker-endpoint-autoscaling-cost-math.md
+import math
+
+def required_instances(invocations_per_minute, target_per_instance, headroom_fraction=0.2):
+    # headroom_fraction mirrors "set the target below the measured ceiling" from the README
+    effective_target = target_per_instance * (1 - headroom_fraction)
+    return math.ceil(invocations_per_minute / effective_target)
+
+def simulate_day(traffic_curve, target_per_instance, min_capacity, max_capacity):
+    results = []
+    for hour, invocations_per_minute in enumerate(traffic_curve):
+        needed = required_instances(invocations_per_minute, target_per_instance)
+        actual = max(min_capacity, min(max_capacity, needed))
+        results.append((hour, invocations_per_minute, needed, actual))
+    return results
+
+# A rough business-hours traffic curve: low overnight, high 9am-6pm, tapering evenings
+traffic_curve = [200]*6 + [3000]*3 + [24000]*9 + [3000]*3 + [200]*3
+schedule = simulate_day(traffic_curve, target_per_instance=3600, min_capacity=1, max_capacity=20)
+
+total_instance_hours = sum(actual for _, _, _, actual in schedule)
+fixed_cost_instance_hours = 9 * 24  # a fixed 9-instance endpoint running all day, for comparison
+
+print(f"{'Hour':>4} {'Inv/min':>8} {'NeededRaw':>10} {'ActualRunning':>14}")
+for hour, inv, needed, actual in schedule:
+    print(f"{hour:>4} {inv:>8} {needed:>10} {actual:>14}")
+
+print(f"\nTotal auto-scaled instance-hours today: {total_instance_hours}")
+print(f"Fixed 9-instance baseline instance-hours today: {fixed_cost_instance_hours}")
+print(f"Savings: {(1 - total_instance_hours/fixed_cost_instance_hours)*100:.1f}%")
+```
+
+Running this reproduces the exact shape of the arithmetic in
+`sagemaker-endpoint-autoscaling-cost-math.md`'s worked example — a fixed-instance-count baseline
+always costs the same regardless of the actual traffic curve, while the simulated auto-scaled
+schedule tracks the curve and saves real instance-hours during the overnight and tapering
+periods. Try changing `target_per_instance` and `headroom_fraction` and re-running to see how a
+too-aggressive target (low headroom) shows fewer required instances on paper while leaving less
+margin for the real-world provisioning lag auto-scaling always has in practice.
+
+## Lab 10 — GPU batching throughput, simulated with a toy queue
+
+```python
+# gpu_batch_sim.py — a free, local way to internalize why batching changes GPU throughput math,
+# before reading the real worked numbers in gpu-instance-selection-scaling-fm-hosting.md
+import time
+import threading
+import queue
+
+UNBATCHED_LATENCY_MS = 40
+BATCH_LATENCY_MS = {1: 40, 4: 60, 8: 90}  # illustrative: near-flat cost up to a batch ceiling
+
+def process_batch(batch_size):
+    latency = BATCH_LATENCY_MS.get(batch_size, BATCH_LATENCY_MS[8])
+    time.sleep(latency / 1000)
+    return latency
+
+def throughput_per_second(batch_size):
+    latency_s = BATCH_LATENCY_MS.get(batch_size, BATCH_LATENCY_MS[8]) / 1000
+    return batch_size / latency_s
+
+for size in (1, 4, 8):
+    print(f"Batch size {size}: ~{throughput_per_second(size):.1f} requests/second/instance")
+
+# A toy batching queue: collects requests for up to 20ms before processing whatever arrived
+request_queue = queue.Queue()
+processed = []
+
+def batching_worker():
+    while True:
+        batch = []
+        deadline = time.time() + 0.02  # 20ms batching window
+        while time.time() < deadline and len(batch) < 8:
+            try:
+                batch.append(request_queue.get(timeout=max(0, deadline - time.time())))
+            except queue.Empty:
+                break
+        if batch:
+            process_batch(len(batch))
+            processed.append(len(batch))
+
+threading.Thread(target=batching_worker, daemon=True).start()
+for i in range(20):
+    request_queue.put(f"req-{i}")
+    time.sleep(0.005)  # requests arriving roughly every 5ms -- a realistic burst
+time.sleep(0.5)
+print("Batches actually processed:", processed)
+```
+
+This reproduces the throughput multiplier the GPU document's worked example describes — at batch
+size 8, the simulated latency (90ms) doesn't scale linearly with batch size the way unbatched
+processing would (8 x 40ms = 320ms), which is exactly the property that makes GPU batching a real
+throughput lever rather than just added complexity. Try lowering the 20ms batching window to 5ms
+and observe smaller batches forming (less throughput gain, less added per-request latency) —
+directly exercising the latency-vs-throughput tradeoff the real document discusses in prose.
 
 ## What Floci can NOT do (and the real alternative)
 

@@ -17,6 +17,8 @@ all; use the alternatives below for those.*
 | 6 | A local Guardrails stand-in | regex + Hugging Face toxicity model | Task 4.4 |
 | 7 | Simulating agent coordination failures and tool-call tracing | plain Python | Task 4.1.5 — agent observability |
 | 8 | Static code + dependency vulnerability scanning | bandit, pip-audit | Task 4.3.1 — secure ML/AI CI/CD |
+| 9 | Simulating Cost Anomaly Detection with a statistical baseline | pandas, numpy | Task 4.2.10 — AI-specific cost patterns |
+| 10 | Validating a local Guardrails-style policy configuration against test cases | plain Python + pytest | Task 4.3.9 / 4.4 — responsible-AI safeguards |
 
 ## Lab 1 — What Floci can do here (real strength)
 
@@ -305,18 +307,136 @@ CVEs in your current package versions — the dependency-scanning half of what A
 does for a built container image, here run directly against a Python environment instead of a
 container.
 
+## Lab 9 — Simulating Cost Anomaly Detection with a statistical baseline
+
+```bash
+pip install pandas numpy
+```
+
+```python
+import numpy as np
+import pandas as pd
+
+# Simulate 60 days of "normal" daily GenAI spend (realistic day-to-day noise)
+np.random.seed(42)
+normal_days = np.random.normal(loc=120, scale=15, size=60)  # ~$120/day, some natural variance
+
+# Day 61: a real anomaly -- a one-time full-corpus re-embedding event
+anomaly_day = 420.0
+
+spend = pd.Series(list(normal_days) + [anomaly_day])
+
+# A simple, real anomaly-detection approach: flag any day more than 3 standard
+# deviations above the ROLLING mean of the days seen so far (not the whole series,
+# since Cost Anomaly Detection learns a baseline from HISTORY, not from data it hasn't
+# seen yet -- an important distinction from simply eyeballing the full series after the fact)
+rolling_mean = spend.expanding(min_periods=10).mean()
+rolling_std = spend.expanding(min_periods=10).std()
+z_scores = (spend - rolling_mean) / rolling_std
+
+threshold = 3.0
+anomalies = spend[z_scores > threshold]
+print(f"Flagged anomalies (z-score > {threshold}):")
+print(anomalies)
+print(f"\nDay 61's z-score: {z_scores.iloc[-1]:.2f} -- {'FLAGGED' if z_scores.iloc[-1] > threshold else 'not flagged'}")
+```
+
+Run this and confirm day 61 (the simulated anomaly) is correctly flagged while none of the 60
+"normal" days are -- a direct, hands-on demonstration of the exact statistical idea behind AWS
+Cost Anomaly Detection: learn what normal day-to-day variation looks like from an account's own
+history, then flag a statistically significant deviation from *that specific account's* learned
+pattern, not from an arbitrary fixed dollar threshold a human had to guess in advance (the AWS
+Budgets approach, by contrast). Re-run with the anomaly day set to `135.0` instead of `420.0` and
+observe the z-score likely stays below the threshold -- confirming the detector correctly
+distinguishes real drift from the kind of day-to-day noise already present in the 60-day baseline.
+
+## Lab 10 — Validating a local Guardrails-style policy configuration against test cases
+
+```bash
+pip install pytest
+```
+
+```python
+# guardrail_policy.py -- a simplified, local stand-in for testing Guardrails-style
+# policy configuration BEFORE paying for real Bedrock Guardrails API calls
+DENIED_TOPICS = {
+    "medical_dosage": ["dosage", "how many mg", "milligrams of"],
+    "competitor_pricing": ["competitor price", "cheaper than us"],
+}
+
+PII_PATTERNS = {
+    "ssn": r"\d{3}-\d{2}-\d{4}",
+    "email": r"[\w\.-]+@[\w\.-]+\.\w+",
+}
+
+def check_denied_topics(text: str) -> list[str]:
+    hits = []
+    lowered = text.lower()
+    for topic, phrases in DENIED_TOPICS.items():
+        if any(p in lowered for p in phrases):
+            hits.append(topic)
+    return hits
+
+def check_pii(text: str) -> list[str]:
+    import re
+    hits = []
+    for pii_type, pattern in PII_PATTERNS.items():
+        if re.search(pattern, text):
+            hits.append(pii_type)
+    return hits
+```
+
+```python
+# test_guardrail_policy.py -- real pytest test cases validating the policy BEFORE
+# it's ever attached to a real, billed Bedrock Guardrail
+from guardrail_policy import check_denied_topics, check_pii
+
+def test_denied_topic_exact_phrase():
+    assert "medical_dosage" in check_denied_topics("What dosage of ibuprofen should I take?")
+
+def test_denied_topic_paraphrased_still_misses_without_semantic_matching():
+    # This SHOULD fail with simple keyword matching -- demonstrating exactly why
+    # real Bedrock Guardrails uses semantic matching (via a definition + examples),
+    # not literal keyword lists, for denied topics
+    result = check_denied_topics("Could you tell me the right amount of medicine for a headache?")
+    assert "medical_dosage" not in result  # keyword matching misses the paraphrase
+
+def test_pii_ssn_detected():
+    assert "ssn" in check_pii("My SSN is 123-45-6789, please update my file.")
+
+def test_pii_email_detected():
+    assert "email" in check_pii("Contact me at jane.doe@example.com")
+
+def test_clean_text_passes():
+    assert check_denied_topics("What's the weather like today?") == []
+    assert check_pii("What's the weather like today?") == []
+```
+
+```bash
+pytest test_guardrail_policy.py -v
+```
+
+Run this and confirm `test_denied_topic_paraphrased_still_misses_without_semantic_matching`
+actually passes (meaning the simple keyword approach *did* miss the paraphrase) -- a deliberately
+built-in failure case proving, with real executed code, exactly why
+`bedrock-guardrails-deep-dive.md`'s real Guardrails denied-topics configuration uses semantic
+matching (a natural-language definition plus example phrasings) rather than a literal keyword
+list: a keyword list provably misses a rephrased version of the exact same disallowed question,
+which real Guardrails is specifically designed to still catch.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
 |---|---|---|
 | Run SageMaker Model Monitor and see a real drift report | ❌ not emulated | Compute drift manually with **`scipy.stats.ks_2samp`** (Kolmogorov-Smirnov test, free, local) comparing a "training" distribution to a "live" distribution you generate yourself — the actual statistical test Model Monitor runs under the hood |
 | Run SageMaker Inference Recommender's load test | ❌ not emulated | **`locust`** or **`k6`** (free, local load-testing tools) against your own FastAPI-served model (from Domain 3's lab) to measure latency/throughput across different local resource limits — same concept, your own hardware instead of SageMaker's catalog |
-| Run SageMaker Clarify bias/explainability reports | ❌ not emulated | **Fairlearn** (`pip install fairlearn`) for bias metrics, **SHAP** (`pip install shap`) for explainability — both are the actual open-source libraries AWS built on top of, so the output concepts map directly |
-| Configure/test Bedrock Guardrails | ❌ no Bedrock emulation | A local keyword/regex blocklist plus Hugging Face's free `unitary/toxic-bert` model for a conceptual stand-in for output content filtering |
+| See real SageMaker Clarify bias/explainability reports | ❌ not emulated | **Fairlearn** (`pip install fairlearn`) for bias metrics, **SHAP** (`pip install shap`) for explainability — both are the actual open-source libraries AWS built on top of, so the output concepts map directly |
+| Configure/test Bedrock Guardrails | ❌ no Bedrock emulation | A local keyword/regex blocklist plus Hugging Face's free `unitary/toxic-bert` model for a conceptual stand-in for output content filtering (Lab 6), or Lab 10's pytest-driven policy validation approach for testing configuration logic before it's ever attached to a real, billed Guardrail |
 | Practice VPC network isolation for a training job (no internet access) | ✅ Floci DOES support VPC APIs | `awslocal ec2 create-vpc` / `create-subnet` with no NAT/internet gateway route — the real pattern for "training job must have no internet access" |
 | See real SageMaker Savings Plan / Spot discount percentages | ❌ not emulated | Check the live SageMaker pricing page, or practice the *decision* (steady vs. bursty vs. interruption-tolerant) using real EC2 Spot Instances, which Floci's compute emulation does cover conceptually |
 | Run Amazon CodeGuru Reviewer / Amazon Inspector against real CI/CD artifacts | ❌ not emulated | **Lab 8's bandit + pip-audit** — real, free, open-source static-analysis and dependency-CVE scanners catching the same category of issues |
 | See a real AgentCore Observability trace for a live Bedrock Agent | ❌ no Bedrock emulation | **Lab 7's traced tool-call simulation** — the same status/latency/failure-rate tracing concept, run against a local flaky function instead of a real agent |
+| See a real AWS Cost Anomaly Detection alert fire | ❌ not emulated | **Lab 9's rolling z-score detector** — the same core statistical idea (learn a baseline from history, flag statistically significant deviations), run against simulated daily spend instead of a real billing feed |
 
 ## Use Cases — Real Scenarios
 
@@ -352,6 +472,15 @@ container.
     cover this domain's three "rings" (security, agent health, pipeline security) with the least
     AWS-account setup required of any domain's labs, making them the fastest path to real,
     hands-on understanding before touching a paid account.
+11. A FinOps-focused platform engineer runs Lab 9 with the anomaly day's spend dialed down
+    progressively (from $420 to $200 to $135) to find the exact point where their chosen z-score
+    threshold stops flagging it, building direct intuition for the threshold-sensitivity tradeoff
+    before configuring a real Cost Anomaly Detection monitor.
+12. A GenAI application team writes Lab 10's pytest suite for their actual planned denied-topics
+    and PII rules *before* configuring real Bedrock Guardrails, using the deliberately-failing
+    paraphrase test as evidence for why they need semantic (not keyword) topic matching in the
+    real configuration — directly informing the policy JSON they write following
+    `bedrock-guardrails-deep-dive.md`.
 
 ## Recommended real-AWS free tier path
 
@@ -359,8 +488,9 @@ container.
    reproducible locally of any domain in this cert.
 2. **SageMaker Studio Lab** to see a real (free) Model Monitor/Clarify report, if you want the
    authentic console experience rather than the manual statistical equivalent above.
-3. **AWS Free Tier account** only if you want to see real Bedrock Guardrails configured in the
-   console — budget a few dollars for any actual foundation model calls through it.
+3. **AWS Free Tier account** only if you want to see real Bedrock Guardrails and Cost Anomaly
+   Detection configured in the console — budget a few dollars for any actual foundation model
+   calls through it.
 
 ## Self-check before your practice exam
 
@@ -371,3 +501,24 @@ container.
   restore internet access?
 - Can you explain, from Lab 5's output, the difference between what the first printed array (one
   record's SHAP values) tells you versus what `top_features` (the aggregated ranking) tells you?
+- Can you explain, from Lab 9's output, why the z-score is computed against an *expanding* window
+  of history rather than the full dataset including days that haven't happened yet — and why that
+  distinction matters for a real, live anomaly detector that can only ever see the past?
+- Can you explain, from Lab 10's deliberately-failing paraphrase test, exactly why real Bedrock
+  Guardrails denied topics need semantic matching rather than a literal keyword list — and name
+  one other Guardrails filter type (from `bedrock-guardrails-deep-dive.md`) where literal keyword
+  matching genuinely is the right approach instead?
+
+## Related Terms
+
+- [`README.md`](README.md) — the domain-level content these labs reproduce hands-on.
+- [`model-drift-deep-dive.md`](model-drift-deep-dive.md) — Labs 2 and 3's statistical tests are
+  the runnable version of this doc's full drift mechanics and worked numeric example.
+- [`iam-least-privilege-ml-pipelines.md`](iam-least-privilege-ml-pipelines.md) — Lab 1's IAM/KMS/
+  VPC commands are the runnable version of this doc's real policy JSON patterns.
+- [`bedrock-guardrails-deep-dive.md`](bedrock-guardrails-deep-dive.md) — Labs 6 and 10 are local,
+  free stand-ins for this doc's real Guardrails filter-type configuration JSON.
+- [`finops-for-ml-token-cost-tracking.md`](finops-for-ml-token-cost-tracking.md) — Lab 9 is the
+  runnable version of this doc's Cost Anomaly Detection coverage.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — Section 18's hands-on command reference is the real-AWS-
+  CLI counterpart to this doc's free/local lab exercises.

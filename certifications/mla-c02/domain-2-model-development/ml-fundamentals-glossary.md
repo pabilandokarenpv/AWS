@@ -358,6 +358,30 @@ Reproduce this exact calculation yourself with `sklearn.metrics.confusion_matrix
 `classification_report` in `labs.md` — recomputing it independently, rather than trusting the
 formula alone, is the fastest way to make these definitions stick before exam day.
 
+## A second worked example — multi-class, and why accuracy hides a weak category
+
+The example above is binary. Most real classification problems (ticket routing, document
+category, defect type) have more than two classes, and reading a multi-class confusion matrix is
+its own skill. Consider a 3-class support-ticket router tested on 150 tickets:
+
+| | Predicted: Billing | Predicted: Technical | Predicted: Account |
+|---|---|---|---|
+| **Actually Billing** | 42 | 5 | 3 |
+| **Actually Technical** | 8 | 58 | 4 |
+| **Actually Account** | 2 | 6 | 22 |
+
+Overall accuracy = (42+58+22)/150 ≈ **81.3%** — a single respectable-looking number. But computing
+each class's own precision/recall separately (isolating one class as "positive," everything else
+as "negative") tells a different story: Billing scores ~81%/84% precision/recall, Technical
+~84%/83%, while **Account — the smallest category at only 30 tickets — scores only ~76%/73%**,
+meaningfully weaker than the other two. The 81.3% overall accuracy number never reveals this gap
+by itself; only per-class metrics (or a macro-averaged F1, which weighs every class equally
+regardless of its size) surface it. The full arithmetic, plus the macro- vs. micro-averaging
+distinction and a from-scratch ROC/PR threshold sweep, log-loss computation, and calibration
+check, live in [`evaluation-metrics-deep-dive.md`](evaluation-metrics-deep-dive.md) — this
+glossary entry exists to flag that overall accuracy on a multi-class problem can hide exactly
+the same kind of imbalance-driven blind spot the binary fraud example above demonstrates.
+
 ## Loss functions — what training is actually trying to minimize
 
 **Plain English:** the loss function is the textbook's answer key — the precise rule for scoring
@@ -717,5 +741,19 @@ together, where a feature with a naturally larger numeric range would dominate u
 - [`../domain-4-monitoring-security/responsible-ai-and-guardrails.md`](../domain-4-monitoring-security/responsible-ai-and-guardrails.md)
   — bias metrics (a different axis than the accuracy-style metrics in this document) covered in
   full depth there.
+- [`algorithm-selection-decision-framework.md`](algorithm-selection-decision-framework.md) — these
+  metrics are what score every head-to-head algorithm comparison in that doc.
+- [`evaluation-metrics-deep-dive.md`](evaluation-metrics-deep-dive.md) — full numeric derivations
+  beyond this glossary's single worked examples: threshold sweeps, multi-class averaging,
+  calibration, log loss, and BLEU computed by hand.
+- [`hyperparameter-tuning-strategies.md`](hyperparameter-tuning-strategies.md) — the grid/random/
+  Bayesian strategies introduced above, expanded with real job-count and cost arithmetic.
+- [`bias-variance-tradeoff-and-regularization.md`](bias-variance-tradeoff-and-regularization.md)
+  — the bias-variance tradeoff and every regularization technique above, each proven numerically.
+- [`rag-vs-finetuning-vs-prompting-decision-tree.md`](rag-vs-finetuning-vs-prompting-decision-tree.md)
+  — the fine-tuning-vs-RAG-vs-prompting decision this glossary's NLP/AI-evaluation sections feed
+  into.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — every service and concept in this domain in one
+  standalone document.
 - [`labs.md`](labs.md) — hands-on exercises that reproduce several of this document's concepts
   (overfitting curves, confusion matrices, cross-validation) with real, runnable code.

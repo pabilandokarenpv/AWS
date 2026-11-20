@@ -78,6 +78,69 @@ failures of the original model or deployment design.
   Bedrock Guardrails, and explainability via SageMaker Clarify. This is the direct GenAI-era
   evolution of "model monitoring" into "is this model/GenAI output fair and safe," which spans
   both classic ML (Clarify) and GenAI (Guardrails) — new, dedicated territory in C02.
+- **[`model-drift-deep-dive.md`](model-drift-deep-dive.md)** — the mechanical deep dive behind
+  this README's drift coverage: how Model Monitor's baselining, data capture, and statistical
+  comparison actually work, a fully worked numeric KS-test example you can reproduce by hand, and
+  the threshold/scheduling tradeoffs the exam tests directly.
+- **[`iam-least-privilege-ml-pipelines.md`](iam-least-privilege-ml-pipelines.md)** — real policy
+  JSON for a scoped training-job role, the shared-role anti-pattern, permissions boundaries for
+  self-service data scientists, and cross-account role assumption with External ID — the concrete
+  pattern-level expansion of this README's IAM summary.
+- **[`bedrock-guardrails-deep-dive.md`](bedrock-guardrails-deep-dive.md)** — real configuration
+  JSON for all six Guardrails filter types (including automated reasoning checks), versioning
+  discipline, and the three integration patterns (direct invocation, Agent/Knowledge Base,
+  standalone `ApplyGuardrail`).
+- **[`finops-for-ml-token-cost-tracking.md`](finops-for-ml-token-cost-tracking.md)** — the
+  six-category GenAI cost taxonomy (training, inference compute, inference tokens, embedding,
+  vector storage, Guardrails filtering), cost allocation tagging in practice, Cost Anomaly
+  Detection, and a fully worked multi-stage cost-spike investigation.
+- **[`MASTER-CHUNK.md`](MASTER-CHUNK.md)** — a single, standalone reference covering all ten of
+  this domain's services/topics in full depth (Definition, Analogy, Purpose, When to Use/Not,
+  Use Cases, Why Important, diagrams, real AWS images, Exam Tips), readable start to finish
+  without needing any other file in this folder.
+
+## Additional AI Services in This Domain — Lex, Comprehend Medical, DevOps Guru, HealthLake
+
+Beyond CodeGuru/Inspector (covered under task 4.3.1 above), four more MLA-C02-specific managed AI
+services round out this domain's "Additional AI Services" coverage — each solving a narrow,
+specialized problem a general-purpose SageMaker/Bedrock approach would take real custom
+engineering to replicate. Full depth on all five services in this cluster (including CodeGuru) is
+in [`MASTER-CHUNK.md`](MASTER-CHUNK.md#5-additional-ai-services-lex-codeguru-comprehend-medical-devops-guru-healthlake);
+this section gives the domain-level summary.
+
+```mermaid
+flowchart TD
+    A["Structured, intent-based<br/>conversation needed?"] -->|Yes| B["Amazon Lex"]
+    A -->|"No, open-ended"| C["Amazon Bedrock instead"]
+    D["Operational anomaly,<br/>no known threshold<br/>to define in advance?"] -->|Yes| E["Amazon DevOps Guru"]
+    F["Extracting structured facts<br/>from clinical/medical text?"] -->|Yes| G["Amazon Comprehend Medical"]
+    H["Healthcare data needing<br/>FHIR-standard storage +<br/>built-in ML extraction?"] -->|Yes| I["Amazon HealthLake"]
+```
+
+- **Amazon Lex** — builds structured, intent-and-slot conversational interfaces (a defined set of
+  recognizable user goals, each with specific required information to collect) — the right choice
+  when a conversation's shape is predictable and definable in advance, in direct contrast to an
+  open-ended Bedrock-powered chatbot.
+- **Amazon DevOps Guru** — ML-powered operational anomaly detection across CloudWatch metrics,
+  logs, and AWS Config data, learning an application's own normal behavior automatically rather
+  than requiring a human to pre-define every failure threshold — the answer whenever a scenario
+  describes catching an *unknown-unknown* operational issue, as opposed to a known metric
+  crossing a defined number (a standard CloudWatch Alarm's job).
+- **Amazon Comprehend Medical** — specialized NLP entity extraction for clinical/medical text
+  specifically (medications, dosages, conditions, procedures, PHI) — distinct from general
+  Amazon Comprehend, which isn't tuned for clinical-language nuance.
+- **Amazon HealthLake** — a managed, FHIR-standard-compliant healthcare data store with built-in
+  ML-powered insight extraction (using Comprehend Medical internally) — the answer whenever a
+  scenario needs both standards-based healthcare interoperability *and* automated structured-data
+  extraction from clinical documents in the same system.
+
+![Enabling Amazon DevOps Guru](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/images/devops-guru-enable-create.png)
+
+*Figure: the real DevOps Guru console enablement flow — once turned on for a defined resource
+scope, it begins learning that scope's normal operational pattern with zero manual threshold
+configuration, in direct contrast to a CloudWatch Alarm which always requires a human-defined
+number. Source: AWS Aurora User Guide's DevOps Guru integration section —
+docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/.*
 
 ## NEW skill 4.1.5 — Monitoring and automating agent performance and coordination
 
@@ -317,7 +380,30 @@ The cost-tracking branch is worth calling out explicitly: unlike a SageMaker end
 per-instance-hour billing, Bedrock's GenAI costs are billed per-token (input and output tokens
 separately, often at different rates) and per-Guardrails-filtered-unit — a fundamentally
 different cost shape that Cost Explorer surfaces differently and that `ml-cost-optimization.md`
-treats as its own category, not just "more compute cost."
+treats as its own category, not just "more compute cost." The full six-category breakdown (adding
+embedding computation and vector database storage as two further distinct categories beyond the
+token/Guardrails split shown above) is covered in full, with a worked multi-stage cost-spike
+investigation, in `finops-for-ml-token-cost-tracking.md`.
+
+### A fourth diagram — catching a cost spike before it crosses any fixed threshold
+
+```mermaid
+flowchart TD
+    A["Daily AWS spend,<br/>tracked automatically"] --> B["AWS Cost Anomaly Detection:<br/>ML model learns the<br/>account's own normal<br/>day-to-day pattern"]
+    B --> C{"Today's spend<br/>statistically unusual<br/>vs. learned pattern?"}
+    C -->|No| D["No alert — this is<br/>within normal variation"]
+    C -->|Yes| E["Anomaly alert, WITH<br/>root-cause service<br/>attribution included"]
+    E --> F["Investigated same day,<br/>often before it would<br/>cross any fixed AWS<br/>Budget dollar threshold"]
+```
+
+![AWS Cost Anomaly Detection dashboard](https://docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/images/ca_demo.png)
+
+*Figure: a real Cost Anomaly Detection-powered dashboard surfacing flagged spend anomalies with
+root-cause service attribution — the practical mechanism behind the fourth diagram above, and the
+direct complement to AWS Budgets: Budgets needs a human to have already guessed the right dollar
+threshold, while Anomaly Detection needs no such guess, learning what "normal" looks like from the
+account's own history instead. Source: AWS Cloud Intelligence Dashboards guidance, "Cost Anomaly
+Dashboard" — docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/cost-anomaly-dashboard.html.*
 
 ## Full worked case study — operating a live lending-risk model under regulatory scrutiny
 
@@ -497,15 +583,33 @@ Bedrock API key nobody thought to scope down (also outer ring, but the less-obvi
     model is biased"** → deeper conditional analysis (e.g., comparing outcomes within the same
     income/credit-history bracket across groups) rather than either dismissing the finding or
     assuming bias without further investigation — a nuanced, frequently tested scenario shape.
-14. **"GenAI token costs are rising month over month with no corresponding increase in user
+16. **"GenAI token costs are rising month over month with no corresponding increase in user
     traffic"** → investigate prompt length/context growth (e.g., a RAG pipeline retrieving more
     or larger chunks than necessary, or a conversation history growing unbounded) as the likely
     cause, since GenAI cost scales with tokens processed, not simply request count.
-15. **"A company needs proof, for an audit, of exactly which IAM principal accessed a specific
+17. **"A company needs proof, for an audit, of exactly which IAM principal accessed a specific
     piece of training data and when"** → AWS CloudTrail's access logging (not a Domain-4-specific
     tool, but the general AWS audit-trail mechanism), paired with S3 access logging/Macie for
     data-classification context — a reminder that Domain 4 security questions sometimes reach
     into general AWS security services covered more fully in SAA-C03/SCS-C02 territory.
+18. **"A team wants to catch an unusual GenAI spend pattern the same day it starts, without
+    presetting a dollar figure"** → AWS Cost Anomaly Detection, scoped to the Bedrock service or
+    the specific project tag — not a Budget, which requires a human-defined threshold set in
+    advance.
+19. **"A chatbot's Guardrails configuration was edited for testing, and production behavior
+    changed unexpectedly the same day"** → production was very likely pointed at the mutable
+    working draft rather than a specific published Guardrail version number — see
+    `bedrock-guardrails-deep-dive.md`'s versioning discipline.
+20. **"A GenAI feature's bill spiked sharply while conversation volume stayed essentially flat,
+    and the team's first instinct is to investigate prompt length"** → check embedding-computation
+    and vector-storage cost categories first — a one-time re-indexing event or ongoing corpus
+    growth, not conversation-level token usage, is a common and easily overlooked alternative
+    cause; see `finops-for-ml-token-cost-tracking.md`'s worked example.
+21. **"A security review finds one shared IAM execution role attached to every training job
+    across five unrelated teams, and each individual job works correctly"** → this is the
+    classic least-privilege violation the exam tests regardless of whether anything currently
+    "works" — the fix is splitting into per-team or per-job scoped roles, detailed with real
+    policy JSON in `iam-least-privilege-ml-pipelines.md`.
 
 ## Security in depth — the three controls, concretely applied to ML workloads
 
@@ -533,6 +637,26 @@ ML-specific wrinkle explicitly:
   customer-managed key gives the organization its own key policy, access logging, and the
   ability to revoke/rotate independently of AWS, which a default key does not.
 
+## Quick Decision Matrix — Domain 4's Most-Tested Phrase-to-Mechanism Pairings
+
+| Scenario phrase | Mechanism |
+|---|---|
+| "Input distributions shifted, no mention of labels" | Data drift (Model Monitor Data Quality) |
+| "Accuracy against fresh labels is falling" | Concept drift (Model Monitor Model Quality) |
+| "Training job, flexible deadline, resumable" | Managed Spot Training |
+| "Always-on, steady, predictable traffic" | Real-time endpoint + Savings Plan |
+| "Bursty, mostly idle" | Serverless Inference |
+| "Must never transit the public internet" | VPC private subnet, no IGW/NAT route |
+| "Even AWS must not decrypt this" | KMS customer-managed key |
+| "Cap what one self-service role can grant" | IAM permissions boundary |
+| "Refuse a topic regardless of rephrasing" | Bedrock Guardrails denied topics |
+| "Why was THIS prediction made" | SageMaker Clarify SHAP explainability |
+| "Alert with no preset dollar threshold" | AWS Cost Anomaly Detection |
+| "GenAI bill up, traffic flat" | Six-category cost breakdown before diagnosing |
+
+*A much larger, 30-row version of this matrix plus a full troubleshooting decision tree live in
+`MASTER-CHUNK.md`'s Sections 11.3-11.4.*
+
 ## Related Terms
 
 - [`../domain-3-deployment-orchestration/README.md`](../domain-3-deployment-orchestration/README.md)
@@ -543,7 +667,14 @@ ML-specific wrinkle explicitly:
   detected here often traces back to an upstream change in that domain's pipelines.
 - [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md)
   — Guardrails is one Bedrock feature; this domain covers its operational/responsible-AI role.
-- [`ml-cost-optimization.md`](ml-cost-optimization.md) and
-  [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md) — this domain's two
-  dedicated topic docs, full depth.
+- [`ml-cost-optimization.md`](ml-cost-optimization.md),
+  [`responsible-ai-and-guardrails.md`](responsible-ai-and-guardrails.md),
+  [`model-drift-deep-dive.md`](model-drift-deep-dive.md),
+  [`iam-least-privilege-ml-pipelines.md`](iam-least-privilege-ml-pipelines.md),
+  [`bedrock-guardrails-deep-dive.md`](bedrock-guardrails-deep-dive.md), and
+  [`finops-for-ml-token-cost-tracking.md`](finops-for-ml-token-cost-tracking.md) — this domain's
+  dedicated topic docs, each going deeper on one specific sub-topic than this README's summary
+  level.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — the standalone, full-depth reference covering all ten of
+  this domain's services/topics in one file.
 - [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).

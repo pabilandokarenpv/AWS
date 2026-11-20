@@ -20,6 +20,8 @@ below for anything that needs real ML compute.*
 | 8 | PII detection and masking/redaction | Microsoft Presidio | Task 1.2.8 — mask/redact/anonymize |
 | 9 | Outlier detection + near-duplicate text detection | scipy, datasketch (MinHash) | Task 1.3.7 — clean data |
 | 10 | Build + validate FM fine-tuning prompt-completion pairs | plain Python, jsonschema | Task 1.2.9 / 1.3.6 — FM data prep & integrity |
+| 11 | Feature engineering: encoding, scaling, interaction features | pandas, scikit-learn | Task 1.2 — feature engineering deep dive |
+| 12 | Multimodal ingestion: OCR + transcription + image embeddings | pytesseract, SpeechRecognition, sentence-transformers | Task 1.1.8 / 1.2.5 — multimodal data prep |
 
 ## Lab 1 — What Floci can do here
 
@@ -365,6 +367,149 @@ print("Wrote validated fine-tuning dataset: fine_tune_data.jsonl")
 This deliberately reproduces both failure modes task statement 1.3.6 names — an empty/malformed
 pair and an exact-duplicate pair — so you can see a validation script catch them *before* they'd
 silently degrade a real Bedrock or SageMaker JumpStart fine-tuning job's quality.
+
+## Lab 11 — Feature engineering: encoding, scaling, and interaction features
+
+```bash
+pip install pandas scikit-learn
+```
+
+```python
+import pandas as pd
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+
+df = pd.DataFrame({
+    "customer_id": range(1, 7),
+    "age": [25, 42, 68, 31, 55, 90],
+    "annual_income": [45000, 120000, 38000, 95000, 210000, 31000],
+    "contract_type": ["month", "two-year", "month", "one-year", "two-year", "month"],
+})
+
+# 1. Standard (z-score) scaling -- puts age and income on a comparable scale
+scaler = StandardScaler()
+df[["age_scaled", "income_scaled"]] = scaler.fit_transform(df[["age", "annual_income"]])
+print("Scaled age/income (mean 0, std 1):")
+print(df[["age", "age_scaled", "annual_income", "income_scaled"]])
+
+# 2. One-hot encoding -- contract_type has no natural order, so one-hot avoids implying one
+encoded = pd.get_dummies(df["contract_type"], prefix="contract")
+df = pd.concat([df, encoded], axis=1)
+
+# 3. Interaction feature -- income per year of age, a ratio neither raw column exposes alone
+df["income_per_age_year"] = df["annual_income"] / df["age"]
+
+print("\nFinal engineered feature table:")
+print(df[["customer_id", "age_scaled", "income_scaled", "contract_month",
+          "contract_one-year", "contract_two-year", "income_per_age_year"]])
+```
+
+Run this and confirm the scaled columns have roughly mean 0 — this is the exact standard-scaling
+mechanic `feature-engineering-deep-dive.md`'s Worked Example 2 walks through by hand with real
+numbers; here it's the same math, computed by a library instead of arithmetic on paper.
+
+**Extension — target encoding with k-fold leakage avoidance (the real, leak-free version):**
+
+```python
+from sklearn.model_selection import KFold
+import numpy as np
+
+# Simulate a high-cardinality categorical column + a binary label
+np.random.seed(0)
+n = 200
+df2 = pd.DataFrame({
+    "zip_code": np.random.choice([f"Z{i}" for i in range(40)], n),
+    "churned": np.random.binomial(1, 0.2, n),
+})
+
+def kfold_target_encode(frame, cat_col, target_col, n_splits=5):
+    frame = frame.copy()
+    frame[f"{cat_col}_te"] = np.nan
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+    for train_idx, val_idx in kf.split(frame):
+        means = frame.iloc[train_idx].groupby(cat_col)[target_col].mean()
+        frame.loc[frame.index[val_idx], f"{cat_col}_te"] = (
+            frame.iloc[val_idx][cat_col].map(means)
+        )
+    # Fill any category unseen in a given fold's training split with the overall mean
+    overall_mean = frame[target_col].mean()
+    frame[f"{cat_col}_te"] = frame[f"{cat_col}_te"].fillna(overall_mean)
+    return frame
+
+encoded_df = kfold_target_encode(df2, "zip_code", "churned")
+print("\nk-fold target-encoded zip_code (leak-free):")
+print(encoded_df.head(10))
+```
+
+This reproduces the exact leakage-avoidance mechanic `feature-engineering-deep-dive.md`'s Worked
+Example 1 describes in prose — each row's encoded value is computed only from *other* folds'
+data, never including that row's own label, the real fix for the "unrealistically high validation
+accuracy that collapses on fresh data" symptom that naive full-dataset target encoding produces.
+
+## Lab 12 — Multimodal ingestion: OCR, speech-to-text, and image embeddings locally
+
+```bash
+pip install pytesseract pillow SpeechRecognition sentence-transformers
+# pytesseract also requires the Tesseract OCR binary installed separately:
+#   macOS: brew install tesseract   |   Ubuntu: sudo apt install tesseract-ocr
+```
+
+```python
+# Stand-in for Amazon Textract: local OCR on an image containing text
+from PIL import Image, ImageDraw, ImageFont
+import pytesseract
+
+# Create a simple synthetic "scanned form" image with text, for a reproducible local demo
+img = Image.new("RGB", (400, 100), color="white")
+draw = ImageDraw.Draw(img)
+draw.text((10, 40), "Tracking Number: 1Z999AA10123456784", fill="black")
+img.save("sample_form.png")
+
+extracted_text = pytesseract.image_to_string(Image.open("sample_form.png"))
+print("OCR-extracted text (Textract stand-in):", extracted_text.strip())
+```
+
+```python
+# Stand-in for Amazon Transcribe: local speech-to-text on a short audio clip
+# (requires a real .wav file in practice; this shows the exact API shape)
+import speech_recognition as sr
+
+recognizer = sr.Recognizer()
+# with sr.AudioFile("sample_call.wav") as source:
+#     audio = recognizer.record(source)
+# transcript = recognizer.recognize_google(audio)
+# print("Transcribed text (Transcribe stand-in):", transcript)
+print("(Swap in a real .wav file to see this produce a real transcript locally,")
+print(" using the exact same chunk-after-transcribe pattern Transcribe uses on AWS.)")
+```
+
+```python
+# Stand-in for a multimodal embedding model: embedding both the OCR'd text AND
+# a plain-text description into the SAME vector space, to search across both
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+sources = {
+    "ocr_tracking_number": extracted_text.strip(),
+    "typed_complaint": "My package with tracking 1Z999AA10123456784 never arrived.",
+    "unrelated_ticket": "How do I reset my account password?",
+}
+embeddings = {k: model.encode(v) for k, v in sources.items()}
+
+query = "Where is my shipment with that tracking number?"
+q_emb = model.encode(query)
+
+for name, emb in embeddings.items():
+    similarity = np.dot(q_emb, emb) / (np.linalg.norm(q_emb) * np.linalg.norm(emb))
+    print(f"Similarity to '{name}': {similarity:.3f}")
+```
+
+Run this and confirm the query scores highest against `typed_complaint` and `ocr_tracking_number`
+(both genuinely about the shipment) and lowest against `unrelated_ticket` — this is the exact
+"OCR'd text and native text land in the same searchable space" mechanic
+`multimodal-data-ingestion-patterns.md`'s Worked Pipeline 1 describes, reproduced locally with a
+free embedding model standing in for Bedrock Titan Embeddings and a real (if synthetic) OCR step
+standing in for Textract.
 
 ## What Floci can NOT do (and the real alternative)
 

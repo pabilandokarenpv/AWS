@@ -33,6 +33,24 @@ this question" becomes "what dots are closest to the question's own coordinates 
 — nothing more exotic than that, even though the real map has hundreds of dimensions instead of
 two.
 
+## More analogies — grounding every piece of this pipeline in plain language
+
+- **Chunking** is like cutting a long book into index cards before building a card catalog —
+  one card per idea, not one card per book, so a search can point you to the *one page* that
+  matters instead of handing you the entire book every time.
+- **Embedding model** is like a translator who converts every sentence into GPS coordinates on a
+  shared "meaning map" — any two sentences close together on that map mean roughly the same
+  thing, regardless of the exact words used.
+- **Vector store** is the filing cabinet holding those coordinates, built specifically to answer
+  "what's near this point," the way a real filing cabinet is built to answer "what's in drawer
+  B-14," a fundamentally different kind of lookup.
+- **Top-K retrieval** is like asking a librarian for "the 5 books most relevant to this question"
+  instead of "the one book whose title exactly matches this question" — it tolerates imprecise
+  phrasing the way exact keyword search cannot.
+- **Re-ranking** is a second, pickier librarian who looks at the first librarian's 20 candidate
+  books and narrows them to the 5 that are *actually* most useful, catching cases where "closest
+  on the map" didn't perfectly mean "most useful for this specific question."
+
 ## Purpose
 
 Foundation models (the large pretrained models behind Bedrock, ChatGPT-style assistants, etc.)
@@ -159,6 +177,39 @@ it has no ability to call an external system. An Agent is the layer that can com
 Base lookup *and* a live API call (like checking real order status) into one multi-step answer.
 A scenario describing only "answer questions from our documents" is Knowledge Bases; a scenario
 describing "also take an action or look up live system state" needs an Agent on top.
+
+### A third diagram and image — chunking strategies, compared side by side
+
+Chunking strategy is named as its own task statement (1.2.7) precisely because getting it wrong
+silently degrades retrieval quality without raising any error — worth seeing the three common
+strategies side by side rather than just as a prose list:
+
+```mermaid
+flowchart TD
+    DOC[("Source document:<br/>a 10-page return policy")] --> S1["Fixed-size chunking<br/>every 400 tokens,<br/>no regard for structure"]
+    DOC --> S2["Sentence/paragraph-based<br/>chunking: split at natural<br/>language boundaries"]
+    DOC --> S3["Semantic chunking:<br/>split where an embedding<br/>model detects a topic shift"]
+    S1 --> R1["Risk: cuts a table or<br/>numbered list mid-structure"]
+    S2 --> R2["Risk: paragraph length varies<br/>widely, some chunks too short"]
+    S3 --> R3["Risk: most compute-expensive;<br/>requires running an embedding<br/>model just to decide chunk boundaries"]
+```
+
+The exam-relevant takeaway: there is no universally "best" chunking strategy — **fixed-size** is
+the simplest and cheapest but blind to document structure (the classic failure: cutting a table
+or numbered list in half, producing an unusable chunk); **sentence/paragraph-based** respects
+natural boundaries but produces inconsistent chunk sizes; **semantic chunking** produces the most
+coherent chunks but costs extra compute to compute topic-shift boundaries in the first place. A
+scenario naming "content with tables and code blocks being split in half" is pointing at switching
+away from naive fixed-size chunking, specifically toward a structure-aware or semantic strategy.
+
+![Pre-processing data for retrieval-augmented generation](https://docs.aws.amazon.com/bedrock/latest/userguide/images/kb/rag-preprocess.png)
+
+*Figure: AWS's own illustration of the pre-processing (indexing) half of RAG, reproduced here
+again for quick reference alongside the chunking-strategy comparison above — documents are
+chunked, converted to embeddings, and written to a vector index while keeping a pointer back to
+the original document. Source: Amazon Bedrock User Guide, "How Amazon Bedrock knowledge bases
+work" — docs.aws.amazon.com/bedrock/latest/userguide/kb-how-it-works.html. Verified live via
+`curl -o /dev/null -w "%{http_code}"` → `200`.*
 
 ## Key Features / Components
 
@@ -456,8 +507,37 @@ specific internal schema for every response, regardless of what's asked." *Answe
 (or strict prompt engineering with output validation) — this is a behavior/format requirement,
 not a factual-grounding requirement, so RAG alone doesn't solve it.
 
+**Scenario 5 (classic ML + GenAI crossover):** "A retailer's data science team has a classic
+churn-prediction model feeding SageMaker Feature Store, and separately a support chatbot using
+RAG over policy documents. Leadership asks whether the chatbot should also use Feature Store for
+its 'knowledge' instead of a vector store." *Answer:* no — Feature Store is built for numeric/
+categorical *features* feeding a model's training and real-time inference, not for storing and
+retrieving semantically-searchable unstructured text; the chatbot's document-grounding need is
+categorically a RAG/vector-store problem, and conflating the two store types is exactly the kind
+of "classic ML tool applied to a GenAI problem" trap the exam's cross-domain questions test.
+
+**Scenario 6:** "A pharmaceutical company's RAG assistant over clinical trial documents retrieves
+noticeably worse results than a nearly identical assistant built over general news articles,
+using the same embedding model and chunk size." *Answer:* investigate tokenizer fragmentation of
+domain-specific drug/compound names before assuming the retrieval architecture itself is broken —
+a general-purpose tokenizer can badly over-fragment unfamiliar technical vocabulary, diluting how
+precisely those terms are represented in the resulting embeddings, a real and diagnosable cause
+distinct from a chunking or vector-store configuration problem.
+
+**Scenario 7:** "A company's RAG pipeline embeds an entire 50-page product manual as a single
+chunk, and the chatbot's answers are vague and generic even for very specific questions."
+*Answer:* the chunk is far too large — a single 50-page chunk's embedding represents an averaged,
+diluted blend of every topic in the manual, so no specific question's embedding will land
+precisely close to it; the fix is re-chunking into much smaller passages (hundreds of tokens, not
+tens of thousands), directly the chunk-size tradeoff this document names repeatedly.
+
 ## Related Terms
 
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md#4-amazon-bedrock) — the Bedrock section of this domain's
+  standalone single-file reference, covering RAG at summary depth alongside the other 10 services.
+- [`multimodal-data-ingestion-patterns.md`](multimodal-data-ingestion-patterns.md) — the
+  dedicated deep dive on getting non-text content (images, audio) into the same pipeline this
+  document describes for text.
 - [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md)
   — foundation models, Knowledge Bases, Agents.
 - [`services/analytics/opensearch.md`](../../../services/analytics/opensearch.md) — one of the

@@ -18,6 +18,9 @@ of paid SageMaker infrastructure.*
 | 6 | A minimal local Model Registry | MLflow or a CSV stand-in | Task 2.4 |
 | 7 | Compute BLEU, ROUGE, and BERTScore on real generated text | `evaluate`, `rouge-score`, `bert-score` | Task 2.3.8 — NLP eval metrics |
 | 8 | A local LLM-as-a-judge evaluation harness | Hugging Face `transformers` | Task 2.3.9 — AI evaluation |
+| 9 | Head-to-head algorithm comparison (linear vs. tree ensemble) | scikit-learn | Task 2.1 — algorithm selection |
+| 10 | Bias-variance decomposition, proven by resampling | scikit-learn, NumPy | Task 2.3 — bias-variance |
+| 11 | Retrieval evaluation: Precision@K / Recall@K on a toy RAG corpus | scikit-learn (cosine similarity) | Task 2.3.10 — RAG monitoring |
 
 ## Lab 1 — What Floci can do here
 
@@ -290,6 +293,133 @@ rewriting the rubric to specifically score for *bias* (e.g., "does this response
 customer respectfully regardless of how they phrased their complaint") to practice the bias-
 detection variant of the same technique.
 
+## Lab 9 — Head-to-head algorithm comparison: proving the linear-vs-tree-ensemble gap yourself
+
+```bash
+pip install scikit-learn
+```
+
+```python
+import time
+from sklearn.datasets import load_breast_cancer, make_classification
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import roc_auc_score
+
+def compare(X, y, label):
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+    for name, model in [("Logistic Regression", LogisticRegression(max_iter=5000)),
+                        ("Gradient Boosting", GradientBoostingClassifier(random_state=42))]:
+        t0 = time.time()
+        model.fit(X_train, y_train)
+        auc = roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
+        print(f"[{label}] {name}: AUC={auc:.4f}  train_time={time.time()-t0:.3f}s")
+
+# Dataset 1: close to linearly separable (real breast cancer measurements)
+X1, y1 = load_breast_cancer(return_X_y=True)
+compare(X1, y1, "near-linear data")
+
+# Dataset 2: deliberately non-linear interactions baked in
+X2, y2 = make_classification(n_samples=2000, n_features=20, n_informative=15,
+                               n_redundant=5, flip_y=0.03, class_sep=0.6, random_state=7)
+compare(X2, y2, "non-linear data")
+```
+
+Run this once and you should see logistic regression win (or tie) on the near-linear dataset
+while gradient boosting wins by several AUC points on the non-linear dataset — the exact reversal
+`algorithm-selection-decision-framework.md`'s head-to-heads #1/#2 describe, reproduced on your own
+machine rather than trusted from a table. This is the fastest way to internalize that "XGBoost is
+the default tabular baseline" is conditional on the data's actual shape, not an unconditional law.
+
+## Lab 10 — Bias-variance decomposition, proven by resampling
+
+```python
+import numpy as np
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LinearRegression
+
+np.random.seed(0)
+
+def true_function(x):
+    return np.sin(x * 1.5) * 3
+
+def make_sample(n=30):
+    x = np.random.uniform(0, 4, n)
+    y = true_function(x) + np.random.normal(0, 0.5, n)
+    return x.reshape(-1, 1), y
+
+x_test = np.linspace(0, 4, 50).reshape(-1, 1)
+y_true_test = true_function(x_test).ravel()
+
+def bias_variance(model_factory, n_trials=200):
+    preds = np.zeros((n_trials, len(x_test)))
+    for i in range(n_trials):
+        x_train, y_train = make_sample()
+        model = model_factory()
+        model.fit(x_train, y_train)
+        preds[i] = model.predict(x_test)
+    mean_pred = preds.mean(axis=0)
+    bias_sq = np.mean((mean_pred - y_true_test) ** 2)
+    variance = np.mean(preds.var(axis=0))
+    return bias_sq, variance
+
+for name, factory in [
+    ("Linear Regression", lambda: LinearRegression()),
+    ("Decision Tree (depth=2)", lambda: DecisionTreeRegressor(max_depth=2)),
+    ("Decision Tree (unlimited)", lambda: DecisionTreeRegressor(max_depth=None)),
+]:
+    bias_sq, var = bias_variance(factory)
+    print(f"{name}: bias^2={bias_sq:.4f}  variance={var:.4f}  total={bias_sq+var:.4f}")
+```
+
+Running this reproduces `bias-variance-tradeoff-and-regularization.md`'s exact experiment: the
+unconstrained tree should show near-zero bias but very high variance, plain linear regression
+the opposite, and the depth-2 tree the lowest *total* error of the three — direct, hands-on proof
+that neither extreme wins and the best model sits at a deliberately moderate complexity.
+
+## Lab 11 — Retrieval evaluation: computing Precision@K and Recall@K on a toy corpus
+
+```bash
+pip install scikit-learn sentence-transformers
+```
+
+```python
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+corpus = [
+    "Our return policy allows returns within 30 days of purchase.",      # relevant (0)
+    "We offer free shipping on orders over $50.",                         # not relevant
+    "Returned items must be in original, unworn condition.",              # relevant (2)
+    "Our customer support hours are 9am-5pm EST, Monday through Friday.", # not relevant
+    "Refunds for returned items are issued within 5-7 business days.",   # relevant (4)
+]
+relevant_ids = {0, 2, 4}  # ground truth for this query, decided by a human reviewer
+query = "How long do I have to return a product and when do I get my money back?"
+
+corpus_emb = model.encode(corpus)
+query_emb = model.encode([query])[0]
+
+sims = corpus_emb @ query_emb / (np.linalg.norm(corpus_emb, axis=1) * np.linalg.norm(query_emb))
+ranked = np.argsort(-sims)
+
+for k in [2, 3, 5]:
+    top_k = set(ranked[:k])
+    hits = len(top_k & relevant_ids)
+    precision_k = hits / k
+    recall_k = hits / len(relevant_ids)
+    print(f"K={k}: retrieved={list(top_k)} Precision@{k}={precision_k:.3f} Recall@{k}={recall_k:.3f}")
+```
+
+This reproduces `evaluation-metrics-deep-dive.md`'s Part 7 Precision@K/Recall@K arithmetic against
+a real embedding model instead of a hand-picked ranking — run it, then deliberately add a sixth,
+near-duplicate "noise" document to the corpus and re-run to see Precision@K degrade exactly the
+way `README.md`'s retrieval-optimization section describes a noisy corpus hurting retrieval
+quality in production.
+
 ## What Floci can NOT do (and the real alternative)
 
 | Need | Floci? | Use instead |
@@ -353,3 +483,10 @@ detection variant of the same technique.
   grid search while trying far fewer combinations?
 - Can you explain in one sentence why Lab 5's few-shot prompt is a legitimate alternative to
   fine-tuning when only a handful of labeled examples are available?
+- Can you predict, before running Lab 9, which dataset (near-linear or non-linear) logistic
+  regression will win on, and explain why in terms of the data's actual shape rather than a
+  general algorithm ranking?
+- Can you look at Lab 10's three bias²/variance numbers and say, without re-reading the doc,
+  which model is underfitting, which is overfitting, and which sits at the best tradeoff?
+- Can you explain why Lab 11's Precision@3 and Precision@5 differ, and what that implies about
+  choosing a RAG pipeline's top-K value in production?

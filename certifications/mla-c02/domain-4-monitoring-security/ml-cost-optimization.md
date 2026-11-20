@@ -110,6 +110,49 @@ The exam-relevant point: a question describing rising GenAI costs is very often 
 you reach for "reduce tokens processed" (the actual cost driver) rather than an instance-sizing
 or Spot/Reserved answer that simply doesn't apply to token-metered billing.
 
+### A third diagram — catching a cost spike automatically, before it crosses a fixed threshold
+
+```mermaid
+flowchart TD
+    A["Daily account spend"] --> B["AWS Cost Anomaly Detection:<br/>ML model learns the<br/>account's own normal pattern"]
+    B --> C{"Today's spend<br/>statistically unusual?"}
+    C -->|No| D["No alert"]
+    C -->|Yes| E["Alert WITH root-cause<br/>service attribution,<br/>same day"]
+    F["AWS Budgets"] --> G{"Spend crosses a<br/>human-defined dollar<br/>threshold?"}
+    G -->|Yes| H["Alert — but only once<br/>cumulative spend reaches<br/>the pre-set number"]
+```
+
+![AWS Cost Anomaly Detection dashboard](https://docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/images/ca_demo.png)
+
+*Figure: a real Cost Anomaly Detection dashboard flagging spend anomalies with root-cause service
+attribution automatically, with no pre-set dollar threshold required at all — directly contrasted
+with AWS Budgets (which requires a human to have already guessed the right number) in the diagram
+above. For ML/GenAI spend specifically, this is the mechanism that catches a token-cost or
+training-job-frequency spike the same day it starts, rather than at month-end when the invoice
+arrives. Source: AWS Cloud Intelligence Dashboards guidance, "Cost Anomaly Dashboard" —
+docs.aws.amazon.com/guidance/latest/cloud-intelligence-dashboards/cost-anomaly-dashboard.html.*
+
+- **Scoping an Anomaly Detection monitor to ML/GenAI spend specifically** — rather than one
+  account-wide monitor, a monitor scoped to the `Amazon SageMaker` or `Amazon Bedrock` service (or
+  to a specific project's cost allocation tag) catches an ML-specific spike without it being
+  diluted or hidden inside a much larger, noisier account-wide total.
+- **The complementary relationship with AWS Budgets** — Budgets answers "are we about to exceed a
+  number we defined"; Anomaly Detection answers "is something behaving unusually relative to our
+  own history, regardless of whether any fixed number has been crossed yet" — a mature cost-
+  management setup for ML workloads typically runs both simultaneously, not one instead of the
+  other.
+
+## The Six-Category GenAI Cost Taxonomy — a Preview
+
+Beyond the single token/Guardrails split shown in the second diagram above, a full production
+GenAI pipeline's cost actually splits into **six** separable categories once embedding computation
+and vector database storage are counted as their own distinct lines: training compute, inference
+compute (classic endpoints), inference tokens, embedding computation, vector database storage, and
+Guardrails filtering. Conflating these six into one "AI cost" number is exactly what hides the
+real driver of a cost spike — a full worked example tracing a real cost-spike investigation
+through all six categories, plus the cost-allocation-tagging scheme that makes the breakdown
+possible in practice, is in [`finops-for-ml-token-cost-tracking.md`](finops-for-ml-token-cost-tracking.md).
+
 ## NEW skill 4.2.7 — Evaluating cost implications of FM inference in production
 
 **Plain English:** before and after launching a GenAI feature, cost has to be actually projected
@@ -348,6 +391,25 @@ Provisioned Throughput, since six months of steady, predictable usage is exactly
 level needed to justify a throughput commitment — contrast with Scenario 3's brand-new, unvalidated
 workload, where committing early would have been premature.
 
+**Scenario 5:** "A team wants to be alerted to an unusual AWS spend pattern automatically, as
+early as possible, without having to guess and pre-set a specific dollar threshold." *Answer:*
+AWS Cost Anomaly Detection, scoped to the specific service (SageMaker or Bedrock) or project tag
+of concern — distinct from AWS Budgets, which requires a human-defined threshold decided in
+advance.
+
+**Scenario 6:** "A RAG-based legal-document assistant's monthly bill doubles even though the
+number of user conversations rose only slightly." *Answer:* don't default to a tokens/prompt-
+length investigation — check the full six-category breakdown first (training, inference compute,
+inference tokens, embedding, vector storage, Guardrails); a one-time full-corpus re-embedding
+event is a common, easily-overlooked alternative cause covered in full in
+`finops-for-ml-token-cost-tracking.md`'s worked example.
+
+**Scenario 7:** "A multi-step agent's cost per user interaction is consistently several times a
+single model call's list price." *Answer:* this is expected baseline behavior for an agentic
+workflow (planning + tool calls + synthesis each bill separately), not necessarily a problem —
+investigate further only if AgentCore Observability traces reveal an unexpected re-planning loop
+inflating the call count beyond what the workflow's design intends.
+
 ## Full worked case study — a SaaS analytics company right-sizing its ML spend
 
 **The business problem:** "DataPulse," a B2B analytics SaaS company, runs (1) a nightly
@@ -426,8 +488,16 @@ category a given cost problem falls into is exactly the judgment this task state
 - [`services/machine-learning-ai/bedrock.md`](../../../services/machine-learning-ai/bedrock.md) —
   Provisioned Throughput and per-token pricing mechanics in full depth.
 - [`services/management-governance/cost-management-tools.md`](../../../services/management-governance/cost-management-tools.md)
-  — general AWS cost tracking (Cost Explorer, Budgets) underneath all of this.
+  — general AWS cost tracking (Cost Explorer, Budgets, Cost Anomaly Detection) underneath all of
+  this.
+- [`finops-for-ml-token-cost-tracking.md`](finops-for-ml-token-cost-tracking.md) — the full
+  six-category GenAI cost taxonomy, cost-allocation tagging scheme, and a complete worked
+  cost-spike investigation this doc's Cost Anomaly Detection section and six-category preview
+  build toward.
 - [`../domain-3-deployment-orchestration/README.md`](../domain-3-deployment-orchestration/README.md)
   — the inference-option decision that this document's cost levers attach to.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — Section 1 (Cost Management Tools), Section 10 (SageMaker
+  Training & Tuning), and Section 15's pricing-model table cover this same ground as part of the
+  full ten-service standalone reference.
 - [`labs.md`](labs.md) — the hands-on exercise reproducing this document's drift/cost decision
   logic with real, runnable code.

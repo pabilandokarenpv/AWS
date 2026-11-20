@@ -56,7 +56,7 @@ is really "what do you do once you've picked one of those two branches."
   — if the sub-service docs above feel disconnected, this umbrella document shows how training,
   tuning, registry, and deployment chain together across the whole SageMaker lifecycle.
 
-## New topic doc for this domain
+## New topic docs for this domain
 
 - **[`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md)** — the foundational ML
   vocabulary (epoch, batch, overfitting/underfitting, bias-variance tradeoff, regularization,
@@ -64,6 +64,25 @@ is really "what do you do once you've picked one of those two branches."
   are algorithm-agnostic and service-agnostic — they don't belong inside any single SageMaker doc
   — but they are the single most heavily tested *conceptual* knowledge in this domain, so they
   get a dedicated, plain-English-first doc.
+- **[`algorithm-selection-decision-framework.md`](algorithm-selection-decision-framework.md)** —
+  a full decision tree plus real head-to-head numeric comparisons (XGBoost vs. linear regression,
+  XGBoost vs. logistic regression, K-Means cluster-count selection, Isolation Forest vs.
+  supervised fraud detection) for choosing an algorithm family given a described problem and data
+  shape — the "which built-in algorithm" diagram below, expanded into full worked proof.
+- **[`evaluation-metrics-deep-dive.md`](evaluation-metrics-deep-dive.md)** — full numeric
+  derivations beyond the glossary's single worked example: threshold sweeps and ROC/PR curve
+  mechanics, multi-class confusion matrices, RMSE vs. MAE outlier sensitivity proven by hand,
+  cross-entropy/log-loss arithmetic, calibration, and BLEU n-gram precision computed by hand.
+- **[`hyperparameter-tuning-strategies.md`](hyperparameter-tuning-strategies.md)** — grid vs.
+  random vs. Bayesian search with real job-count and compute-cost arithmetic, Hyperband, warm
+  start, and the distinction between early stopping *inside training* vs. *inside tuning*.
+- **[`rag-vs-finetuning-vs-prompting-decision-tree.md`](rag-vs-finetuning-vs-prompting-decision-tree.md)**
+  — the full four-way customization decision tree (adding pre-training-from-scratch as the
+  fourth, almost-always-wrong option), with a cost/time/data ladder and four fully worked
+  scenarios.
+- **[`bias-variance-tradeoff-and-regularization.md`](bias-variance-tradeoff-and-regularization.md)**
+  — the formal bias²+variance+irreducible-error decomposition proven with a real resampling
+  experiment, plus L1/L2/dropout/early-stopping/data-augmentation each demonstrated numerically.
 
 ## NEW skill 2.1.1 — Evaluating and selecting foundation models from Amazon Bedrock
 
@@ -266,7 +285,69 @@ flowchart LR
 
 The exam-relevant point this diagram makes explicit: **prompt engineering is always the cheapest
 lever to try first**, before reaching for RAG or fine-tuning — a scenario that hasn't mentioned
-attempting better prompting yet shouldn't be assumed to need the heavier-weight fix.
+attempting better prompting yet shouldn't be assumed to need the heavier-weight fix. For the full
+four-way version of this tree (adding pre-training from scratch as the fourth, almost-always-
+wrong option) with real cost/time numbers and four fully worked scenarios, see
+[`rag-vs-finetuning-vs-prompting-decision-tree.md`](rag-vs-finetuning-vs-prompting-decision-tree.md).
+
+### A fourth diagram — the hyperparameter tuning loop itself, expanded
+
+Step 6 of the main diagram above ("Hyperparameter Tuning tries new settings") compresses a real
+decision (which search strategy, how many jobs, when to stop) into one box — worth expanding,
+since "which tuning strategy for which constraint" is tested as its own question shape:
+
+```mermaid
+flowchart TD
+    A["Define hyperparameters<br/>+ search ranges"] --> B{"How expensive is<br/>one training job?"}
+    B -->|"Cheap, small space"| C["Grid search —<br/>exhaustive, guaranteed<br/>best-within-grid"]
+    B -->|"Moderate, no hard<br/>guarantee needed"| D["Random search —<br/>good coverage,<br/>fewer jobs than grid"]
+    B -->|"Expensive, must<br/>minimize total jobs"| E["Bayesian search —<br/>learns from prior trials,<br/>most sample-efficient"]
+    C --> F["Training jobs run,<br/>one per combination"]
+    D --> F
+    E --> F
+    F --> G{"Winning value sits at<br/>the edge of its range?"}
+    G -->|Yes| H["Widen range,<br/>re-run (warm start)"]
+    G -->|No| I["Accept winning<br/>hyperparameters"]
+```
+
+**Walking it:** the strategy choice is driven almost entirely by one variable — how expensive is
+a single training job, relative to how many total jobs the budget allows — not by which strategy
+is abstractly "best." A cheap job and small search space can afford grid search's exhaustive
+guarantee; an expensive job with a tight job-count budget needs Bayesian search's sample
+efficiency. The loop doesn't end when the search finishes, either: checking whether the winning
+value landed at the edge of its searched range is a real, frequently-skipped step — a winning
+`max_depth` of 10 when the range was `[3, 10]` means the true optimum may sit *outside* the range
+tried, not that 10 is definitively best. Full job-count arithmetic proving the relative cost of
+each strategy (e.g., Bayesian search matching grid search's result at roughly a sixth of the
+total training-job count) lives in
+[`hyperparameter-tuning-strategies.md`](hyperparameter-tuning-strategies.md).
+
+![AWS console view of the individual child training jobs a SageMaker hyperparameter tuning job launches](https://docs.aws.amazon.com/sagemaker/latest/dg/images/hyperparameter-training-jobs.png)
+
+*Figure: AWS's own screenshot of where a SageMaker Automatic Model Tuning job's individual
+training jobs (one per hyperparameter combination tried) appear in the console, each with its
+own final objective-metric value — this is literally what "F" (the training-job box) in the
+diagram above produces, N times, before the tuning job picks whichever row scored best. Source:
+AWS SageMaker Developer Guide, "Configure and Launch a Hyperparameter Tuning Job" —
+docs.aws.amazon.com/sagemaker/latest/dg/automatic-model-tuning-ex-tuning-job.html.*
+
+### A fifth diagram — the algorithm-selection fork, with real numbers behind it
+
+The second diagram above ("choosing an algorithm for a from-scratch classic ML model") gives the
+decision tree's *shape*; it's worth being explicit that the tree's branches aren't arbitrary
+preferences — each one is backed by a real, reproducible performance gap. For example, running
+XGBoost-family gradient boosting against plain logistic regression on a dataset with genuine
+non-linear feature interactions produces roughly a 4-point AUC gap in gradient boosting's favor
+(0.931 vs. 0.889) — but running the *same two algorithms* on a dataset that happens to be close
+to linearly separable **reverses** the result, with logistic regression scoring higher on every
+metric (accuracy, AUC, and F1) while training over 10x faster. Full numeric proof of both
+directions, plus three more head-to-head comparisons (regression, clustering, anomaly detection),
+lives in
+[`algorithm-selection-decision-framework.md`](algorithm-selection-decision-framework.md) — the
+exam-relevant takeaway stated plainly: "XGBoost is the default tabular baseline" is a *starting
+point for an unknown relationship shape*, not an unconditional winner, and a scenario explicitly
+describing a simple/monotonic/already-understood relationship or a hard interpretability
+requirement is signaling the opposite choice.
 
 ## NEW skill 2.1.5 — Selecting RAG architecture patterns based on use case
 
@@ -431,6 +512,50 @@ already a few forks deep (e.g., "already decided to use a foundation model, alre
 fine-tuning is needed") and tests whether you can correctly navigate the *remaining* forks rather
 than re-deriving the entire decision tree from scratch every time.
 
+## A worked numeric evaluation walkthrough — extending the CraftHaven case study with real metric math
+
+The CraftHaven case study above states the team optimizes for recall at a precision floor of 0.85,
+without showing the arithmetic. Here it is, made concrete, continuing the same scenario: suppose
+the winning tuned XGBoost model, evaluated on a held-out validation set of 5,000 listings (4%
+flagged rate, matching the stated imbalance), produces this confusion matrix:
+
+| | Predicted: Flagged | Predicted: Approved |
+|---|---|---|
+| **Actually Flagged** (200 listings) | TP = 162 | FN = 38 |
+| **Actually Approved** (4,800 listings) | FP = 29 | TN = 4,771 |
+
+Computing every metric task 2.3 would expect here:
+- **Accuracy** = (162 + 4,771) / 5,000 = 4,933/5,000 = **98.66%** — looks reassuring in
+  isolation, exactly the trap the main diagram's troubleshooting entry warns about.
+- **Precision** = 162 / (162 + 29) = 162/191 ≈ **84.8%** — just under the team's stated 0.85
+  floor, meaning this particular tuning run would be rejected and tuning would continue (or the
+  threshold would be raised slightly, trading some recall back for the needed precision).
+- **Recall** = 162 / (162 + 38) = 162/200 = **81.0%** — the model catches about 4 in 5 real
+  policy violations, missing 38 of them (false negatives a human moderator never sees flagged).
+- **F1** = 2 × (0.848 × 0.810) / (0.848 + 0.810) ≈ 2 × 0.687 / 1.658 ≈ **82.9%**.
+- **A trivial "approve everything" baseline**, for direct comparison, scores accuracy = 4,800/
+  5,000 = **96.0%** — only 2.66 points below this real, tuned model's 98.66%, while catching
+  precisely zero policy violations (recall = 0%). The *entire* value this model delivers to the
+  business (catching 162 of 200 real violations) is hidden inside a 2.66-point accuracy
+  difference — the same structural trap the glossary's standalone fraud example demonstrates,
+  now tied directly to this domain's own running case study.
+- **What happens next, mechanically:** since measured precision (84.8%) sits fractionally under
+  the 0.85 floor, Automatic Model Tuning's next trial would search nearby `scale_pos_weight`
+  values (lower, to reduce false positives at some recall cost) rather than accepting this run —
+  exactly the loop described in [`hyperparameter-tuning-strategies.md`](hyperparameter-tuning-strategies.md).
+  Full threshold-sweep mechanics (what happens to precision/recall at five different cutoffs on
+  one fixed model, rather than one fixed cutoff across tuning runs) are worked in
+  [`evaluation-metrics-deep-dive.md`](evaluation-metrics-deep-dive.md).
+
+![AWS's own diagram of a SageMaker training job's lifecycle — algorithm container, training data, and output model artifact](https://docs.aws.amazon.com/sagemaker/latest/dg/images/sagemaker-training.png)
+
+*Figure: AWS's canonical SageMaker training-job diagram — training data and an algorithm
+container (built-in XGBoost, in CraftHaven's case) go in, a trained model artifact comes out,
+written to S3; this is the literal infrastructure producing the confusion matrix walked through
+numerically above, one training job per hyperparameter combination Automatic Model Tuning tries.
+Source: AWS SageMaker Developer Guide, "Train a Model with Amazon SageMaker" —
+docs.aws.amazon.com/sagemaker/latest/dg/how-it-works-training.html.*
+
 ## Evaluating for bias, not just accuracy
 
 Task statement 2.3 explicitly includes "detecting bias in model outputs" alongside the
@@ -544,6 +669,15 @@ Domain 1/Domain 2 boundary concern, which is why it's referenced from both direc
 See [`ml-fundamentals-glossary.md`](ml-fundamentals-glossary.md) for every ML vocabulary term
 used above, and [`glossary/README.md`](../../../glossary/README.md) for the repo-wide index.
 
+- [`algorithm-selection-decision-framework.md`](algorithm-selection-decision-framework.md),
+  [`evaluation-metrics-deep-dive.md`](evaluation-metrics-deep-dive.md),
+  [`hyperparameter-tuning-strategies.md`](hyperparameter-tuning-strategies.md),
+  [`rag-vs-finetuning-vs-prompting-decision-tree.md`](rag-vs-finetuning-vs-prompting-decision-tree.md),
+  and [`bias-variance-tradeoff-and-regularization.md`](bias-variance-tradeoff-and-regularization.md)
+  — this domain's five deep-dive topic docs, each expanding one conceptually dense area of the
+  diagrams and case study above into full numeric worked detail.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — a single, standalone document covering every service and
+  core concept in this domain end to end, for linear reading or offline review.
 - [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).
 - [`../domain-1-data-preparation/README.md`](../domain-1-data-preparation/README.md) — the data
   this domain's training jobs consume, and the RAG vs. fine-tune decision this domain continues.

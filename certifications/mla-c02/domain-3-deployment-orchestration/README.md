@@ -572,6 +572,268 @@ a retrained XGBoost model, an updated prompt template, or a refreshed vector ind
     approval gate) is a hard stop by design — the correct answer treats this as a feature to
     configure correctly, not an obstacle to bypass under time pressure.
 
+## Deep dive — worked traffic-pattern math across all four inference options, side by side
+
+The "Common exam scenarios" list above states the decision rules; this section proves them with
+actual numbers, because C02's scenario questions increasingly embed concrete traffic figures
+(requests/second, payload size, latency budget) rather than just a qualitative description, and
+expect you to reason quantitatively to the right answer, not just pattern-match a keyword.
+
+**Setup:** the same underlying model (a document-risk scorer) considered under four different
+traffic descriptions, to see exactly where each option's math stops making sense for the others.
+
+| Variant | Traffic | Payload | Latency need | Correct option | Why the other three fail |
+|---|---|---|---|---|---|
+| A | 300 req/s, steady, all day | 2 KB | <100ms | **Real-time + auto-scaling** | Serverless: cold starts would hit a meaningful fraction of 300 req/s continuously; Async: adds needless queuing latency to traffic that's never actually bursty; Batch: no live caller exists in this pattern at all |
+| B | ~40 req/day, random, 8am-6pm | 2 KB | <2s (cold start OK) | **Serverless** | Real-time: bills 24/7 for a workload idle >99.9% of the time; Async: adds an unneeded queue/notification hop for a request this small and this infrequent; Batch: there's no "whole dataset" to batch — these are independent, unpredictable live requests |
+| C | ~500/day, clustered in bursts | 60 MB (scanned documents) | minutes OK | **Asynchronous** | Real-time: payload alone exceeds its ceiling; Serverless: same payload ceiling problem, plus 60MB processing time likely exceeds serverless's short processing window; Batch: these arrive continuously through the day, not as one bulk dataset to process at a single scheduled moment |
+| D | 2 million records, once/week | 500 bytes each | hours OK, no live caller | **Batch Transform** | Real-time/Serverless: provisioning any persistent endpoint for a workload with zero live callers is pure wasted infrastructure; Async: async still implies a live caller submitting individual requests and awaiting a notification, which doesn't describe a single bulk weekly job at all |
+
+**The arithmetic behind Variant A's "real-time, not serverless" call, explicitly:** 300 req/s is
+300 × 60 = 18,000 invocations/minute. Even a conservative, well-provisioned serverless cold-start
+rate (say, 2% of requests hitting cold compute during continuous high-volume traffic, since
+serverless scales but doesn't eliminate the possibility of concurrency-limit-driven cold paths
+under sustained heavy load) would mean roughly 360 requests/minute experiencing multi-hundred-
+millisecond-plus cold-start latency against a <100ms SLA — a real, user-visible violation at this
+volume, which real-time with proper auto-scaling (see
+[`sagemaker-endpoint-autoscaling-cost-math.md`](sagemaker-endpoint-autoscaling-cost-math.md) for
+the full instance-count math) simply doesn't risk, because its instances are already warm and
+scaled to the steady load.
+
+**The arithmetic behind Variant B's "serverless, not real-time" call, explicitly:** 40 requests/
+day, each perhaps 150ms of actual compute, is 40 × 0.15 = **6 seconds/day of real work** — a
+real-time `ml.t2.medium` instance running 24/7 to serve this would bill roughly 24 × 60 × 60 =
+86,400 seconds/day of availability for 6 seconds/day of actual use, a **>14,000x** idle-to-used
+ratio. This is the exact shape of waste a "most cost-effective" exam question is testing, and the
+gap is large enough that no latency argument plausibly justifies it once the described workload
+explicitly tolerates occasional cold-start delay.
+
+## Deep dive — an additional real AWS reference architecture for the containerization layer
+
+The "Containerization" section above establishes the SageMaker-vs-ECS-vs-EKS decision
+conceptually; it's worth seeing AWS's own reference diagram for what a real EKS-hosted ML serving
+layer alongside a full CI/CD pipeline actually looks like end to end, since Domain 3's
+containerization task statement (3.2) is tested at exactly this level of concreteness:
+
+![Reference architecture diagram showing a legacy application modernized onto Amazon EKS, with a complete CodeCommit, CodePipeline, CodeBuild, and ECR CI/CD flow deploying containers to EKS clusters fronted by a load balancer](https://docs.aws.amazon.com/reference-architecture-diagrams/latest/modernize-applications-with-microservices-using-amazon-eks/images/modernize-applications-with-microservices-using-amazon-eks.png)
+
+*Figure: AWS's own reference architecture for modernizing an application onto EKS — a developer
+commits to CodeCommit, triggering CodePipeline; CodeBuild builds and pushes a container image to
+ECR, then runs `kubectl` against the EKS cluster's API server to roll out the new image, with
+Kubernetes' own reconciliation loop performing the actual rolling update. The exam-relevant detail
+this diagram makes concrete: unlike an ECS deploy action, **CodeDeploy is not typically in this
+loop for native Kubernetes-manifest deployments** — the pipeline's job ends at "tell Kubernetes
+what I want," and Kubernetes' own controller does the rest. Source: AWS Reference Architecture
+Diagrams, "Modernize Applications with Microservices Using Amazon EKS."*
+
+This is the same CI/CD shape as the SageMaker-centric pipeline diagram earlier in this document,
+with one structural difference worth internalizing precisely: a SageMaker Pipeline's Condition
+Step is an explicit, model-quality-aware gate written into the ML workflow itself, while a plain
+Kubernetes rolling update (as shown here) has no equivalent model-quality awareness at all — it
+only knows "did the new Pods pass their readiness/liveness probes," which is an infrastructure-
+health check, not a model-quality check. **A team deploying an ML serving container to EKS still
+needs the quality-gating logic to live somewhere explicit** (typically still a SageMaker Pipeline
+or a custom CodeBuild validation step upstream of the `kubectl` rollout), because EKS's own
+rolling-update mechanism, by itself, cannot tell a less-accurate model from a more-accurate one —
+only whether the new container process successfully started and answers its health check.
+
+## Deep dive — the MWAA alternative, with a real concrete comparison
+
+Task 3.3 names SageMaker Pipelines and EventBridge-triggered orchestration as the default MLOps
+automation pattern, but also names **Amazon MWAA** (Managed Workflows for Apache Airflow) for
+teams whose orchestration needs are genuinely broader or more code-heavy than a SageMaker
+Pipeline's step types express cleanly:
+
+```mermaid
+flowchart TD
+    Q{"What's actually being<br/>orchestrated?"} -->|"Pure ML lifecycle:<br/>process->train->eval->register"| SMP["SageMaker Pipelines<br/>— SageMaker-native,<br/>no separate infra to run"]
+    Q -->|"Already have Airflow DAGs,<br/>or need Python-level dynamic<br/>task generation"| MWAA["Amazon MWAA<br/>— full Python, huge operator<br/>ecosystem, continuous infra cost"]
+    Q -->|"Mix of ML steps and non-ML<br/>business steps (legal review,<br/>cross-account approval chains)"| SF["AWS Step Functions<br/>— general-purpose state machine,<br/>can call either of the above as one state"]
+```
+
+![Diagram showing the components of an Amazon MWAA environment: a scheduler and workers on AWS Fargate, a managed Aurora PostgreSQL metadata database, and a web server, all inside a customer VPC](https://docs.aws.amazon.com/mwaa/latest/migrationguide/images/mwaa-architecture.png)
+
+*Figure: AWS's own MWAA architecture diagram — the scheduler and workers run on AWS-managed
+Fargate inside your VPC's private subnets, with a single-tenant Aurora PostgreSQL metadata
+database tracking every DAG run. The exam-relevant cost distinction this diagram makes visible:
+unlike a SageMaker Pipeline (billed purely for the underlying step compute, with zero separate
+orchestration charge), an **MWAA environment bills continuously for its scheduler/worker Fargate
+capacity, whether or not any DAG is actively running right now** — a genuinely different pricing
+shape worth knowing explicitly rather than assuming all orchestration tools share SageMaker
+Pipelines' zero-idle-cost model. Source: AWS MWAA Migration Guide, "Explore Amazon MWAA network
+architecture."*
+
+**The exam-relevant selection rule, stated once more precisely because it's a common trap:** a
+scenario mentioning "complex workflow orchestration" alone, with no mention of Airflow or an
+existing DAG investment, more often points at Step Functions or plain SageMaker Pipelines than at
+MWAA — MWAA's signature, defining keyword is specifically **Airflow** (or an organization's
+existing DAG ecosystem), not "complexity" in isolation. See
+[`services/application-integration/mwaa.md`](../../../services/application-integration/mwaa.md)
+for the full MWAA-vs-Step-Functions comparison table.
+
+## Deep dive — more worked exam scenarios with explicit traffic-pattern numbers
+
+Continuing directly from the "Common exam scenarios" list above, with the arithmetic shown this
+time rather than only the final answer — this is deliberately the single most repeated skill in
+this entire domain, worth seeing demonstrated many times with different numbers:
+
+**Scenario 16:** "A model is called roughly 2 requests per minute, every minute, 24 hours a day,
+with no tolerance for a cold start above 500ms, and every request must complete in under 300ms."
+*Worked:* 2 req/min is very low volume by raw count, which might suggest serverless — but "zero
+tolerance for a cold start above 500ms" directly conflicts with serverless's fundamental cold-
+start tradeoff. The correct read: this is a **real-time endpoint sized to a single small
+instance** (e.g., `ml.t2.medium`), not serverless, because the stated latency constraint — not
+the request volume — is what actually rules an option out here. This is a deliberately
+constructed trap: low volume alone does **not** always mean serverless; a strict zero-cold-start
+requirement overrides it.
+
+**Scenario 17:** "A nightly job scores 50,000 records, taking roughly 45 minutes end to end on a
+single appropriately-sized instance, and the team currently runs this on a real-time endpoint
+left running 24/7 specifically to avoid 'the hassle of configuring batch jobs.'" *Worked:* this
+endpoint is receiving real traffic for 45 minutes out of 1,440 minutes/day — a 96.9% idle rate.
+Batch Transform, which provisions compute only for the job's actual ~45-minute runtime and
+terminates afterward, cuts the billed compute for this workload by roughly the same ~97%,
+independent of any auto-scaling configuration on the real-time endpoint (auto-scaling an endpoint
+that should not exist at all for this traffic pattern doesn't fix the underlying architectural
+mismatch — the fix is switching inference options entirely, not tuning the wrong one).
+
+**Scenario 18:** "An internal tool is called in genuine bursts — zero traffic most of the day,
+then 200 requests within a 90-second window once or twice daily when a report is generated — and
+the team wants to minimize cost without writing custom queuing infrastructure." *Worked:* 200
+requests in 90 seconds is roughly 2.2 req/s during the burst — well within what a single
+serverless endpoint's concurrency can absorb without needing custom queuing, and the long zero-
+traffic stretches are exactly serverless's strongest cost case (billed only for the ~90 seconds ×
+2 occurrences/day of actual compute, out of 86,400 seconds/day total). A real-time endpoint sized
+for the burst would sit idle in excess of 99.7% of the day; Provisioned Concurrency on the
+serverless endpoint is a reasonable refinement only if the burst's very first requests show an
+unacceptable cold-start hit in practice — not a default assumption.
+
+## Deep dive — agent architecture as deployed infrastructure, with AWS's own diagram
+
+Task 3.2.11 ("deploy agentic workflow infrastructure") asks you to see an Agent not as a single
+API call but as a small stack of distinct, independently deployable pieces — exactly the
+distinction AWS's own AgentCore harness diagram makes visually:
+
+![AgentCore harness architecture diagram showing an isolated microVM running an agent's code, with connections to Memory, Gateway, Identity, and Observability components, plus direct filesystem and shell access](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/images/harness-architecture.png)
+
+*Figure: the official Bedrock AgentCore harness architecture — a per-session, isolated microVM
+runs the actual agent code (framework-agnostic: LangGraph, Strands, CrewAI, or custom), with its
+own filesystem and shell so the agent can write and execute code directly, wired to four separate
+managed services: Identity (who is this agent acting for), Memory (what does it remember, short-
+and long-term), Gateway (what tools can it call), and Observability (what happened, traced step by
+step). Source: Amazon Bedrock AgentCore Developer Guide, "AgentCore harness."*
+
+The deployment-relevant reading of this diagram: **each of the four surrounding services (Identity,
+Memory, Gateway, Observability) is configured, versioned, and deployed independently of the agent
+code itself** — updating which tools a Gateway exposes doesn't require redeploying the agent's own
+reasoning code, and rotating which Identity provider an agent trusts doesn't touch Memory at all.
+This is precisely the infrastructure-as-multiple-coordinated-pieces property task 3.2.11 is
+testing: a question describing "update only the list of tools an agent can call, without touching
+anything else" is pointing specifically at a Gateway-layer configuration change, not a full agent
+redeployment — recognizing which layer of this stack a described change belongs to is the actual
+tested skill, not simply knowing the word "AgentCore."
+
+### A second agent diagram — the full customer-support automation workflow, concretely
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant EB as EventBridge
+    participant Agent as Bedrock Agent
+    participant CRM as GetOrderHistory Lambda
+    participant Proc as ProcessReturn Lambda
+    participant Resp as Customer response
+
+    User->>EB: "I need to return the shoes I ordered last week"
+    EB->>Agent: Triggers agent invocation
+    Agent->>Agent: Intent extraction: "return_order"
+    Agent->>CRM: GetOrderHistory(customerId)
+    CRM-->>Agent: Order details, purchase date
+    Agent->>Proc: ProcessReturn(orderId) — eligibility check
+    Proc-->>Agent: {eligible: true, returnId: "RET-991"}
+    Agent->>Agent: Response generation (FM call)
+    Agent-->>Resp: "Your return is being processed.<br/>Expect a confirmation email shortly."
+```
+
+This is the deployed shape of exactly the kind of multi-step GenAI orchestration task 3.4 names —
+notice the trigger is **EventBridge**, the same event-bus mechanism this domain already uses to
+trigger SageMaker Pipeline retraining, reused here to kick off an agent invocation from an
+inbound customer message instead of a data-arrival event. The architectural throughline worth
+naming explicitly: **EventBridge is this entire domain's general-purpose "something happened,
+start the next step" connective tissue**, equally at home triggering a classic-ML retraining
+pipeline, a Knowledge Base refresh (task 3.3.11), or — as shown here — a live agent interaction;
+it is not a SageMaker-specific or Bedrock-specific mechanism, which is itself a recurring,
+testable point across this entire domain's content.
+
+## Deep dive — a fourth worked case study: blue/green vs. canary, with real traffic-split math
+
+The "Common Architectures" section's Pattern 1 (blue/green canary rollout) names the pattern;
+this section supplies the arithmetic a Domain 3 scenario expects when it specifies exact
+percentages and a time window.
+
+**The scenario:** a credit-scoring endpoint currently serves 5,000 requests/hour on its
+production variant. A new model version is deployed as a canary at **10% traffic** for a planned
+**2-hour observation window** before a decision to fully promote or roll back.
+
+**The math:** 10% of 5,000 req/hour = **500 requests/hour** reaching the canary variant, or
+**1,000 requests** total across the full 2-hour window — the sample size an evaluator actually
+has to judge the new variant's real-world behavior on. If the team's acceptance criteria requires
+observing at least, say, 200 instances of a specific rare outcome class (e.g., declined
+applications, if that's the behavior under particular scrutiny) and that class occurs in roughly
+8% of all requests historically, the canary's 1,000-request sample would be expected to contain
+only around 80 such cases — **short of the 200 needed for a statistically meaningful read on that
+specific rare outcome.** The correct response here is not "ship it anyway because the overall
+error rate looks fine" — it's **extending the canary window or raising the canary percentage**
+until the sample size covering the outcome class under scrutiny is actually large enough to judge
+confidently. This is exactly the scenario this domain's README troubleshooting section already
+names ("aggregate metrics can mask problems affecting a specific input pattern... underrepresented
+in the canary's traffic slice") — now shown with the sample-size arithmetic behind why that's true,
+not just the warning in prose.
+
+**Contrast with blue/green:** a full blue/green cutover for the same endpoint exposes **100% of
+the 5,000 req/hour immediately** to the new version (after validation, with the old version kept
+warm for instant rollback) — appropriate when the team has already gained confidence through an
+earlier canary phase (or through comprehensive offline evaluation) and wants a clean, complete
+cutover rather than a prolonged partial-traffic period; it is **not** itself a substitute for the
+canary's "learn from a real but limited traffic sample first" function — the two patterns solve
+different problems (gradual learning vs. clean full cutover) and a mature rollout commonly uses
+canary first, then blue/green for the final complete cutover once canary results are satisfactory.
+
+## Deep dive — the full CodePipeline stage definition behind the diagram above, concretely
+
+The "How It Works" CI/CD diagram names CodePipeline, CodeBuild, and CodeDeploy only as boxes; it's
+worth seeing the actual stage-level JSON shape this domain's pipeline would use to wire a
+SageMaker Pipeline trigger into a broader release, since task 3.3 explicitly names these services
+by their real CLI/API surface, not just conceptually:
+
+```json
+{
+  "stages": [
+    { "name": "Source", "actions": [{ "name": "GitHubSource", "actionTypeId":
+      { "category": "Source", "owner": "AWS", "provider": "CodeStarSourceConnection", "version": "1" } }] },
+    { "name": "BuildInferenceContainer", "actions": [{ "name": "CodeBuildAction", "actionTypeId":
+      { "category": "Build", "owner": "AWS", "provider": "CodeBuild", "version": "1" } }] },
+    { "name": "TriggerSageMakerPipeline", "actions": [{ "name": "InvokeTrainingDAG", "actionTypeId":
+      { "category": "Invoke", "owner": "AWS", "provider": "Lambda", "version": "1" } }] },
+    { "name": "ApproveForProduction", "actions": [{ "name": "ManualApproval", "actionTypeId":
+      { "category": "Approval", "owner": "AWS", "provider": "Manual", "version": "1" } }] },
+    { "name": "DeployCanary", "actions": [{ "name": "UpdateEndpointVariant", "actionTypeId":
+      { "category": "Invoke", "owner": "AWS", "provider": "Lambda", "version": "1" } }] }
+  ]
+}
+```
+
+The detail worth internalizing from this exact shape (expanded in full, with the actual Lambda
+code bridging CodePipeline to a SageMaker Pipeline execution, in
+[`mlops-cicd-pipeline-retraining-deep-dive.md`](mlops-cicd-pipeline-retraining-deep-dive.md)):
+**there is no native CodePipeline action-type provider for "run a SageMaker Pipeline" or "update
+a SageMaker endpoint's traffic split"** — both the `TriggerSageMakerPipeline` and `DeployCanary`
+stages above use `category: Invoke, provider: Lambda`, the generic custom-action mechanism,
+because CodePipeline's built-in action providers don't include SageMaker-specific ones. A question
+asking "what built-in CodePipeline action type directly runs a SageMaker Pipeline" has no correct
+built-in answer — recognizing that a custom Lambda action is required is itself the tested
+knowledge, not a gap to be embarrassed about.
+
 ## Related Terms
 
 - [`../domain-2-model-development/README.md`](../domain-2-model-development/README.md) — the
@@ -583,3 +845,13 @@ a retrained XGBoost model, an updated prompt template, or a refreshed vector ind
 - [`services/machine-learning-ai/sagemaker-overview.md`](../../../services/machine-learning-ai/sagemaker-overview.md)
   — the umbrella SageMaker document connecting this domain's deployment options back to training.
 - [`labs.md`](labs.md) — hands-on exercises for this domain (Floci + real free-tier alternatives).
+- [`sagemaker-endpoint-autoscaling-cost-math.md`](sagemaker-endpoint-autoscaling-cost-math.md) —
+  the worked numeric math behind "pick the right auto-scaling configuration and know its cost."
+- [`bedrock-agent-architecture-state-management.md`](bedrock-agent-architecture-state-management.md)
+  — the full build-time/runtime Agent architecture and state-management design space.
+- [`mlops-cicd-pipeline-retraining-deep-dive.md`](mlops-cicd-pipeline-retraining-deep-dive.md) —
+  the real CodePipeline + SageMaker Pipelines configuration files behind this domain's CI/CD diagram.
+- [`gpu-instance-selection-scaling-fm-hosting.md`](gpu-instance-selection-scaling-fm-hosting.md)
+  — instance-family selection and scaling mechanics for self-hosted foundation models.
+- [`MASTER-CHUNK.md`](MASTER-CHUNK.md) — one self-contained file covering all nine of this
+  domain's services/topics in full depth, for a single uninterrupted review pass.
